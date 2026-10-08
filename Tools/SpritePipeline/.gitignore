@@ -11,8 +11,6 @@ presets/characters/*
 !presets/characters/_template/**
 !presets/characters/diagnostic_dummy/
 !presets/characters/diagnostic_dummy/**
-!presets/characters/player_cyber/
-!presets/characters/player_cyber/**
 __pycache__/
 *.py[cod]
 .pytest_cache/

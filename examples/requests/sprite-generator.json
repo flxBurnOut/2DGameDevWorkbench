@@ -1,6 +1,6 @@
 {
   "operation": "create-and-generate",
-  "characterId": "player_cyber",
+  "characterId": "your_character_id",
   "actionId": "idle",
   "provider": "pixellab",
   "candidateCount": 1,

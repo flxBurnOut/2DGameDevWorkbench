@@ -158,7 +158,7 @@ Godot 参数也可通过 `GODOT_47_BIN` 提供；无参数只运行 JavaScript �
 
 修改 `contract.mjs` 后运行 `npm run schema:interactable`，将完整字段 schema 同步到 manifest；JavaScript 测试会检查两者一致。此脚本只更新交互物能力的 project 字段，保留其他能力配置。同步结果必须与代码一起提交，并运行 doctor。Windows 隔离环境偶尔无法读取系统根证书，离线引擎测试会单独报告该环境提示，仍严格检查脚本错误和测试退出状态。
 
-完整验证矩阵见 [开发与验证指南](development.md)。早期设计取舍保留在 [实施计划历史快照](INTERACTABLE_EDITOR_PLAN.md)，不应据此覆盖当前契约。
+完整验证矩阵见 [使用与操作手册](operations-manual.md)。
 
 ## MCP 制作与继续编辑
 

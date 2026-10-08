@@ -90,7 +90,7 @@ Web 的同源 API 通过 `WORKBENCH_RUNTIME_URL` 访问默认位于 `127.0.0.1:8
 
 外壳回归：`npm run test:workbench-shell`，覆盖 Manifest 路线、状态真实性、执行尝试去重、本机恢复链接优先、保存失败及繁忙操作的离开保护。既有地图、交互物与 MCP 检查保持原命令。
 
-完整测试矩阵见 [开发与验证指南](development.md#6-验证矩阵)，整体分层见 [系统架构](architecture.md)。
+完整测试矩阵见 [使用与操作手册](operations-manual.md)，整体分层见 [系统架构](architecture.md)。
 
 ## 原图与序列帧路线
 

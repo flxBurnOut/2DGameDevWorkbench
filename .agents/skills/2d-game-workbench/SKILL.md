@@ -112,7 +112,7 @@ The SpriteFrames pack preserves exact selected frame order/regions, action alias
 
 ## Diagnose configuration accurately
 
-Check API compatibility and UI readiness separately; `sprite-pipeline:api` does not serve the embedded UI. PixelLab Key is shared and persists in protected SpritePipeline settings; map keys also persist in protected local configuration, with server environment as an alternative. Dedicated settings return configured state, never key values. Startup tools do not install dependencies or restart occupied/incompatible services. Read `docs/development.md` before maintaining or restarting a service, and retain the user's data directory and in-flight work.
+Check API compatibility and UI readiness separately; `sprite-pipeline:api` does not serve the embedded UI. PixelLab Key is shared and persists in protected SpritePipeline settings; map keys also persist in protected local configuration, with server environment as an alternative. Dedicated settings return configured state, never key values. Startup tools do not install dependencies or restart occupied/incompatible services. Read `docs/operations-manual.md` before maintaining or restarting a service, and retain the user's data directory and in-flight work.
 
 ## Export directly to the selected game
 

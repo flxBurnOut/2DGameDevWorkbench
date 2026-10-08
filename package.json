@@ -6,6 +6,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "check:public": "node scripts/check-public-repository.mjs",
     "test:platform-credentials": "node scripts/test-platform-credentials.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:web": "vinext dev",

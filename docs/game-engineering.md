@@ -43,16 +43,10 @@ npm run test:engineering
 
 验收对象是 Godot 中的资源和运行行为；资产库打开、JSON 清单或 zip 下载成功都不算这一阶段的运行时验收。
 
-## 本次本地验证记录（2026-09-08）
-
-15 项导入与拒绝用例通过；Godot 4.6.2 完成资源加载、真实播放/重播、显式提示事件、暂停、朝向、单动作合并、地图运行时清单加载、物理碰撞和重挂载契约检查。另从现有已审批作业 `20260905_player_cyber_attack_001` 的候选 1 读取 17 帧，在隔离项目按 18 FPS 完整播放两次，原帧与作业记录哈希保持不变。没有调用生图模型。
-
-共享清单 doctor、适配器、HTTP、MCP、Agent acceptance、lint 和两项 Skill 校验通过。该记录不等同于 WorkBuddy 已自动加载 Skill，也不包含 CopyWorms 全游戏或 Pixelwork 插件回归。
-
 ## 从项目交付继续实施
 
 [Godot 交付流程](godot-delivery.md)提供选定目标、包身份、资源安装与备份。Agent 不再让用户处理文件搬运、res 修复或节点挂载：检查真实项目后完成这些工作，保留 CopyWorms 的实际方法与目标已有实现。工程 helper 可继续用于手动暂存；stage_assets.py map 支持新的 forge_maps 包。必须分别报告文件接入、代码连接和引擎执行。
 
-## 2026-09-09 Godot 4.7 当前基线
+## Godot 版本
 
-用户授权迁移至 4.7.x；此前 4.6.x 验收是历史记录。本次实际 4.7 验证与限制见 [迁移记录](../games/the-last-light/Docs/godot-47-migration.md)。测试使用 GODOT_47_BIN。
+当前基线为 Godot 4.7.x；引擎检查通过 `GODOT_47_BIN` 指定实际程序。

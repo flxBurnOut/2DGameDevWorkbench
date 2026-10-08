@@ -125,7 +125,7 @@ $jobId = $created.data.job.job_id
 
 每个候选都会单独提交一次付费生成，所以网页和示例默认只创建 1 个；一次提交消耗的 generation 单位随尺寸和模型帧数变化，并不恒等于 1。可先用 `estimate --character <id> --action <id> --candidates <n>` 离线估算。`generate` 默认等待并按候选串行执行；加 `--no-wait` 时只推进一次提交/轮询。`recover-all` 会扫描全部持久任务并只执行安全恢复。遇到 `submission_unknown` 时绝不能重提；若能从 PixelLab 找到原 Job ID，使用 `attach-provider-job` 绑定。遇到 `provider_pending` 或 `saving` 时可再次调用 `generate` 或 `recover-all`，它们只会继续已有任务。旧版帧数合同失败可用 `recover --job <id> --candidate <n>` 取回，所有恢复路径都不会创建新的收费生成。
 
-完整的 Codex 状态与修补规则见 [CODEX_USAGE.md](CODEX_USAGE.md)。
+通过本文的 API 说明接入；生成、修补、审核与导出分别执行。
 
 ## 其他入口
 
@@ -205,7 +205,7 @@ Codex 也可用 `pixel-edit-frame --source <同尺寸透明 PNG> --base-sha256 <
 
 V0.1 暂未自动调用 PixelLab Edit Animation V2 或 GPT-Image-2；当前已经支持内置手工像素修补、REST RGBA 修补和 Codex `pixel-edit-frame`，外部修补 PNG 仍可通过 `replace-frame` 加入。复制粘贴、可编辑遮罩、调色板保护、修改前后闪烁和 AI 遮罩修补属于后续阶段。空白仓库也没有可修改的 Godot 工程，因此独立 Godot 预览场景仍需在真实项目接入时补做。
 
-统一 Python/Node 回归用于检查服务、像素算法和页面结构，但真实浏览器中的载入、绘制、撤销/重做、保存、重载及逐字节核对烟测尚未执行，当前不能声称浏览器烟测已经通过。后续实现顺序见 [逐帧修补优化计划](PIXEL_REPAIR_OPTIMIZATION_PLAN.md)。
+统一 Python/Node 回归用于检查服务、像素算法和页面结构，但真实浏览器中的载入、绘制、撤销/重做、保存、重载及逐字节核对烟测尚未执行，当前不能声称浏览器烟测已经通过。
 
 ## 许可证
 

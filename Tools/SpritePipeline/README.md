@@ -235,8 +235,7 @@ directory inputs preserve their actual usable frame counts. A provider count
 difference is a review warning; unreadable, inconsistent-size, or otherwise
 invalid frames remain blocking failures.
 
-See [CODEX_USAGE.md](CODEX_USAGE.md) for the stable orchestration contract and
-repair flow.
+Use the REST API below for integration; generation, review and export remain separate steps.
 
 ## REST API
 
@@ -355,7 +354,7 @@ This project is released under the [MIT License](LICENSE).
 
 ## 攻击视觉检查与人工修补
 
-节奏设计及样本复盘见 [攻击动画的节奏经验](docs/attack-animation-notes.md)。
+
 
 地面/空中攻击的新 PixelLab 任务默认使用 `two_stage_attack`：每个候选固定生成准备/蓄力、挥击/收招两个片段；16 帧默认使用 4 + 12 个请求帧：4 帧起势/蓄力，8 帧出刀与随挥，4 帧收招。出刀先快后慢；中间 8 帧包含同一次攻击的随挥减速，不要求把刀匀速慢挥 8 帧。空中攻击的前 4 帧为沿连续飞行轨迹准备，不强加地面蓄力。第二段使用第一段实际末帧作为起始参考，持续沿用同一持刀手和肩肘腕连接。新计划不再用可能握法不同的原图待机姿势强制收招终点；两段分别以自身起始参考锁定握刀臂，文字明确要求同一只手完成挥击并回到准备姿势。角色可用 `weapon_hand` 声明左右手/双手，默认沿用原图的持刀手；其值和原图哈希在创建时冻结。两段都复用普通生成的角色身份约束，并保留创建时的专属外观说明及不得新增披风的约束；衔接帧不能取代原型定义。分别给出短阶段提示词，第二段必须立即出刀，不再重新蓄力。仅去掉两个片段间像素完全相同的重复衔接帧，保留其他所有实际返回帧，再检查整段动作。阶段端点是生成模型的引导输入，仍需实际画面验收。
 

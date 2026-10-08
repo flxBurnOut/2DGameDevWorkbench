@@ -223,7 +223,7 @@ key 只来自 runtime 进程内设置或 `GEMINI_API_KEY`/`OPENAI_API_KEY`/`TOKE
 
 ## Agent 第一阶段扩展
 
-共享 Runtime 的 `agentRequest` 供 MCP、CLI `agent <operation> --input <json-file>` 与 HTTP `POST /v1/agent/<operation>` 使用。当前 operation 为 guidance、environment、start、frontend、presets、interactable-template、tasks、assets、asset、asset-manifest、result、artifact。工具映射见 [Agent 客户端接入](agent-clients.md)。查询参数也通过 JSON 传递；未知字段和越界产物均被拒绝。artifact 在 HTTP/CLI 返回预览 base64，MCP 转换成原生 image 内容；原始产物不被修改。具体工具名和审核规则见 [第一阶段验收](agent-phase1-acceptance.md)。
+共享 Runtime 的 `agentRequest` 供 MCP、CLI `agent <operation> --input <json-file>` 与 HTTP `POST /v1/agent/<operation>` 使用。当前 operation 为 guidance、environment、start、frontend、presets、interactable-template、tasks、assets、asset、asset-manifest、result、artifact。工具映射见 [Agent 客户端接入](agent-clients.md)。查询参数也通过 JSON 传递；未知字段和越界产物均被拒绝。artifact 在 HTTP/CLI 返回预览 base64，MCP 转换成原生 image 内容；原始产物不被修改。具体工具名和审核规则见 [Agent 客户端接入](agent-clients.md)。
 
 ### 只读作品结果与展示
 

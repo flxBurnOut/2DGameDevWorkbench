@@ -1,9 +1,0 @@
-[gd_resource type="Resource" script_class="TllDemoConfig" load_steps=2 format=3]
-
-[ext_resource type="Script" path="res://DataConfig/demo_config.gd" id="1_cfg"]
-
-[resource]
-script = ExtResource("1_cfg")
-required_cells = 2
-available_cell_ids = Array[String](["instance-67959b63-c7ac-4fa0-b1c8-c1428a69058b", "instance-8eb5dd2b-5b17-4e68-b373-480f4e05fbfa"])
-line_switch_instance_id = "instance-65c3867d-7354-4d56-890e-51cdaddcc390"

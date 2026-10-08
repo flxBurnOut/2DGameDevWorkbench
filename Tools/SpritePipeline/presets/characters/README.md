@@ -13,3 +13,5 @@ cyber_player/
 `character.json`. Copy `_template/character.example.json` to
 `<character_id>/character.json`, update it, and add the referenced images.
 
+
+User-created character presets and their images stay local and are ignored by Git. Only the schema template and `diagnostic_dummy` test fixture are distributed. Create or import your own reference before production generation.

@@ -51,3 +51,76 @@ next-env.d.ts
 # Bytecode from local engineering Skill helpers
 .agents/skills/**/__pycache__/
 tests/game-engineering/__pycache__/
+
+# Local development instructions and host state (product Skills are distributed)
+[Aa][Gg][Ee][Nn][Tt].md
+[Aa][Gg][Ee][Nn][Tt][Ss].md
+CLAUDE.md
+/CONTRIBUTING.md
+/.codex/
+/.claude/
+/.aws/
+/.sites-runtime/
+
+# Local creations, handoff packages, recordings and work records
+/games/
+/artifacts/
+/reports/
+/recordings/
+/screenshots/
+/backups/
+/release/
+/releases/
+/docs/demos/
+/docs/development.md
+/docs/*_PLAN.md
+/docs/*_VERIFICATION.md
+/docs/*-verification.md
+/docs/agent-phase1-acceptance.md
+/docs/agent-presentation-acceptance.md
+/Tools/SpritePipeline/CODEX_USAGE.md
+/Tools/SpritePipeline/*_PLAN.md
+/Tools/SpritePipeline/docs/attack-*.md
+*.docx
+*.pptx
+~$*
+
+# User character art is local; only the schema template and diagnostic fixture ship
+/Tools/SpritePipeline/presets/characters/*
+!/Tools/SpritePipeline/presets/characters/README.md
+!/Tools/SpritePipeline/presets/characters/_template/
+!/Tools/SpritePipeline/presets/characters/diagnostic_dummy/
+
+# Runtime logs and disposable caches
+*.log
+*.log.*
+*.tmp
+*.bak
+*.py[cod]
+__pycache__/
+.pytest_cache/
+.cache/
+.godot/
+logs/
+
+# Public documentation allowlist: new work notes remain local by default
+/docs/*
+!/docs/MAP_STITCHER_ARCHITECTURE.md
+!/docs/README.md
+!/docs/agent-clients.md
+!/docs/agent-preview-follow.md
+!/docs/architecture.md
+!/docs/asset-catalog.md
+!/docs/connector-contract.md
+!/docs/desktop-compatibility.md
+!/docs/game-engineering.md
+!/docs/godot-delivery.md
+!/docs/interactable-editor.md
+!/docs/internal-imports.md
+!/docs/map-stitcher.md
+!/docs/operations-manual.md
+!/docs/prop-art.md
+!/docs/reference-art.md
+!/docs/scene-composer.md
+!/docs/sprite-generator.md
+!/docs/workbench-interface.md

@@ -12,8 +12,7 @@ Web 工作台负责展示任务和进度、恢复草稿、预览产物，以及�
 
 | 入口 | 用途 | 仓库配置 |
 | --- | --- | --- |
-| STDIO MCP | Agent 客户端首选；类型化发现、执行与状态查询 | `.mcp.json`、`.codex/config.toml` |
-| 项目指令 | 角色、安全边界和验证规则 | `AGENTS.md` |
+| STDIO MCP | Agent 客户端首选；类型化发现、执行与状态查询 | `.mcp.json`；宿主配置在本机创建 |
 | Repository Skill | 角色美术、交互物与资产操作；地图保持手动 | `.agents/skills/2d-game-workbench/SKILL.md` |
 | 工程 Skill | CopyWorms 方法下的 Godot 资产接入和脚本编写 | `.agents/skills/forge-game-engineering/SKILL.md` |
 | CLI | 不支持 MCP 的客户端或本地诊断 | `npm run workbench -- ...` |
@@ -24,7 +23,7 @@ Codex 使用 `AGENTS.md` 形成项目级指令链；相关机制见 [OpenAI 官�
 
 ## 3. MCP 配置
 
-仓库已提交两份等价配置：
+仓库提供 `.mcp.json`。以下为通用配置及可由用户在本机创建的 Codex 配置示例：
 
 ```json
 {
@@ -181,7 +180,7 @@ Browser WebMCP 与仓库 STDIO MCP 是两个边界：
 
 在 WorkBuddy 连接本项目 MCP 后发送第一条消息，Agent 会先检查 `workbench_get_environment.frontend`。服务离线时调用 `workbench_start_frontend`，等待 `frontend.ready`，再用 WorkBuddy 自带的 `present_files` 打开 `preview.hostAction.arguments.files` 中带本会话 previewSession 的地址。前端地址以清单 `workspace.frontend` 为准，默认 `http://localhost:3000`。同一对话复用已有预览，用户关闭后不会自动重开。
 
-这是 MCP 初始化 instructions 与项目 AGENTS.md 约定的 **首次对话工作流**，执行依赖 WorkBuddy Agent；没有把“握手完成”伪装成打开浏览器事件。WorkBuddy 5.5.3 的原生 `present_files` 支持内部 URL 预览；项目 STDIO server 没有宿主会话浏览器的直接控制接口。宿主工具缺失、调用失败或前端冲突时，Agent 应明确报告并继续可完成的原请求。
+这是 MCP 初始化 instructions 与产品 Skill 约定的 **首次对话工作流**，执行依赖 WorkBuddy Agent；没有把“握手完成”伪装成打开浏览器事件。WorkBuddy 5.5.3 的原生 `present_files` 支持内部 URL 预览；项目 STDIO server 没有宿主会话浏览器的直接控制接口。宿主工具缺失、调用失败或前端冲突时，Agent 应明确报告并继续可完成的原请求。
 
 `workbench_start_frontend` 与 CLI `npm run workbench -- agent frontend --json`、HTTP `POST /v1/agent/frontend` 共用运行时。它只启动固定的本地 Web/Runtime 进程，不启动 SpritePipeline、不安装依赖、不调用生图 API。启动请求返回 `starting`，须继续查询环境；返回的 `hostAction` 是宿主待执行操作，不能当作已打开证明。服务日志与 PID 在 `work/services/`；MCP 断开后服务继续运行，后续连接复用它们。端口被其他应用占用时停止，不终止其他进程，也不改用其他端口。
 
@@ -226,7 +225,7 @@ MCP 默认文本只给简明展示信息；原有完整结果仍在 `structuredC
 
 浏览器与提问属于宿主：首次展示已知作品时先 present，再使用返回的 preview.hostAction，保留会话参数；已有预览只在宿主支持且编辑安全时复用，否则提供链接。关闭或重连不自动重开。`browserOpened:false` 只表示项目 MCP 没有操作浏览器，不能被说成打开成功。使用实际可用、已读取 schema 的提问工具；未回答不选择默认项。
 
-完整手动验收见 [阶段一展示验收](agent-presentation-acceptance.md)。
+验证时分别确认工具返回结果、宿主页面实际到达和素材加载。
 
 ## 资产目录（MCP 0.8.0）
 

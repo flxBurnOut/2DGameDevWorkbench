@@ -1,9 +1,0 @@
-[gd_scene load_steps=2 format=3]
-[ext_resource type="SpriteFrames" path="res://forge_sprites/reference_6f84e3e6e116560d2c75f9fb/20260909_reference_6f84e3e6e116560d2c75f9fb_idle_001_c01_a8a41918a11c/sprite_frames.tres" id="frames"]
-[node name="Sprite" type="AnimatedSprite2D"]
-texture_filter = 1
-centered = true
-offset = Vector2(2.0, -60.0)
-sprite_frames = ExtResource("frames")
-animation = &"idle"
-autoplay = "idle"

@@ -1,9 +1,0 @@
-[gd_scene load_steps=2 format=3]
-[ext_resource type="SpriteFrames" path="res://forge_sprites/reference_a9f5fd6d9344b2322a9d4623/20260909_reference_a9f5fd6d9344b2322a9d4623_walk_001_c01_36abcf2569b7/sprite_frames.tres" id="frames"]
-[node name="Sprite" type="AnimatedSprite2D"]
-texture_filter = 1
-centered = true
-offset = Vector2(1.0, -28.0)
-sprite_frames = ExtResource("frames")
-animation = &"walk"
-autoplay = "walk"

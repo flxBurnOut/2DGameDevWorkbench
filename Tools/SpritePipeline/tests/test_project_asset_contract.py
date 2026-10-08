@@ -59,7 +59,7 @@ class ProjectAssetContractTests(unittest.TestCase):
         action = ActionPreset.model_validate(
             json.loads((PROJECT_ROOT / "presets" / "actions" / "attack.json").read_text(encoding="utf-8"))
         )
-        character_path = PROJECT_ROOT / "presets" / "characters" / "player_cyber" / "character.json"
+        character_path = PROJECT_ROOT / "presets" / "characters" / "diagnostic_dummy" / "character.json"
         character = CharacterPreset.model_validate(json.loads(character_path.read_text(encoding="utf-8")))
         prompt = compose_generation_prompt(character, action)
 

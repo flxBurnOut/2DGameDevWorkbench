@@ -68,7 +68,7 @@ SPRITE_PIPELINE_API_TOKEN=optional-bearer-token
 ```json
 {
   "operation": "create-and-generate",
-  "characterId": "player_cyber",
+  "characterId": "your_character_id",
   "actionId": "idle",
   "provider": "pixellab",
   "candidateCount": 1,
@@ -107,7 +107,7 @@ npm run test:mcp
 npm run workbench -- doctor --json
 ```
 
-修改上游组件时还应在 `Tools/SpritePipeline` 中按其锁定依赖运行 `python -m pytest -q` 和 `python -m pip check`。整体开发入口见 [开发与验证指南](development.md)。
+修改上游组件时还应在 `Tools/SpritePipeline` 中按其锁定依赖运行 `python -m pytest -q` 和 `python -m pip check`。整体开发入口见 [使用与操作手册](operations-manual.md)。
 
 ## 旧版资产恢复与任务栏
 

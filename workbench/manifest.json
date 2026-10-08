@@ -48,7 +48,7 @@
     "skill": ".agents/skills/2d-game-workbench/SKILL.md",
     "engineering": { "skill": ".agents/skills/forge-game-engineering/SKILL.md", "guide": "docs/game-engineering.md", "deliveryGuide": "docs/godot-delivery.md", "mode": "external-agent", "engine": "Godot 4.7.x", "source": "https://github.com/flxBurnOut/copyWorms", "createsTask": false },
     "expert": "workbench/experts/2d-production-expert.md",
-    "clientConfigs": [".mcp.json", ".codex/config.toml"],
+    "clientConfigs": [".mcp.json"],
     "mcpServer": {
       "transport": "stdio",
       "command": "node",

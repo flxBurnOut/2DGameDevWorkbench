@@ -51,7 +51,6 @@ OpenAI 原图使用 `/v1/images/generations`，扩图继续使用 `/v1/images/ed
 - 拖拽分栏、切换专注和抽屉不会重新创建画布或自动适配。缩放、平移与画布中心对应的地图位置保持稳定；按 0 或点击“适配画布”才重新适配。
 - 底栏合并地图操作提示和制作任务摘要。点击摘要打开完整制作记录，待处理与断连状态仍会显示；点击操作提示可展开完整文本。
 
-布局验收的尺寸、操作步骤和验证边界见 [地图布局验收记录](map-layout-verification.md)。
 
 可靠的分层流程是：
 
@@ -132,9 +131,9 @@ SceneMaker 的 ground 映射到 surface，整体图由旧视觉层合成，矩�
 
 ## 验证
 
-运行 `npm run test:map-stitcher`、`npm run typecheck`、`npm run lint`、`npm run build`。修改 Manifest 后运行 doctor；修改 Agent 桥接后运行 MCP 回归。完整矩阵见 [开发与验证指南](development.md)。
+运行 `npm run test:map-stitcher`、`npm run typecheck`、`npm run lint`、`npm run build`。修改 Manifest 后运行 doctor；修改 Agent 桥接后运行 MCP 回归。完整矩阵见 [使用与操作手册](operations-manual.md)。
 
-`node tests/map-stitcher/fixtures.mjs` 生成纯几何测试素材和兼容状态，写入不提交的 `work/map-ui-repair/fixtures/`。实际浏览器导出后的回读检查见 `tests/map-stitcher/verify-ui-exports.mjs`。历史验收上下文保留在 [前端修复验证快照](MAP_STITCHER_REPAIR_VERIFICATION.md)，它不替代当前测试与本文契约。
+`node tests/map-stitcher/fixtures.mjs` 生成纯几何测试素材和兼容状态，写入不提交的 `work/map-ui-repair/fixtures/`。实际浏览器导出后的回读检查见 `tests/map-stitcher/verify-ui-exports.mjs`。
 
 ### 地图块额外提示词
 

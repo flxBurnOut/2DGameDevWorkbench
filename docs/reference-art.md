@@ -53,13 +53,3 @@ npm run workbench -- status <task-id> --json
 `npm run test:reference-art` 覆盖准备、配置缺失、异步恢复、产物校验、移送和 HTTP；SpritePipeline 的 `tests/test_reference_art.py` 覆盖官方请求结构、一次提交、密钥共用与不回显、图片校验、幂等角色导入及真实 Gradio 角色选择回调。测试使用模拟服务或内存传输，不产生 PixelLab 费用。真实付费生成需要用户在界面或 Agent 中另行发起。
 
 长于 300 字符的生图提示词默认不原样附入动画提示，改用参考图身份锁定，避免“站立不动”等原图要求污染动作或超过动画 API 上限。完整生图提示保留在源任务。物品原图仍固定 128×128。
-
-## 2026-09-09 原生粗像素验收
-
-原生 64×64 角色已实际生成、移送并产出三个动画。14 项 Python 网关测试、Node 原图/物品测试、doctor、适配器、HTTP、MCP、Agent acceptance、资产和壳层检查通过；lint、类型、隔离构建与两份 Skill 校验通过。引擎验收及未采用尝试见游戏的 [资产交接](../games/the-last-light/Docs/asset-handoff.md)。重复移送未显式提供 identityDescription 时沿用现有角色的已确认身份描述；图片、名称、朝向和锚点仍核验。
-
-### 导入已有角色原图
-
-`reference-art` 的 `import` 操作接受仓库内的 `sourceImagePath`、`prompt`（补充展示描述），以及名称、朝向、size（64/128）。只复制经过校验的透明 PNG；不调用模型，也不要求 PixelLab 服务或 Key。任务和结果记录导入来源、原始哈希、`generatedHere:false` 与 `promptOrigin:description-added-on-import`。原图历史显示“导入素材”，点击后恢复提示词并预览，可通过原有校验流程移送序列帧。移送需要本地序列帧服务，但不生成动画。不能把导入记录说成真实生图调用；不改图片、不倒填生成日期。
-
-升级后，已运行的 MCP 需重连以加载 import 适配器；已完成的导入记录可直接在前端历史中查看。

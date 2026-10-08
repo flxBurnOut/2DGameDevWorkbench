@@ -15,7 +15,7 @@ Forge 是一个“外部 Agent 驱动、Web 工作台协作、能力可插拔”
 
 ```mermaid
 flowchart LR
-    A[外部 Agent 客户端] --> I[AGENTS.md + Repository Skill]
+    A[外部 Agent 客户端] --> I[MCP discovery + Repository Skill]
     I --> M[STDIO MCP]
     I --> C[CLI fallback]
     H[人类操作者] --> W[Web 工作台]
@@ -43,7 +43,7 @@ MCP、CLI 和 Web 在允许的能力范围内汇入同一套运行时，因此�
 
 | 层 | 主要位置 | 职责 |
 | --- | --- | --- |
-| 项目指令 | `AGENTS.md`、`.agents/skills/` | 告诉外部 Agent 何时选能力、何时只准备、何时可执行 |
+| 项目指令 | MCP discovery、`.agents/skills/` | 告诉外部 Agent 何时选能力、何时只准备、何时可执行 |
 | 能力清单 | `workbench/manifest.json` | 定义能力 ID、输入 schema、输出、适配器、页面路由与工作流引用 |
 | 接入层 | `scripts/workbench-mcp.mjs`、`scripts/workbench.mjs`、`scripts/workbench-http.mjs` | 分别提供 STDIO MCP、命令行和回环 HTTP 接口 |
 | 共享运行时 | `lib/workbench/runtime.mjs` | 加载与校验清单、创建任务、调度适配器、持久化与恢复状态 |
@@ -129,7 +129,7 @@ Web 工作台提供生产台、场景台、专业工具和高级配置。它负�
 - SpritePipeline 默认监听 `http://127.0.0.1:7860`，健康时复用，否则由总控托管；
 - 当 `SPRITE_PIPELINE_API_URL` 指向非默认或非回环服务时，总控不会接管该进程。
 
-`npm run dev:interactable` 不启动 SpritePipeline，适合只开发本地交互物编辑器。其他拆分命令见 [开发与验证](development.md)。
+`npm run dev:interactable` 不启动 SpritePipeline，适合只开发本地交互物编辑器。其他拆分命令见 [使用与操作手册](operations-manual.md)。
 
 ## 10. 安全边界
 
@@ -141,7 +141,7 @@ Web 工作台提供生产台、场景台、专业工具和高级配置。它负�
 
 ## 11. 扩展原则
 
-新增能力时，应先实现独立适配器和清单条目，再让 MCP、CLI 与 Web 自动消费。若需要外部 API，应把认证、重试、错误归一化和输出验证留在服务端适配器；浏览器只获得完成任务所需的非敏感状态。完整步骤见 [开发与验证](development.md)。
+新增能力时，应先实现独立适配器和清单条目，再让 MCP、CLI 与 Web 自动消费。若需要外部 API，应把认证、重试、错误归一化和输出验证留在服务端适配器；浏览器只获得完成任务所需的非敏感状态。完整步骤见 [使用与操作手册](operations-manual.md)。
 
 ## 场景组装的网页边界
 

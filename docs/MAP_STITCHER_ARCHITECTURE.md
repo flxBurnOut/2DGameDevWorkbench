@@ -57,4 +57,4 @@ PNG 导出预览与 Godot 默认可见图层共享就绪判定。图片拼接、
 
 模块能力只登记在 `workbench/manifest.json`。前端通过共享 Runtime / adapter 执行地图操作；MCP 发现和执行排除该能力，Agent 不得改走 CLI、HTTP 或浏览器工具绕过手动边界；页面七个 WebMCP 工具是对当前浏览器文档的操作入口，共用控制器，不另建编辑模型。服务端密钥不进入客户端、任务记录、日志或编辑状态。
 
-测试和使用方式见 [用户文档](map-stitcher.md) 与 [开发指南](development.md)。[修复验收](MAP_STITCHER_REPAIR_VERIFICATION.md) 是历史快照，只用于追溯该轮修复。
+测试和使用方式见 [用户文档](map-stitcher.md) 与 [使用与操作手册](operations-manual.md)。

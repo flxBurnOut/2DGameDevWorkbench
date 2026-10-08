@@ -363,10 +363,8 @@ class SpritePipelineIntegrationTests(unittest.TestCase):
             self.service.create_character_preset(display_name="No alpha", reference_image=no_alpha)
 
     def test_bundled_action_prompts_fit_the_pixellab_limit(self) -> None:
-        character_paths = [
-            PROJECT_ROOT / "presets" / "characters" / character_id / "character.json"
-            for character_id in ("diagnostic_dummy", "player_cyber")
-        ]
+        character_paths = sorted((PROJECT_ROOT / "presets" / "characters").glob("*/character.json"))
+        self.assertTrue(character_paths)
         action_paths = sorted((PROJECT_ROOT / "presets" / "actions").glob("*.json"))
         self.assertEqual(len(action_paths), 11)
         for character_path in character_paths:

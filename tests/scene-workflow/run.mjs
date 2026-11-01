@@ -145,7 +145,7 @@ test('dynamic consultation, extra observation, isolated object/image execution, 
             slot: 'visual',
           },
           region: { type: 'rectangle', x: 2, y: 2, width: 8, height: 8 },
-          operation: { type: 'replace-color', from: '#996633', to: '#665544' },
+          operation: { type: 'palette-map', pairs: [{ from: '#996633', to: '#665544' }, { from: '#665544', to: '#996633' }] },
           preserveAlpha: true,
         },
         ['place-lever'],
@@ -248,6 +248,9 @@ test('dynamic consultation, extra observation, isolated object/image execution, 
   );
   assert.equal(candidate.content.instances[1].materialId, 'lever-material');
   assert.equal(work.steps[2].imageEvidence.diff.changedOutsideRegion, 0);
+  const placed = await service.request('scene-workflow-observe', { workId: work.id, imageStepId: work.steps[2].id });
+  assert.equal(placed.evidence.candidateSha256, work.steps[2].imageEvidence.sha256);
+  assert.deepEqual(placed.images.map(i => i.role), ['base', 'candidate']);
   const replay = work.evidence.find((e) => e.id.startsWith('replay-'));
   assert.equal(replay.objects.find((o) => o.id === 'gate').solidEnabled, false);
   assert.equal(replay.objects.find((o) => o.id === 'gate').visible, false);

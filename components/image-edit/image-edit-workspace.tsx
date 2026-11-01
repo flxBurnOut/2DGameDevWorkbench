@@ -4,6 +4,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
+import { PlacementComparison } from './placement-comparison';
+import { MetalPanelDialog } from './metal-panel-dialog';
+import { cropPanel, type PanelCrop } from '@/features/image-edit/metal-panel.mjs';
+import { MAX_PALETTE_PAIRS, planImageIntent, type PalettePair } from '@/features/image-edit/edit-intent.mjs';
 import { Button } from '@/components/ui/button';
 import { PixelController } from '@/features/image-edit/pixel-controller.mjs';
 import { base64ToBytes, encodePixelPatch, imageAiEditInput, imageApplyInput, imageCandidateBase, imageCandidateFollowState, imageEditInput, imageEditRequest, imageInspectionMetadata, imageResolveInput, imageSessionNeedsPolling, imageSourceActionBlockReason, ImageEditClientError, inspectImage, listImagePixelDrafts, mergeImageInspectionPage, mergeImageWorkspaceRefresh, openImageSession, performImageSourceAction, readImageAiReference, readImageEdit, saveImagePixelDraft, validateAiReferences } from '@/features/image-edit/client';
@@ -36,7 +40,7 @@ interface PendingCommand { label: string; operation: string; body: unknown; exte
 interface LoadedWorkspace { metadata: ImageInspection; session: ImageEditSession; controller: PixelController; baseVersion: string; baseHash: string; followVersion?: string; originalPreviewSource?: string; basePreviewSource?: string }
 const plainSession = (value: ImageEditSession) => { const { pixels: _pixels, ...rest } = value; return rest; };
 const metadataOnly = imageInspectionMetadata;
-const operationNames: Record<string, string> = { 'pixel-patch': '手工笔划', 'clean-alpha': '透明噪点清理', 'replace-color': '精确替色', fill: '连通填充', erase: '擦除', translate: '移动像素', 'restore-region': '恢复区域', 'source-restore': '恢复原图', 'ai-edit': 'AI 修改' };
+const operationNames: Record<string, string> = { 'metal-panel': '拼板换金属', 'palette-map': '多色替换', 'pixel-patch': '手工笔划', 'clean-alpha': '透明噪点清理', 'replace-color': '精确替色', fill: '连通填充', erase: '擦除', translate: '移动像素', 'restore-region': '恢复区域', 'source-restore': '恢复原图', 'ai-edit': 'AI 修改' };
 const statusNames: Record<string, string> = { completed: '已生成 · 待确认效果', running: '处理中', preparing: '准备中', failed: '失败', attention_required: '需要检查', awaiting_configuration: '等待配置' };
 const tools: { id: ImagePixelTool; name: string }[] = [{ id: 'pencil', name: '画笔' }, { id: 'eraser', name: '橡皮' }, { id: 'mask-add', name: '涂选' }, { id: 'rectangle', name: '矩形选区' }, { id: 'connected', name: '连通选区' }, { id: 'picker', name: '取色' }, { id: 'pan', name: '平移' }];
 const message = (error: unknown) => error instanceof Error ? error.message : '局部调整未完成。';
@@ -75,6 +79,14 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
   const [contextPreview, setContextPreview] = useState<{ controller: PixelController; version: number; display: ImageViewMode; url: string } | null>(null);
   const [aiPreserveAlpha, setAiPreserveAlpha] = useState(true);
   const [mode, setMode] = useState<'local' | 'ai'>('ai'), [aiPrompt, setAiPrompt] = useState(''), [aiReferences, setAiReferences] = useState<ImageAiReference[]>([]), [referencesLoading, setReferencesLoading] = useState(false), [savedAiDraft, setSavedAiDraft] = useState('');
+  const [extraPairs, setExtraPairs] = useState<PalettePair[]>([]);
+  const [panelTrial, setPanelTrial] = useState<{ crop: PanelCrop; id: string; base: string; region: RegionSpec; maskRevision: number } | null>(null);
+  const pairs = [{ from: replaceFrom, to: replaceTo }, ...extraPairs];
+  const duplicateColor = new Set(pairs.map(pair => pair.from.toLowerCase())).size !== pairs.length;
+  const intent = planImageIntent(aiPrompt, aiReferences.length > 0);
+  const localIntent = intent.route === 'local';
+  const exactColorIntent = intent.operation?.type === 'replace-color' || intent.operation?.type === 'palette-map';
+  const keepsIntentAlpha = localIntent ? exactColorIntent : aiPreserveAlpha;
   const dialog = useRef<HTMLDialogElement>(null), busyRef = useRef(false), draftOwner = useRef('');
   const boot = useRef<{ key: string; attempt: ImageSessionBootstrap; promise: Promise<LoadedWorkspace> } | null>(null);
   const nextSession = useRef<ImageSessionBootstrap | null>(null);
@@ -251,7 +263,7 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
       setNotice('已更换修改基准，选区与选区历史保留。');
     } catch (cause) { setError(message(cause)); }
   };
-  const runOperation = async (operation: ImageEditOperation, references: readonly ImageAiReference[] = []) => {
+  const runOperation = async (operation: ImageEditOperation, references: readonly ImageAiReference[] = [], fromDescription = false) => {
     if (!loaded || blocked || busyRef.current || !loaded.controller.region) return;
     if (loaded.controller.maskStrokeActive) { setError('请先结束当前选区笔划，再提交候选。'); return; }
     if (operation.type !== 'pixel-patch' && loaded.controller.dirty) { setError('请先将未保存笔划保存为候选，再执行其他操作。'); return; }
@@ -262,7 +274,7 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
     let body: ReturnType<typeof imageEditInput>;
     try {
       const { regionRef } = await imageEditRequest<{ regionRef: string }>('resolve', imageResolveInput(current.metadata.target, region));
-      body = operation.type === 'ai-edit' ? imageAiEditInput(current.metadata.target, current.session, current.baseVersion, regionRef, operation.prompt, frozenReferences, current.controller.dirty, commandId, aiPreserveAlpha) : imageEditInput(current.metadata.target, current.session, current.baseVersion, regionRef, operation, preserveAlpha, commandId);
+      body = operation.type === 'ai-edit' ? imageAiEditInput(current.metadata.target, current.session, current.baseVersion, regionRef, operation.prompt, frozenReferences, current.controller.dirty, commandId, aiPreserveAlpha) : imageEditInput(current.metadata.target, current.session, current.baseVersion, regionRef, operation, operation.type === 'metal-panel' || (fromDescription ? keepsIntentAlpha : preserveAlpha), commandId);
     }
     catch (cause) { setError(message(cause)); busyRef.current = false; setBusy(''); return; }
     busyRef.current = false;
@@ -270,7 +282,7 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
       label: external ? '正在提交 AI 候选请求' : '正在保存本地候选', operation: 'edit', body, external,
       complete: async value => {
         const result = value as { edit: ImageEditSession; candidateVersion: string; status: string };
-        if (external) setSavedAiDraft(submittedAiKey);
+        if (external || fromDescription) setSavedAiDraft(submittedAiKey);
         if (result.status !== 'completed') {
           const stopped = ['failed', 'attention_required', 'awaiting_configuration'].includes(result.status);
           setLoaded(old => old?.session.editId === result.edit.editId ? { ...old, session: plainSession(result.edit), followVersion: stopped ? undefined : result.candidateVersion } : old);
@@ -416,7 +428,7 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
   const candidate = viewedCandidate;
   const versionName = (id?: string) => !id || id === 'source' ? '会话原图' : `候选 ${(loaded?.session.candidates.findIndex(item => item.version === id) ?? -1) + 1}`;
   const content = <div className="ie-backdrop"><dialog open ref={dialog} aria-modal="true" aria-labelledby="ie-title" tabIndex={-1} className="ie-workspace" onKeyDown={keyDown}>
-    <header className="ie-header"><div><h2 id="ie-title">局部调整</h2><p>{loaded?.metadata.target.name || '读取已有图片'}{loaded && ` · ${loaded.metadata.target.width} × ${loaded.metadata.target.height}`}</p></div><div className="ie-header-actions"><span className="ie-local-badge">{mode === 'ai' ? 'AI 修改 · 调用图片服务' : '本地精修 · 不调用图片服务'}</span><Button variant="ghost" onClick={close}>关闭</Button></div></header>
+    <header className="ie-header"><div><h2 id="ie-title">局部调整</h2><p>{loaded?.metadata.target.name || '读取已有图片'}{loaded && ` · ${loaded.metadata.target.width} × ${loaded.metadata.target.height}`}</p></div><div className="ie-header-actions"><span className="ie-local-badge">{mode === 'ai' && !localIntent ? '外观修改 · 图片服务' : '本地操作 · 无需生图'}</span><Button variant="ghost" onClick={close}>关闭</Button></div></header>
     {!loaded && <div className="ie-loading"><p>{busy || error || '准备编辑工作区'}</p>{!busy && <><Button onClick={() => setRetryLoad(value => value + 1)}>重试同一次打开</Button><Button variant="ghost" onClick={() => { boot.current = null; setRetryLoad(value => value + 1); }}>按当前目标重新打开</Button></>}</div>}
     {loaded && controller && <>
       <div className="ie-main">
@@ -439,6 +451,7 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
           <div className="ie-modebar"><Button size="sm" variant={mode === 'local' ? 'secondary' : 'ghost'} onClick={() => switchMode('local')}>本地精修</Button><Button size="sm" variant={mode === 'ai' ? 'secondary' : 'ghost'} onClick={() => switchMode('ai')}>AI 局部修改</Button><span>{mode === 'ai' ? '选范围 → 描述修改 → 生成 → 对比' : '选范围 → 绘制 → 保存候选'}</span></div>
           <div className="ie-compare" aria-label="图片对比">{([{ id: 'candidate', name: '修改后' }, { id: 'source', name: '修改前' }, { id: 'diff', name: '差异高亮' }] as const).map(item => <Button key={item.id} size="sm" variant={display === item.id ? 'secondary' : 'ghost'} onClick={() => { setSelectionVisible(false); setDisplay(item.id); if (item.id === 'diff' && renderContext) setShowContext(false); }}>{item.name}</Button>)}{(contextLayers.length > 0 || renderContext) && <label><input type="checkbox" checked={showContext} onChange={event => { setShowContext(event.target.checked); if (event.target.checked && display === 'diff' && renderContext) setDisplay('candidate'); }} />{renderContext ? '场景上下文' : '地图上下文'}</label>}</div>
           <div className="ie-view-state"><span>查看：{versionName(viewedVersion)} · 对比基准：{versionName(beforeVersion)}</span>{view && <Button size="sm" disabled={!!busy || !!pending || !!viewLoading || !canContinue || controller.dirty} onClick={editViewed}>以此版本继续修改</Button>}{view && controller.dirty && <span>未保存笔划保留在 {versionName(loaded.baseVersion)}，切回后可继续。</span>}{viewLoading && <><output>正在读取 {versionName(viewLoading)}，保留当前画面…</output><Button size="sm" variant="ghost" onClick={cancelView}>取消等待</Button></>}{display !== 'candidate' && !beforeImage && <span>正在读取对比基准…</span>}</div>
+          {candidate?.status === 'completed' && <PlacementComparison key={loaded.session.editId + candidate.version} session={loaded.session} version={candidate.version} />}
           {showContext && renderContext && <div className="ie-context-preview">{contextPreviewUrl ? <div className="ie-context-image" key={contextPreviewUrl}>{renderContext(contextPreviewUrl)}</div> : <p>正在准备当前版本的只读上下文…</p>}<p className="ie-hint">仅预览所选图片位置，不修改其他实例、源包或运行状态；上下文不会自动上传。</p></div>}
           <div className="ie-source-pane" style={{ display: showContext && renderContext ? 'none' : undefined }}><ImageEditCanvas controller={controller} version={version} tool={tool} color={color} alpha={alpha} brushSize={tool === 'mask-add' ? maskBrushSize : brushSize} display={display} viewPixels={viewPixels} beforePixels={beforeImage?.pixels} selectionMode={selectionMode} selectionVisible={selectionVisible} onSelectionVisible={setSelectionVisible} disabled={blocked} tolerance={tolerance} contextLayers={contextLayers} showContext={showContext && !renderContext} onChange={changed} onColor={(nextColor, nextAlpha) => { setColor(nextColor); setAlpha(nextAlpha); }} onError={setError} /></div>
         </section>
@@ -458,10 +471,38 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
             {loaded.metadata.relatedPagination?.namedRegions.nextOffset != null && <Button size="sm" variant="outline" onClick={() => void loadMoreRelated('namedRegions')}>加载更多区域（已显示 {loaded.metadata.namedRegions?.length || 0}/{loaded.metadata.relatedPagination.namedRegions.total}）</Button>}
             </>}
           </fieldset>
+          <Button variant="outline" size="sm" disabled={blocked || controller.dirty || !controller.region} onClick={() => {
+            if (!controller.region) return;
+            try {
+              setPanelTrial({ crop: cropPanel(controller.basePixels, controller.mask, controller.width, controller.height), id: loaded.session.editId,
+                base: loaded.baseVersion, region: controller.region, maskRevision: controller.maskRevision });
+              setError('');
+            } catch (cause) { setError(message(cause)); }
+          }}>拼板换金属 · 试验</Button>
+          {panelTrial && !blocked && panelTrial.id === loaded.session.editId && panelTrial.base === loaded.baseVersion && panelTrial.maskRevision === controller.maskRevision &&
+            <MetalPanelDialog crop={panelTrial.crop} target={loaded.metadata.target} region={panelTrial.region} editId={loaded.session.editId}
+              revision={loaded.session.revision} baseVersion={loaded.baseVersion} baseHash={loaded.baseHash} onClose={() => setPanelTrial(null)}
+              onSave={(op, confirmed) => { controller.selectRegion(confirmed); setPanelTrial(null); changed(); void runOperation(op); }}
+              onAiDraft={(confirmed, reference) => {
+                const refs = [...aiReferences, reference]; validateAiReferences(refs);
+                const instruction = '将选中板面改为铁板，覆盖原木纹，保留拼缝、铁件、光向和画风。最后一张参考图为金属板反光示意，只表示反光的位置、方向和宽度。';
+                const prompt = [aiPrompt.trim(), instruction].filter(Boolean).join('\n');
+                if (prompt.length > 12000) throw new Error('请先缩短现有描述，再添加反光示意。');
+                controller.selectRegion(confirmed); setAiPrompt(prompt); setAiReferences(refs); setAiPreserveAlpha(true);
+                switchMode('ai'); setPanelTrial(null); setSelectionVisible(true); changed(); setNotice('已准备板面范围与反光参考，可检查描述后生成 AI 候选。');
+              }} />}
           {mode === 'local' && <fieldset disabled={blocked || controller.dirty || !controller.selectionCount}><legend>本地操作</legend>
             <label><input type="checkbox" checked={preserveAlpha} onChange={event => setPreserveAlpha(event.target.checked)} />保持所有 Alpha 通道</label>
             <label>低 Alpha 阈值<input type="number" min={0} max={16} value={threshold} onChange={event => setThreshold(Math.max(0, Math.min(16, Number(event.target.value))))} /></label><Button size="sm" variant="outline" onClick={() => void runOperation({ type: 'clean-alpha', threshold })}>清理透明噪点</Button>
-            <div className="ie-row"><label>原色<input type="color" value={replaceFrom} onChange={event => setReplaceFrom(event.target.value)} /></label><label>替换色<input type="color" value={replaceTo} onChange={event => setReplaceTo(event.target.value)} /></label></div><Button size="sm" variant="outline" onClick={() => void runOperation({ type: 'replace-color', from: replaceFrom, to: replaceTo })}>精确替色</Button>
+            <div className="ie-row"><label>原色<input type="color" value={replaceFrom} onChange={event => setReplaceFrom(event.target.value)} /></label><label>替换色<input type="color" value={replaceTo} onChange={event => setReplaceTo(event.target.value)} /></label></div>
+            {extraPairs.map((pair, index) => <div className="ie-row" key={index}>
+              {(['from', 'to'] as const).map(field => <label key={field}>{field === 'from' ? '原色' : '替换色'} {index + 2}<input type="color" value={pair[field]} onChange={event => setExtraPairs(extraPairs.map((item, i) => i === index ? { ...item, [field]: event.target.value } : item))} /></label>)}
+              <Button size="sm" variant="ghost" onClick={() => setExtraPairs(extraPairs.filter((_, i) => i !== index))}>移除第 {index + 2} 对</Button>
+            </div>)}
+            <Button size="sm" variant="outline" disabled={pairs.length >= MAX_PALETTE_PAIRS} onClick={() => setExtraPairs([...extraPairs, { from: color, to: replaceTo }])}>添加颜色对</Button>
+            {duplicateColor && <output>原色重复，请为每种原色指定一个结果。</output>}
+            <p className="ie-hint">{loaded.metadata.target.name} · 选区 {controller.selectionCount} 像素 · {pairs.length} 对原色同时替换 · 保留透明度 · 本地执行</p>
+            <Button size="sm" variant="outline" disabled={duplicateColor || !controller.selectionCount} onClick={() => void runOperation(extraPairs.length ? { type: 'palette-map', pairs } : { type: 'replace-color', from: replaceFrom, to: replaceTo })}>{extraPairs.length ? '一次多色替换' : '精确替色'}</Button>
             <div className="ie-row"><label>种子 X<input type="number" min={0} max={controller.width - 1} value={seedX} onChange={event => setSeedX(Number(event.target.value))} /></label><label>Y<input type="number" min={0} max={controller.height - 1} value={seedY} onChange={event => setSeedY(Number(event.target.value))} /></label></div><Button size="sm" variant="outline" onClick={() => void runOperation({ type: 'fill', x: seedX, y: seedY, rgba: [parseInt(color.slice(1, 3), 16), parseInt(color.slice(3, 5), 16), parseInt(color.slice(5, 7), 16), alpha] })}>用画笔颜色填充</Button>
             <div className="ie-row"><label>移动 X<input type="number" min={-3839} max={3839} value={dx} onChange={event => setDx(Number(event.target.value))} /></label><label>Y<input type="number" min={-3839} max={3839} value={dy} onChange={event => setDy(Number(event.target.value))} /></label></div><Button size="sm" variant="outline" onClick={() => void runOperation({ type: 'translate', dx, dy })}>移动矩形内像素</Button>
             <Button size="sm" variant="outline" onClick={() => void runOperation({ type: 'erase' })}>擦除选区内像素</Button>
@@ -470,19 +511,23 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
           {mode === 'ai' && <fieldset disabled={blocked}><legend>2 · 描述修改</legend>
             <p className="ie-hint">范围：{controller.selectionCount === controller.width * controller.height ? '整张图片' : `${controller.selectionCount.toLocaleString()} 个选区像素`}。只有选中的范围会被替换。</p>
             <p className="ie-hint">基准：{loaded.baseVersion === 'source' ? '会话原始图' : `候选 ${loaded.session.candidates.findIndex(item => item.version === loaded.baseVersion) + 1}`}。生成结果会保存为新候选。</p>
-            {!loaded.metadata.target.aiEdit?.supported && <output className="ie-ai-reason">{loaded.metadata.target.aiEdit?.reason || '尚未取得 AI 编辑可用性，请刷新目标状态。'} 小像素图仍可本地精修，不会自动放大。</output>}
-            {loaded.metadata.target.aiEdit?.supported && <p className="ie-hint">{loaded.metadata.target.aiEdit.model || loaded.metadata.target.aiEdit.provider} · 保持 {controller.width} × {controller.height} 尺寸</p>}
-            <label><input type="checkbox" checked={aiPreserveAlpha} onChange={event => setAiPreserveAlpha(event.target.checked)} />保留原图透明度</label>
+            {!localIntent && !loaded.metadata.target.aiEdit?.supported && <output className="ie-ai-reason">{loaded.metadata.target.aiEdit?.reason || '尚未取得 AI 编辑可用性，请刷新目标状态。'} 小像素图仍可本地精修，不会自动放大。</output>}
+            {!localIntent && loaded.metadata.target.aiEdit?.supported && <p className="ie-hint">{loaded.metadata.target.aiEdit.model || loaded.metadata.target.aiEdit.provider} · 保持 {controller.width} × {controller.height} 尺寸</p>}
+            <label><input type="checkbox" checked={keepsIntentAlpha} disabled={localIntent} onChange={event => setAiPreserveAlpha(event.target.checked)} />保留原图透明度</label>
             <p className="ie-hint">保留本次基准图的透明边缘，包括半透明像素；连续精修以所选候选为准。需要改变轮廓时关闭。</p>
             <label>修改描述<textarea rows={5} maxLength={12000} value={aiPrompt} placeholder="例如：将门框改为生锈的铁质，保留门洞布局" onChange={event => setAiPrompt(event.target.value)} /></label>
+            <p className="ie-hint">精确换色可逐行填写 #112233 → #445566。完整配色表、明确的“擦除选区像素”或“移动选区(2,0)”在本地执行。</p>
             <span className="ie-label">{aiPrompt.length.toLocaleString()}/12,000 字</span>
             <details className="ie-reference-options"><summary>参考图（可选） · {aiReferences.length}/8</summary><label>可选参考图（最多 8 张）<input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={referencesLoading || aiReferences.length >= 8} onChange={event => void addAiReferences(event)} /></label>
             {referencesLoading && <output>正在冻结参考图字节…</output>}
             <div className="ie-ai-references">{aiReferences.map(reference => <div key={reference.id}><img src={reference.source} alt={reference.name} /><span title={reference.name}>{reference.name}</span><Button size="xs" variant="ghost" disabled={referencesLoading} onClick={() => setAiReferences(current => current.filter(item => item.id !== reference.id))}>移除</Button></div>)}</div>
             <p className="ie-hint">单张不超过 30 MiB，合计不超过 32 MiB。只发送已选参考；地图上下文不会自动上传。</p></details>
-            <p className="ie-hint">选区外像素保持不变。{aiPreserveAlpha ? '透明度逐像素保持，不额外清理低透明度像素。' : '选区内透明度可能变化。'}颜色、内部细节、接缝与碰撞适配仍需检查。</p>
+            <p className="ie-hint">选区外像素保持不变。{keepsIntentAlpha ? '透明度逐像素保持，不额外清理低透明度像素。' : '选区内透明度可能变化。'}颜色、内部细节、接缝与碰撞适配仍需检查。</p>
             {controller.dirty && <output className="ie-ai-reason">仍有未保存笔划，请用左侧“保存笔划为候选”保存，再生成 AI 候选。</output>}
-            <Button disabled={!loaded.metadata.target.aiEdit?.supported || controller.dirty || !controller.selectionCount || !aiPrompt.trim() || referencesLoading} onClick={() => void runOperation({ type: 'ai-edit', prompt: aiPrompt }, aiReferences)}>生成 AI 候选（调用模型）</Button>
+            {intent.route === 'invalid' && <output>{intent.reason}</output>}
+            {intent.operation && <p className="ie-hint" aria-live="polite">本次编辑 · {loaded.metadata.target.name} · {controller.selectionCount} 个可写像素 · {localIntent ? (operationNames[intent.operation.type] + '，本地执行') : '按描述生成外观，调用一次图片服务'}。选区外四通道受保护。{!localIntent && '描述中的材质、光向和结构需看候选核对。'}</p>}
+            <Button disabled={(!localIntent && !loaded.metadata.target.aiEdit?.supported) || controller.dirty || !controller.selectionCount || !intent.operation || referencesLoading}
+              onClick={() => intent.operation && void runOperation(intent.operation, aiReferences, true)}>{localIntent ? (exactColorIntent ? '按配色生成本地候选' : '执行本地操作') : '生成 AI 候选（调用模型）'}</Button>
           </fieldset>}
           <p className="ie-hint">选区外保持原样。生成后先比较效果，再决定是否采用。</p>
           {darkWarning && <output className="ie-warning">此候选有大面积新增近黑像素，可能是模型返回异常。请检查实际效果；若本来就要改为黑色，可继续采用。保护检查通过不代表画面正确。</output>}

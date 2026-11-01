@@ -83,7 +83,7 @@ Commands:
   run <capability-id> --input <json-file> [--json]
   status <task-id> [--json]
 
-Image editing agent operations: image-inspect, image-resolve, image-edit,
+Image editing agent operations: image-inspect, image-resolve, image-panel-suggest, image-edit,
   image-apply, image-session-create, image-session-get (canonical Bridge required).
 Scene collaboration agent operations: scene-workflow-list, scene-workflow-create,
   scene-workflow-get, scene-workflow-execute, scene-workflow-revise,

@@ -92,10 +92,17 @@ export function describePlanStep(step: { kind?: unknown; input?: unknown }, name
     row('修改目标', target.kind === 'scene-layer' ? readableValue(target.layerId, 'layerId', names) : readableValue(target.instanceId, 'instanceId', names));
     if (target.slot) row('外观位置', target.slot, 'slot');
     if (target.index !== undefined) row('状态或条目', `第 ${Number(target.index) + 1} 项`);
-    const operations: Record<string, string> = { 'clean-alpha': '清理透明边缘', 'replace-color': '替换颜色', fill: '填充颜色', erase: '擦除', translate: '移动选区', 'restore-region': '恢复选区', 'pixel-patch': '应用像素修改', 'ai-edit': 'AI 局部修改' };
+    const operations: Record<string, string> = { 'metal-panel': '拼板换金属', 'palette-map': '一次多色替换', 'clean-alpha': '清理透明边缘', 'replace-color': '替换颜色', fill: '填充颜色', erase: '擦除', translate: '移动选区', 'restore-region': '恢复选区', 'pixel-patch': '应用像素修改', 'ai-edit': 'AI 局部修改' };
     row('修改方式', operations[textValue(operation.type)] || operation.type);
+    row('执行方式', operation.type === 'ai-edit' ? '调用图片服务' : '本地像素操作');
+    if (operation.type === 'palette-map') {
+      for (const value of arrayValue(operation.pairs)) {
+        const pair = objectValue(value);
+        row('配色', textValue(pair.from) + ' → ' + textValue(pair.to));
+      }
+    }
     if (operation.prompt) row('修改描述', operation.prompt);
-    for (const [key, value] of Object.entries(operation)) if (!['type', 'prompt', 'references', 'spans', 'baseRgbaSha256', 'candidateVersion'].includes(key)) row(labels[key] || key, value);
+    for (const [key, value] of Object.entries(operation)) if (!['type', 'pairs', 'prompt', 'references', 'spans', 'baseRgbaSha256', 'candidateVersion'].includes(key)) row(labels[key] || key, value);
     if (operation.references) row('参考图片', `${arrayValue(operation.references).length} 张`);
     row('区域', describeRegion(input.region)); row('保留透明度', input.preserveAlpha);
   }

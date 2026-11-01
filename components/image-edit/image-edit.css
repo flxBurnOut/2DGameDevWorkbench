@@ -73,3 +73,29 @@
 .ie-tool-buttons, .ie-tool-settings { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
 .ie-tool-buttons button { padding-inline: 4px; }
 @media(max-width:900px) { .ie-tool-buttons, .ie-tool-settings { grid-template-columns: minmax(0,1fr); } }
+
+.ie-placement { padding: .4rem .75rem; max-height: 45%; overflow: auto; flex: none; }
+.ie-placement-scroll { display: flex; gap: .75rem; overflow: auto; align-items: start; }
+.ie-placement-scroll figure { flex: none; margin: 0; }
+.ie-placement-scroll img { display: block; max-width: none; image-rendering: pixelated; }
+
+.ie-metal-dialog { position: fixed; inset: 0; margin: auto; width: min(880px, 95vw); max-height: 92dvh; overflow: auto; padding: 18px; color: var(--foreground); background: var(--background); border: 1px solid var(--border); border-radius: 10px; }
+.ie-metal-dialog::backdrop { background: #101820a8; }
+.ie-metal-dialog > header, .ie-metal-dialog > footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.ie-metal-dialog h2 { font-size: 17px; font-weight: 600; }
+.ie-metal-dialog p, .ie-metal-dialog output { font-size: 12px; }
+.ie-metal-dialog p { margin: 8px 0; color: var(--muted-foreground); }
+.ie-metal-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(195px, .52fr); gap: 16px; }
+.ie-metal-layout .ie-metal-image { display: grid; place-items: center; min-height: 120px; margin-top: 8px; background: var(--muted); }
+.ie-metal-image canvas { display: block; height: auto; touch-action: none; cursor: crosshair; image-rendering: pixelated; }
+.ie-metal-layout fieldset { display: grid; align-content: start; min-width: 0; gap: 8px; padding: 0; border: 0; }
+.ie-metal-layout legend { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.ie-metal-layout label { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; font-size: 12px; }
+.ie-metal-layout input[type=range] { grid-column: 1 / -1; width: 100%; min-width: 0; height: 16px; accent-color: var(--primary); }
+.ie-metal-layout input[type=color] { width: 54px; height: 24px; }
+.ie-metal-layout input[type=number] { width: 54px; border: 1px solid var(--border); border-radius: 4px; }
+.ie-metal-dialog .ie-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.ie-metal-dialog .ie-row > * { flex: 0 1 auto; }
+.ie-metal-dialog footer { margin-top: 14px; justify-content: flex-end; }
+.ie-metal-dialog [role=alert] { color: var(--destructive); }
+@media (max-width: 620px) { .ie-metal-layout { grid-template-columns: 1fr; } }

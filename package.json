@@ -52,7 +52,7 @@
     "test:desktop-services": "node tests/desktop-services/run.mjs",
     "test:prop-art": "node tests/prop-art/run.mjs",
     "test:image-assets": "node tests/image-assets/run.mjs && node tests/image-assets/processing.mjs && node tests/image-assets/frontend.mjs",
-    "test:image-edit": "node tests/image-edit/core.mjs && node tests/image-edit/targets.mjs && node tests/image-edit/run.mjs && node tests/image-edit/restore.mjs && node tests/image-edit/frontend.mjs && node tests/image-edit/ai.mjs && node tests/image-edit/ai-recovery.mjs && node tests/image-edit/scene-sources.mjs && node tests/image-edit/references.mjs && node tests/image-edit/presentation.mjs && node tests/image-edit/transport.mjs",
+    "test:image-edit": "node tests/image-edit/core.mjs && node tests/image-edit/metal-panel.mjs && node tests/image-edit/targets.mjs && node tests/image-edit/run.mjs && node tests/image-edit/restore.mjs && node tests/image-edit/frontend.mjs && node tests/image-edit/ai.mjs && node tests/image-edit/ai-recovery.mjs && node tests/image-edit/scene-sources.mjs && node tests/image-edit/references.mjs && node tests/image-edit/presentation.mjs && node tests/image-edit/transport.mjs",
     "test:editor-documents": "node tests/editor-documents/run.mjs && node tests/editor-documents/frontend-sync.mjs && node tests/editor-documents/library.mjs",
     "test:scene-observation": "node tests/scene-observation/run.mjs",
     "test:route-a": "node tests/route-a/run.mjs && node tests/route-a/audit.mjs",

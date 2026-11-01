@@ -146,13 +146,18 @@ function registerTool(name, options, handler) {
       if (sceneFollowing.has(sceneOperation) || ['workbench_list_capabilities','workbench_describe_capability','workbench_present','workbench_run_task','workbench_get_task','workbench_get_frontend_context','workbench_edit_image_region','workbench_get_image_edit'].includes(name)) {
         value = await workbuddyPreview.decorate(await loadManifest(), value, value.frontendPresentation?.viewPath || value.presentation?.actions?.[0]?.viewPath || value.presentation?.viewPath || value.viewPath || value.capability?.ui?.route || '/');
       }
-      if (value.imageBase64 || value.edit?.pixels?.imageBase64) {
+      if (value.imageBase64 || value.edit?.pixels?.imageBase64 || value.edit?.comparison) {
         const { imageBase64, ...metadata } = value;
         const images = imageBase64 ? [{ data: imageBase64, mimeType: value.imageMimeType || 'image/png' }] : [];
         if (value.edit?.pixels?.imageBase64) {
           const { imageBase64: candidateImage, ...pixels } = value.edit.pixels;
           metadata.edit = { ...value.edit, pixels };
           images.push({ data: candidateImage, mimeType: value.edit.pixels.imageMimeType || 'image/png' });
+        }
+        if (value.edit?.comparison) {
+          const { beforePng, afterPng, ...comparison } = value.edit.comparison;
+          metadata.edit = { ...metadata.edit, comparison };
+          images.push({ data: beforePng, mimeType: 'image/png' }, { data: afterPng, mimeType: 'image/png' });
         }
         const result = success(metadata, name);
         result.content.push(...images.map(image => ({ type: 'image', ...image })));
@@ -410,7 +415,7 @@ for (const [name, operation, description] of documentTools) {
   registerTool(name, { description, inputSchema: documentInputs[operation].shape, annotations: { readOnlyHint: ['documents', 'document-get', 'document-observe', 'document-validate', 'document-simulate'].includes(operation), destructiveHint: false, idempotentHint: operation !== 'document-export', openWorldHint: false } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of imageEditTools) {
-  registerTool(name, { description, inputSchema: imageEditInputs[operation].shape, annotations: { readOnlyHint: ['image-inspect', 'image-session-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: operation === 'image-edit' } }, async input => agentRequest(await loadManifest(), operation, input));
+  registerTool(name, { description, inputSchema: imageEditInputs[operation].shape, annotations: { readOnlyHint: ['image-inspect', 'image-session-get', 'image-panel-suggest'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: operation === 'image-edit' } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of previewTools) {
   registerTool(name, {

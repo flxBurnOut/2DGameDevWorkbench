@@ -74,6 +74,11 @@ try {
   for (const name of ['workbench_inspect_image_target', 'workbench_resolve_image_region', 'workbench_edit_image_region', 'workbench_apply_image_candidate', 'workbench_get_image_edit']) check(tools.tools.some(tool => tool.name === name), true);
   const mcp = await client.callTool({ name: 'workbench_inspect_image_target', arguments: { targetId: target.targetId, view: 'source' } });
   check(mcp.isError, undefined); check(mcp.content.filter(block => block.type === 'image').length, 1); check(mcp.structuredContent.imageBase64, undefined);
+  const comparison = await client.callTool({ name: 'workbench_get_image_edit', arguments: { editId: edited.edit.editId, candidateVersion: edited.candidateVersion, comparison: { previewWidth: 48 } } });
+  check(comparison.isError, undefined);
+  check(comparison.content.filter(block => block.type === 'image').length, 2);
+  check(comparison.structuredContent.edit.comparison.candidateVersion, edited.candidateVersion);
+  check(comparison.structuredContent.edit.comparison.beforePng, undefined);
   const selectedPath = `/tools/interactable-editor?${new URLSearchParams({ imageEdit: edited.edit.editId, imageCandidate: edited.candidateVersion, document: project.projectId, object: object.definitionId })}`;
   const previewParams = new URLSearchParams(selectedPath.split('?')[1]); previewParams.sort();
   const previewPath = `/tools/interactable-editor?${previewParams}`;

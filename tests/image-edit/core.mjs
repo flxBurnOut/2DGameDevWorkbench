@@ -1,3 +1,4 @@
+import { planImageIntent } from '../../features/image-edit/edit-intent.mjs';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import * as character from '../../Tools/SpritePipeline/sprite_pipeline/static/pixel_editor_core.js';
@@ -87,6 +88,23 @@ test('exact RGB replacement preserves all alpha values and every protected chann
   assert.equal(result.changedPixelCount, 2);
   assert.deepEqual(pixels, before);
   assert.notEqual(result.pixels, pixels);
+});
+test('intent routing only converts whole explicit pixel instructions', () => {
+  assert.equal(planImageIntent('将 #112233 替换为 #445566').operation.type, 'replace-color');
+  assert.equal(planImageIntent('#112233 → #445566，保留反光').route, 'ai');
+  assert.equal(planImageIntent('#112233 → #445566', true).route, 'ai');
+  assert.equal(planImageIntent('#abcdef → #112233，#ABCDEF → #998877').route, 'invalid');
+  assert.equal(planImageIntent('擦除选区像素').operation.type, 'erase');
+  assert.deepEqual(planImageIntent('移动选区(-3, 1)').operation, { type: 'translate', dx: -3, dy: 1 });
+});
+test('simultaneous palette swaps do not cascade or touch protected RGBA', () => {
+  const input = rgba([[255,0,0,0],[0,255,0,128],[255,0,0,255],[1,2,3,255]]);
+  const mask = new Uint8Array([1,1,0,1]);
+  const pairs = [{from:'#FF0000',to:'#00ff00'}, {from:'#00FF00',to:'#ff0000'}];
+  const result = run(input, 4, 1, mask, {type:'palette-map', pairs});
+  assert.deepEqual([...result.pixels], [0,255,0,0,255,0,0,128,255,0,0,255,1,2,3,255]);
+  assert.equal(result.changedPixelCount, 2);
+  assert.throws(() => run(input, 4, 1, mask, {type:'palette-map', pairs:[...pairs,{from:'#ff0000',to:'#112233'}]}));
 });
 test('fill is connected, respects protected barriers and matches the original character algorithm', () => {
   const pixels = rgba(Array(5).fill([1, 2, 3, 255]));

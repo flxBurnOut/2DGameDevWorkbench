@@ -105,7 +105,7 @@
         }
       ]
     },
-    "imageEditing": { "schemaVersion": 1, "contract": "lib/workbench/image-edit-contract.mjs", "guide": "docs/image-editing.md", "mode": "existing-image-edit", "targetKinds": ["map-layer", "interactable", "image-task", "scene-layer", "scene-instance"], "sceneTargets": "verified-source-snapshot-or-single-instance", "aiEditing": true, "localRequiresPython": false, "localRequiresKey": false, "manualMapProductionBoundary": "unchanged" },
+    "imageEditing": { "schemaVersion": 1, "contract": "lib/workbench/image-edit-contract.mjs", "guide": "docs/image-editing.md", "mode": "existing-image-edit", "targetKinds": ["map-layer", "interactable", "image-task", "scene-layer", "scene-instance"], "sceneTargets": "verified-source-snapshot-or-single-instance", "intentPreview": true, "paletteMapMaxPairs": 64, "metalPanelTrial": {"maxSelectionEdge": 1024, "optionalSegmenter": "SAM 2.1 Tiny"}, "placementComparison": true, "aiEditing": true, "localRequiresPython": false, "localRequiresKey": false, "manualMapProductionBoundary": "unchanged" },
     "presentationGuide": "docs/agent-preview-follow.md",
     "skill": ".agents/skills/2d-game-workbench/SKILL.md",
     "engineering": { "skill": ".agents/skills/forge-game-engineering/SKILL.md", "guide": "docs/game-engineering.md", "deliveryGuide": "docs/godot-delivery.md", "mode": "external-agent", "engine": "Godot 4.7.x", "source": "https://github.com/flxBurnOut/copyWorms", "createsTask": false },
@@ -161,6 +161,7 @@
         "workbench_get_scene_workflow_settings",
         "workbench_inspect_image_target",
         "workbench_resolve_image_region",
+        "workbench_suggest_panel_region",
         "workbench_edit_image_region",
         "workbench_apply_image_candidate",
         "workbench_get_image_edit",

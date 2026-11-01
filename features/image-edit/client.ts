@@ -11,6 +11,7 @@ export type ImageTargetRef =
 export interface ImageTargetInfo {
   targetId: string; targetRef: ImageTargetRef; revision: number | string; sha256: string; rgbaSha256: string;
   width: number; height: number; editable: boolean; locked: boolean; kind: 'prop' | 'background'; name: string;
+  placement?: { width: number; height: number; x: number; y: number; flipH: boolean; flipV: boolean };
   slotFingerprint?: string; readOnlyReason?: string; source?: Record<string, unknown>; willStopDefaultAnimations?: boolean;
   scope?: 'single-instance' | 'scene-snapshot-layer'; affectedInstanceIds?: string[]; sharedInstanceCount?: number;
   sourceEntry?: { kind?: string; documentId?: string; layerId?: string; sourceField?: string; filename?: string; format?: string; sha256?: string; viewPath?: string; action?: string };
@@ -35,6 +36,9 @@ export interface ImageCandidate {
 export interface ImageCandidateDiff { changedPixelCount: number; changedOutsideRegion: number; alphaChangedPixelCount: number }
 export interface ImageEditSession {
   editId: string; revision: number; target: ImageTargetInfo; source: { sha256: string; rgbaSha256: string };
+  comparison?: { editId: string; baseCandidateVersion: string; candidateVersion: string; targetRevision: number | string;
+    baseSha256: string; candidateSha256: string; width: number; height: number; viewport: { x: number; y: number; width: number; height: number };
+    beforePng: string; afterPng: string };
   candidates: ImageCandidate[]; adoptions: unknown[]; selectedVersion?: string; pixels?: ImagePixels;
 }
 export interface NamedImageRegion { regionId: string; name: string; spec: RegionSpec; stale?: boolean }
@@ -47,7 +51,9 @@ export interface ImageInspection extends Partial<ImagePixels> {
   historyOnly?: boolean;
 }
 export type ImageLocalOperation =
+  | import('./metal-panel.mjs').MetalPanelOperation
   | { type: 'clean-alpha'; threshold: number }
+  | { type: 'palette-map'; pairs: { from: string; to: string }[] }
   | { type: 'replace-color'; from: string; to: string }
   | { type: 'fill'; x: number; y: number; rgba: [number, number, number, number] }
   | { type: 'erase' }

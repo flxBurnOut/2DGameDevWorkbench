@@ -11,7 +11,9 @@ export type RegionSpec =
   | { type: 'alpha-selection'; minAlpha?: number; maxAlpha?: number }
   | { type: 'connected-color'; x: number; y: number; tolerance?: number };
 export type LocalOperation =
+  | import('./metal-panel.mjs').MetalPanelOperation
   | { type: 'clean-alpha'; threshold?: number }
+  | { type: 'palette-map'; pairs: { from: string; to: string }[] }
   | { type: 'replace-color'; from: string; to: string; match?: 'exact-rgb' }
   | { type: 'fill'; x: number; y: number; rgba: [number, number, number, number] }
   | { type: 'erase' }

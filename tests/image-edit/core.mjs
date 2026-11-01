@@ -6,7 +6,7 @@ import * as character from '../../Tools/SpritePipeline/sprite_pipeline/static/pi
 const oldFetch = globalThis.fetch;
 let requests = 0;
 globalThis.fetch = () => { requests++; throw new Error('Local image core must never use a network provider.'); };
-const { resolveRegion, applyLocalOperation, LOCAL_EDIT_LIMITS, ...shared } = await import('../../features/image-edit/core.mjs');
+const { resolveRegion, maskSummary, applyLocalOperation, LOCAL_EDIT_LIMITS, ...shared } = await import('../../features/image-edit/core.mjs');
 const rgba = values => new Uint8ClampedArray(values.flat());
 const pixel = (pixels, index) => [...pixels.subarray(index * 4, index * 4 + 4)];
 const all = (pixels, width, height) => resolveRegion(pixels, width, height, { type: 'all' }).mask;
@@ -23,6 +23,7 @@ test('character primitives are the same imported functions, with no DOM or Pytho
 test('regions use explicit original-pixel bounds and do not mutate hidden RGB', () => {
   const pixels = rgba([[30, 20, 10, 0], [1, 2, 3, 1], [1, 2, 3, 128], [1, 2, 3, 255]]);
   const before = pixels.slice();
+  assert.deepEqual(maskSummary(new Uint8Array([0,1,0,1]),2,2),resolveRegion(pixels,2,2,{type:'rectangle',x:1,y:0,width:1,height:2}));
   assert.deepEqual(resolveRegion(pixels, 2, 2, { type: 'rectangle', x: 1, y: 0, width: 1, height: 2 }), { mask: new Uint8Array([0, 1, 0, 1]), count: 2, bounds: { x: 1, y: 0, width: 1, height: 2 } });
   assert.equal(resolveRegion(pixels, 2, 2, { type: 'all' }).count, 4);
   assert.equal(resolveRegion(pixels, 2, 2, { type: 'alpha-bounds', threshold: 128 }).count, 2);

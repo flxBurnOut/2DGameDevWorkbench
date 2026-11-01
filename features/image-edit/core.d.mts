@@ -23,6 +23,7 @@ export type LocalOperation =
 export const LOCAL_EDIT_LIMITS: Readonly<{ maxEdge: 3840; maxPixels: 8294400; maxPolygonPoints: 1024; maxMaskRuns: 65536; sharedChangeListPixels: 65536; maxPatchBytes: 524288 }>;
 /** mask: 1 editable / 0 protected. Bounds describe selected pixel coverage. */
 export function resolveRegion(pixels: RgbaPixels, width: number, height: number, spec: RegionSpec): { mask: Uint8Array; count: number; bounds: PixelBounds | null };
+export function maskSummary(mask: Uint8Array, width: number, height: number): { mask: Uint8Array; count: number; bounds: PixelBounds | null };
 /** bounds describe actual four-channel changes; effectiveMask expands for translate. */
 export function applyLocalOperation(input: {
   pixels: RgbaPixels; width: number; height: number; mask: Uint8Array;

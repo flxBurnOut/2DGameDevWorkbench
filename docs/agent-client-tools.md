@@ -45,7 +45,9 @@ Server 还提供只读资源 `workbench://manifest`。工具数量和版本以�
 | `workbench_observe_document` | 返回保存场景版本的 PNG、几何标注与资源证据 |
 | `workbench_inspect_image_target` | 发现或读取既有图片目标、源版本和候选 |
 | `workbench_resolve_image_region` | 按确切源版本解析区域；可显式保存命名区域 |
-| `workbench_edit_image_region` | 执行本地配方或显式 ai-edit，保存独立候选；采用是单独操作 |
+| `workbench_prepare_part_context` / `workbench_request_part_suggestion` / `workbench_get_part_suggestion` | 准备并查看三张规划视图，明确请求一次视觉定位，或查询已有部件建议 |
+| `workbench_prepare_candidate_check` / `workbench_request_candidate_check` / `workbench_get_candidate_check` | 冻结候选和原图的独立复核视图，明确请求一次模型判断，或查询原记录。需查缺陷来源时，用首轮 reviewRef 另备原始返回和范围诊断 |
+| `workbench_edit_image_region` | 执行本地配方或显式 ai-edit，保存独立候选。recompose-ai 可在原授权范围内复用已保存的生成响应 |
 | `workbench_apply_image_candidate` | 按目标版本、源哈希和锁采用确切候选 |
 | `workbench_get_image_edit` | 读取持久会话、候选及原任务身份 |
 | `workbench_get_scene_workflow_settings` | 读取场景专家模型与凭据是否可用，不返回 Key |

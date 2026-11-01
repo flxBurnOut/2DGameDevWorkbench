@@ -1,4 +1,7 @@
 'use client';
+import { ImageAttributePlan } from './image-attribute-plan';
+import { ImageAttributeReview } from './image-attribute-review';
+import { CandidateCheck } from './candidate-check';
 /* oxlint-disable next/no-img-element -- AI references preview the exact uploaded source bytes. */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -40,7 +43,7 @@ interface PendingCommand { label: string; operation: string; body: unknown; exte
 interface LoadedWorkspace { metadata: ImageInspection; session: ImageEditSession; controller: PixelController; baseVersion: string; baseHash: string; followVersion?: string; originalPreviewSource?: string; basePreviewSource?: string }
 const plainSession = (value: ImageEditSession) => { const { pixels: _pixels, ...rest } = value; return rest; };
 const metadataOnly = imageInspectionMetadata;
-const operationNames: Record<string, string> = { 'metal-panel': '拼板换金属', 'palette-map': '多色替换', 'pixel-patch': '手工笔划', 'clean-alpha': '透明噪点清理', 'replace-color': '精确替色', fill: '连通填充', erase: '擦除', translate: '移动像素', 'restore-region': '恢复区域', 'source-restore': '恢复原图', 'ai-edit': 'AI 修改' };
+const operationNames: Record<string, string> = { 'recompose-ai': '修正合成区', 'intrinsic-recolor': '分层换色', 'color-map': '简单换色', 'metal-panel': '拼板换金属', 'palette-map': '多色替换', 'pixel-patch': '手工笔划', 'clean-alpha': '透明噪点清理', 'replace-color': '精确替色', fill: '连通填充', erase: '擦除', translate: '移动像素', 'restore-region': '恢复区域', 'source-restore': '恢复原图', 'ai-edit': 'AI 修改' };
 const statusNames: Record<string, string> = { completed: '已生成 · 待确认效果', running: '处理中', preparing: '准备中', failed: '失败', attention_required: '需要检查', awaiting_configuration: '等待配置' };
 const tools: { id: ImagePixelTool; name: string }[] = [{ id: 'pencil', name: '画笔' }, { id: 'eraser', name: '橡皮' }, { id: 'mask-add', name: '涂选' }, { id: 'rectangle', name: '矩形选区' }, { id: 'connected', name: '连通选区' }, { id: 'picker', name: '取色' }, { id: 'pan', name: '平移' }];
 const message = (error: unknown) => error instanceof Error ? error.message : '局部调整未完成。';
@@ -263,18 +266,27 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
       setNotice('已更换修改基准，选区与选区历史保留。');
     } catch (cause) { setError(message(cause)); }
   };
-  const runOperation = async (operation: ImageEditOperation, references: readonly ImageAiReference[] = [], fromDescription = false) => {
-    if (!loaded || blocked || busyRef.current || !loaded.controller.region) return;
+  const runOperation = async (operation: ImageEditOperation, references: readonly ImageAiReference[] = [], fromDescription = false, planRef?: string) => {
+    if (!loaded || blocked || busyRef.current || (!loaded.controller.region && !planRef)) return;
     if (loaded.controller.maskStrokeActive) { setError('请先结束当前选区笔划，再提交候选。'); return; }
     if (operation.type !== 'pixel-patch' && loaded.controller.dirty) { setError('请先将未保存笔划保存为候选，再执行其他操作。'); return; }
     const current = loaded, region = current.controller.region, commandId = crypto.randomUUID();
     const submittedAiKey = aiDraftKey, frozenReferences = references.slice(), external = operation.type === 'ai-edit';
-    if (!region) return;
+    if (!region && !planRef) return;
     busyRef.current = true; setBusy('解析当前选区'); setError('');
-    let body: ReturnType<typeof imageEditInput>;
+    let body: ReturnType<typeof imageEditInput> & {planRef?:string};
     try {
-      const { regionRef } = await imageEditRequest<{ regionRef: string }>('resolve', imageResolveInput(current.metadata.target, region));
-      body = operation.type === 'ai-edit' ? imageAiEditInput(current.metadata.target, current.session, current.baseVersion, regionRef, operation.prompt, frozenReferences, current.controller.dirty, commandId, aiPreserveAlpha) : imageEditInput(current.metadata.target, current.session, current.baseVersion, regionRef, operation, operation.type === 'metal-panel' || (fromDescription ? keepsIntentAlpha : preserveAlpha), commandId);
+      const prepared = planRef ? (await imageEditRequest<{plan:{regionRef:string;constraints:{preserveAlpha:boolean}}}>('plan-get',{planRef})).plan : null;
+      if (!prepared && !region) throw new Error('请先选择编辑范围。');
+      const { regionRef } = prepared || await imageEditRequest<{ regionRef: string }>('resolve', imageResolveInput(current.metadata.target, region!));
+      if (operation.type === 'recompose-ai') {
+        const original = current.session.candidates.find(item=>item.version===operation.candidateVersion);
+        if (!original?.baseCandidateVersion) throw new Error('原候选的生成基准不可用。');
+        body = imageEditInput(current.metadata.target,current.session,original.baseCandidateVersion,regionRef,operation,true,commandId);
+      } else {
+        body = operation.type === 'ai-edit' ? imageAiEditInput(current.metadata.target, current.session, current.baseVersion, regionRef, operation.prompt, frozenReferences, current.controller.dirty, commandId, prepared?.constraints.preserveAlpha??aiPreserveAlpha) : imageEditInput(current.metadata.target, current.session, current.baseVersion, regionRef, operation, prepared?.constraints.preserveAlpha??(operation.type === 'metal-panel' || (fromDescription ? keepsIntentAlpha : preserveAlpha)), commandId);
+      }
+      if(planRef)body={...body,planRef};
     }
     catch (cause) { setError(message(cause)); busyRef.current = false; setBusy(''); return; }
     busyRef.current = false;
@@ -526,10 +538,30 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
             {controller.dirty && <output className="ie-ai-reason">仍有未保存笔划，请用左侧“保存笔划为候选”保存，再生成 AI 候选。</output>}
             {intent.route === 'invalid' && <output>{intent.reason}</output>}
             {intent.operation && <p className="ie-hint" aria-live="polite">本次编辑 · {loaded.metadata.target.name} · {controller.selectionCount} 个可写像素 · {localIntent ? (operationNames[intent.operation.type] + '，本地执行') : '按描述生成外观，调用一次图片服务'}。选区外四通道受保护。{!localIntent && '描述中的材质、光向和结构需看候选核对。'}</p>}
-            <Button disabled={(!localIntent && !loaded.metadata.target.aiEdit?.supported) || controller.dirty || !controller.selectionCount || !intent.operation || referencesLoading}
-              onClick={() => intent.operation && void runOperation(intent.operation, aiReferences, true)}>{localIntent ? (exactColorIntent ? '按配色生成本地候选' : '执行本地操作') : '生成 AI 候选（调用模型）'}</Button>
+            {localIntent
+              ? <Button disabled={controller.dirty || !controller.selectionCount || !intent.operation || referencesLoading}
+                  onClick={()=>intent.operation && void runOperation(intent.operation,aiReferences,true)}>{exactColorIntent ? '按配色生成本地候选' : '执行本地操作'}</Button>
+              : <details><summary>直接按当前选区生成</summary><Button disabled={!loaded.metadata.target.aiEdit?.supported || controller.dirty || !controller.selectionCount || !intent.operation || referencesLoading}
+                  onClick={()=>intent.operation && void runOperation(intent.operation,aiReferences,true)}>生成 AI 候选（调用模型）</Button></details>}
           </fieldset>}
           <p className="ie-hint">选区外保持原样。生成后先比较效果，再决定是否采用。</p>
+          <ImageAttributePlan offerPlanner={mode==='ai' && !localIntent} key={`${loaded.session.editId}:${loaded.baseVersion}`} target={loaded.metadata.target} session={loaded.session} baseVersion={loaded.baseVersion} region={controller.region} prompt={aiPrompt} references={aiReferences} preserveAlpha={aiPreserveAlpha} disabled={blocked||controller.dirty||referencesLoading} onBusy={label=>{busyRef.current=!!label;setBusy(label);}} onSelectRegion={region=>{controller.selectRegion(region);setSelectionVisible(true);changed();}} onExecute={(operation,planRef)=>void runOperation(operation,aiReferences,true,planRef)}/>
+          {candidate?.attributePlan&&<details><summary>本候选的属性计划</summary><p>{candidate.attributePlan.part}</p>{candidate.attributePlan.successCriteria.map(line=><p key={line}>{line}</p>)}
+            {candidate.attributePlan.referenceManifest?.map(ref=><p key={ref.slot}>参考 {ref.slot} · {{'user-reference':'用户参考','rgb-control':'RGB 对照','diffuse-shading':'分层明暗','clean-crop':'干净局部图'}[ref.role]} · {ref.width} × {ref.height}</p>)}
+          </details>}
+          {candidate?.status==='completed' && candidate.operation.type==='ai-edit' && candidate.constraints?.preserveAlpha && candidate.evidence?.rawSha256 && candidate.previewPath &&
+            <details className="ie-recompose"><summary>检查原始返回并修正合成区</summary>
+              <img alt="本候选的模型原始返回" loading="lazy" src={'/api/workbench/artifacts?path='+encodeURIComponent(candidate.previewPath.replace(/image\.png$/,'provider-response.png'))}/>
+              <p>若原始返回里已经画对，可在主画布重新选择要使用的像素，先减去仍需保护的部位。此次选区替代旧合成区，须位于原授权范围内。其余像素及全图透明度取自生成前的基准。</p>
+              <Button size="sm" variant="outline" disabled={blocked||controller.dirty||!controller.selectionCount}
+                onClick={()=>void runOperation({type:'recompose-ai',candidateVersion:candidate.version,rawSha256:candidate.evidence!.rawSha256!})}>用当前选区重新合成（本地）</Button>
+            </details>}
+          {candidate?.intrinsicEvidence&&<p className="ie-hint">换色路径：{candidate.intrinsicEvidence.route} · 色域裁切通道 {candidate.intrinsicEvidence.clippedChannels}{candidate.intrinsicEvidence.assessment&&` · 重建误差 P90 ${candidate.intrinsicEvidence.assessment.errorP90.toFixed(3)}`}。请分别核对目标色与纹理保持。</p>}
+          {candidate?.status==='completed'&&(candidate.attributePlan||candidate.intrinsicEvidence)&&<ImageAttributeReview key={candidate.version} editId={loaded.session.editId} candidate={candidate} disabled={blocked}/>}
+          {candidate?.status==='completed'&&<CandidateCheck key={'check-'+candidate.version} editId={loaded.session.editId} candidate={candidate} disabled={!!busy||!!pending} canEdit={canContinue} onAction={action=>{
+            const section=dialog.current?.querySelector<HTMLDetailsElement>(action==='recompose'?'.ie-recompose':'.ie-attribute-plan');
+            if(section){section.open=true;section.scrollIntoView({block:'center'});}
+          }}/>}
           {darkWarning && <output className="ie-warning">此候选有大面积新增近黑像素，可能是模型返回异常。请检查实际效果；若本来就要改为黑色，可继续采用。保护检查通过不代表画面正确。</output>}
           {candidate && <details className="ie-task-status"><summary>查看保护检查</summary><ImageCandidateEvidence candidate={candidate} session={loaded.session} /></details>}
           {!!loaded.session.candidates.filter(item => item.status !== 'completed').length && <details className="ie-task-status"><summary>原任务状态</summary>{loaded.session.candidates.filter(item => item.status !== 'completed').map((item, index) => <p key={item.version}>{operationNames[item.operation.type] || '候选'} {index + 1}：{statusNames[item.status] || item.status}{item.error && <span> · {item.error}</span>}</p>)}<p>关闭窗口不取消；只查询既有任务，不重新提交。</p></details>}

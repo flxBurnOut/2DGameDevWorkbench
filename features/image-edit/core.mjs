@@ -43,7 +43,7 @@ function rectangle(value, width, height) {
   if (value.x + value.width > width || value.y + value.height > height) fail('矩形超出原图范围；不会自动裁切。');
   return normalizeSelection(value, { x: value.x + value.width - 1, y: value.y + value.height - 1 }, width, height);
 }
-function maskSummary(mask, width, height) {
+export function maskSummary(mask, width, height) {
   if (!(mask instanceof Uint8Array) || mask.length !== width * height) fail('选区须为尺寸匹配的Uint8Array，1可改、0保护。');
   let count = 0, left = width, top = height, right = -1, bottom = -1;
   for (let index = 0; index < mask.length; index++) {

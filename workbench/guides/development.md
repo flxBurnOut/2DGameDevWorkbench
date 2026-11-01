@@ -8,6 +8,9 @@
 | MCP / CLI / HTTP 与 Agent 指导 | `scripts/workbench*.mjs`、`lib/workbench/agent-api.mjs`、`agent-guidance.mjs` | `test:mcp`、`test:http`；实际制作链变化再跑 `test:agent-acceptance` |
 | 预览和页面跟随 | `lib/workbench/*preview*`、前端跟随组件 | `test:preview-follow`、`test:presentation` |
 | 图片生成 / 局部编辑 | `lib/workbench/adapters/image-assets.mjs`、`image-edit*.mjs` | `test:image-assets`、受影响的 `tests/image-edit/` 用例 |
+| 局部编辑诊断与基线采集 | `scripts/image-edit-evaluation.mjs`、`scripts/image-edit-replay.mjs`；[P0 评测](local-edit-evaluation.md) | `test:image-edit-evaluation`；隔离 `test:image-edit`、`test:image-assets` |
+| 部件属性计划与本地分层 | `features/image-edit/attribute-plan.mjs`、`intrinsic-recolor.mjs`、`lib/workbench/image-edit-intrinsics.mjs`、`Tools/MarigoldAnalysis/`；[使用与安装](image-attribute-editing.md) | `test:image-attribute-plan`；编辑回归、typecheck、lint、build |
+| 单候选视觉复核与诊断 | `lib/workbench/image-edit-critic.mjs`、`components/image-edit/candidate-check.tsx`、[使用指南](image-attribute-editing.md#独立复核成品) | `test:image-attribute-plan` 覆盖独立上下文、候选身份与中断恢复，`tests/image-edit/transport.mjs` 验证 MCP 图片输出 |
 | 场景 / 交互物共享文档 | `features/scene-composer/`、`features/interactable-editor/`、`lib/workbench/document-*.mjs` | `test:editor-documents`、`test:scene-composer`、`test:interactable`；观察或接线变化加相应测试 |
 | 场景专家协作 | `lib/workbench/scene-workflow*.mjs`、`features/scene-workflow/`、`components/scene-composer/scene-workflow-panel.tsx` | `test:scene-workflow`；共享保存或图片执行变化加对应回归；[流程与边界](../../docs/scene-collaboration.md) |
 | 开放动作 | `Tools/SpritePipeline/sprite_pipeline/collaboration/`、`components/sprite-generator/` | 受影响的 Python 测试、`test:open-motion` |

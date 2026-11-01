@@ -27,6 +27,10 @@ export interface ImagePixels {
   rgbaSha256: string; rgbaBase64: string; rgbaByteLength: number; pixelFormat: string;
 }
 export interface ImageCandidate {
+  visualReviewRefs?:string[];
+  attributePlan?: {planRef:string;part:string;policy:Record<string,string>;successCriteria:string[];referenceManifest?:{slot:number;role:'user-reference'|'rgb-control'|'diffuse-shading'|'clean-crop';width:number;height:number}[]};
+  intrinsicEvidence?: {route:string;clippedChannels:number;assessment?:{eligible:boolean;errorP90:number;uncertaintyP90:number}};
+  reviews?: {verdict:string;reviewer:string;reviewerType:string;targetAchieved:boolean|null;preservedContent:boolean|null;boundaryAndAlpha:boolean|null}[];
   version: string; taskId?: string; status: string; createdAt: string; error?: string; derivedState?: boolean;
   operation: { type: string }; sha256?: string; rgbaSha256?: string; baseCandidateVersion?: string; previewPath?: string;
   constraints?: { preserveOutsideRegion: boolean; preserveDimensions: boolean; preserveAlpha: boolean };
@@ -35,6 +39,8 @@ export interface ImageCandidate {
 }
 export interface ImageCandidateDiff { changedPixelCount: number; changedOutsideRegion: number; alphaChangedPixelCount: number }
 export interface ImageEditSession {
+  partContexts?: {partRef:string;baseCandidateVersion:string;expectedEditRevision:number}[];
+  analyses?:{analysisId:string;baseCandidateVersion:string;baseSha256:string}[];
   editId: string; revision: number; target: ImageTargetInfo; source: { sha256: string; rgbaSha256: string };
   comparison?: { editId: string; baseCandidateVersion: string; candidateVersion: string; targetRevision: number | string;
     baseSha256: string; candidateSha256: string; width: number; height: number; viewport: { x: number; y: number; width: number; height: number };
@@ -61,7 +67,11 @@ export type ImageLocalOperation =
   | { type: 'restore-region'; candidateVersion: string }
   | { type: 'pixel-patch'; baseRgbaSha256: string; spans: { startPixel: number; beforeRgbaBase64: string; afterRgbaBase64: string }[] };
 export type ImageAiOperation = { type: 'ai-edit'; prompt: string; references?: string[] };
-export type ImageEditOperation = ImageLocalOperation | ImageAiOperation;
+type ImageRecomposeOperation = { type: 'recompose-ai'; candidateVersion: string; rawSha256: string };
+export type RecolorSurface = 'diffuse'|'reflective'|'emissive'|'translucent'|'unknown';
+export type SimpleColorMapping = 'rgb'|'luminance';
+export type ImageAttributeOperation = {type:'intrinsic-recolor';analysisId:string;from:string;to:string;fallback:'stop'|'simple';surface?:RecolorSurface;fallbackMapping?:SimpleColorMapping} | {type:'color-map';from:string;to:string;mapping?:SimpleColorMapping};
+export type ImageEditOperation = ImageLocalOperation | ImageAiOperation | ImageAttributeOperation | ImageRecomposeOperation;
 export interface ImageAiReference { id: string; name: string; source: string; bytes: number }
 export const IMAGE_AI_REFERENCE_LIMITS = Object.freeze({ count: 8, perImageBytes: 30 * 1024 * 1024, totalBytes: 32 * 1024 * 1024 });
 export class ImageEditClientError extends Error {

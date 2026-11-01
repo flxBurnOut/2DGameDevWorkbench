@@ -1,0 +1,110 @@
+import '../helpers/runtime-workspace.mjs';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import sharp from 'sharp';
+import { createProject, createObject } from '../../features/interactable-editor/contract.mjs';
+import { attributeDefaults } from '../../features/image-edit/attribute-plan.mjs';
+import { createDocument } from '../../lib/workbench/editor-documents.mjs';
+import { imageEditRequest } from '../../lib/workbench/image-edits.mjs';
+import { loadManifest, repositoryRoot as root } from '../../lib/workbench/runtime.mjs';
+import { resolvePartSuggestion } from '../../lib/workbench/image-part-planner.mjs';
+
+const manifest = await loadManifest();
+const request = (op, input) => imageEditRequest(root, manifest, op, input);
+const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const rect = (x,y,width,height) => ({type:'rectangle',x,y,width,height});
+const source = await sharp({create:{width:256,height:192,channels:4,background:'#a66430'}}).png().toBuffer();
+const project = createProject();
+const object = createObject('inspect');
+object.definitionId = 'sample'; object.visual.assetId = 'source';
+project.objects = [object]; project.assets = [{id:'source',name:'sample.png',mime:'image/png',source:'data:image/png;base64,'+source.toString('base64')}];
+const {document} = await createDocument(root,manifest,{kind:'interactable',documentId:project.projectId,commandId:'create',content:project});
+const {target} = await request('image-inspect',{target:{kind:'interactable',documentId:document.id,definitionId:'sample',slot:'visual'}});
+const guards={targetId:target.targetId,expectedRevision:target.revision,expectedSha256:target.sha256};
+const {edit}=await request('image-session-create',{...guards,commandId:'session'});
+const region=await request('image-resolve',{...guards,region:rect(102,80,64,48)});
+const common={...guards,editId:edit.editId,expectedEditRevision:edit.revision,baseCandidateVersion:'source',regionRef:region.regionRef};
+const instruction='Replace the lower badge with a blue gem. Preserve its frame.';
+const contextInput={...common,instruction,preserveAlpha:true,commandId:'context'};
+process.env.OPENAI_API_KEY='mock-planning-fixture';
+process.env.SCENE_EXPERT_OPENAI_URL='http://127.0.0.1:9081/v1/responses';
+let calls=0, expectedViews;
+const prediction={decision:'propose',reason:'The lower badge sits inside the stone frame.',part:'lower badge',kind:'replace',policy:attributeDefaults.part,
+  target:{left:250,top:250,right:750,bottom:750},influence:null,protect:[{part:'bolt',box:{left:250,top:250,right:350,bottom:350}}],changesSilhouette:false,successCriteria:['blue gem','frame unchanged']};
+let mode='success';
+const nativeFetch=globalThis.fetch;
+globalThis.fetch=async(url,options)=>{
+  calls++;
+  assert.equal(url,process.env.SCENE_EXPERT_OPENAI_URL);
+  const body=JSON.parse(options.body);
+  assert.equal(body.store,false);assert.equal(body.text.format.strict,true);
+  const images=body.input[0].content.filter(x=>x.type==='input_image');
+  assert.deepEqual(images.map(x=>sha(Buffer.from(x.image_url.split(',')[1],'base64'))),expectedViews);
+  if(mode==='disconnect')throw new Error('unknown transport outcome');
+  return Response.json({id:'rsp_fixture',status:'completed',model:body.model,usage:{input_tokens:200,output_tokens:80},
+    output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(prediction)}]}]});
+};
+try {
+  const all=await request('image-resolve',{...guards,region:{type:'all'}});
+  const whole=(await request('image-part-context',{...contextInput,regionRef:all.regionRef,commandId:'identical-previews'})).part;
+  assert.equal(whole.views[0].sha256,whole.views[1].sha256);
+  assert.equal(whole.views[0].png,whole.views[1].png);
+  const {part:context}=await request('image-part-context',contextInput);
+  assert.equal(calls,0);
+  assert.deepEqual(context.crop,{x:78,y:56,width:112,height:96});
+  assert.equal((await request('image-part-context',contextInput)).part.partRef,context.partRef);
+  expectedViews=context.views.map(v=>sha(Buffer.from(v.png,'base64')));
+  assert.deepEqual(expectedViews,context.views.map(v=>v.sha256));
+  const submit={partRef:context.partRef,commandId:'suggest'};
+  delete process.env.OPENAI_API_KEY;
+  await assert.rejects(request('image-part-suggest',submit),{code:'PART_PLANNER_UNCONFIGURED'});
+  process.env.OPENAI_API_KEY='mock-planning-fixture';
+  const [first,second]=await Promise.all([request('image-part-suggest',submit),request('image-part-suggest',submit)]);
+  assert.equal(calls,1);assert.equal(first.part.status,'completed');assert.equal(second.replayed,true);
+  assert.deepEqual(first.part.suggestion.target,rect(106,80,56,48));
+  assert.equal(first.part.suggestion.count,56*48-12*10);
+  assert.equal(first.part.receipt.usage.output_tokens,80);
+  // Replay the local preparation after an interrupted history write without resetting the completed suggestion.
+  const dir=path.resolve(root,manifest.workspace.imageEditDirectory);
+  const cmdFile=path.join(dir,'commands',sha(contextInput.commandId)+'.json');
+  const intent=JSON.parse(await readFile(cmdFile));delete intent.result;await writeFile(cmdFile,JSON.stringify(intent));
+  const historyFile=path.join(dir,'sessions',sha(edit.editId)+'.json');
+  const history=JSON.parse(await readFile(historyFile));history.partContexts=history.partContexts.filter(p=>p.partRef!==context.partRef);
+  await writeFile(historyFile,JSON.stringify(history));
+  assert.equal((await request('image-part-context',contextInput)).part.status,'completed');
+  assert.equal((await request('image-session-get',{editId:edit.editId})).edit.partContexts.filter(p=>p.partRef===context.partRef).length,1);
+  assert.equal((await request('image-part-get',{partRef:context.partRef})).part.status,'completed');
+  await assert.rejects(request('image-part-suggest',{...submit,commandId:'second-command'}),{code:'PART_ALREADY_REQUESTED'});
+  const corrected={...common,partRef:context.partRef,part:'corrected badge center',policy:prediction.policy,
+    targetRegion:rect(110,90,30,22),successCriteria:prediction.successCriteria,operation:{type:'ai-edit',prompt:instruction},
+    constraints:{preserveOutsideRegion:true,preserveDimensions:true,preserveAlpha:true},commandId:'corrected'};
+  const {plan}=await request('image-plan-prepare',corrected);
+  assert.equal(plan.partRef,context.partRef);assert.equal(plan.scope.count,30*22);assert.equal(calls,1);
+  await assert.rejects(request('image-plan-prepare',{...corrected,commandId:'wrong-instruction',operation:{type:'ai-edit',prompt:'unrelated'}}),{code:'PART_CONTEXT_CONFLICT'});
+  const changedRegion=await request('image-resolve',{...guards,region:rect(0,0,32,32)});
+  await assert.rejects(request('image-plan-prepare',{...corrected,commandId:'wrong-scope',regionRef:changedRegion.regionRef}),{code:'PART_CONTEXT_CONFLICT'});
+  const secondContext=(await request('image-part-context',{...contextInput,commandId:'context-disconnect'})).part;
+  mode='disconnect';
+  const failed=await request('image-part-suggest',{partRef:secondContext.partRef,commandId:'disconnect'});
+  assert.equal(failed.part.status,'attention_required');assert.equal(calls,2);
+  await request('image-part-suggest',{partRef:secondContext.partRef,commandId:'disconnect'});assert.equal(calls,2);
+  // Simulate the durable request marker surviving a Bridge crash.
+  const file=path.resolve(root,manifest.workspace.imageEditDirectory,'part-contexts',sha(secondContext.partRef)+'.json');
+  const interrupted=JSON.parse(await readFile(file));interrupted.status='requesting';await writeFile(file,JSON.stringify(interrupted));
+  assert.equal((await request('image-part-get',{partRef:secondContext.partRef})).part.status,'attention_required');
+  const stale=(await request('image-part-context',{...contextInput,commandId:'stale-context'})).part;
+  await request('image-edit',{...common,commandId:'advance',operation:{type:'replace-color',from:'#a66430',to:'#336688'},constraints:corrected.constraints});
+  await assert.rejects(request('image-part-suggest',{partRef:stale.partRef,commandId:'stale'}),{code:'IMAGE_EDIT_CONFLICT'});
+  assert.equal(calls,2);
+  const decoded={pixels:new Uint8Array(40*30*4).fill(255),width:40,height:30},allowed=new Uint8Array(40*30);
+  for(let y=10;y<20;y++)allowed.fill(1,40*y+10,40*y+20);
+  const record={crop:{x:0,y:0,width:40,height:30},preserveAlpha:true};
+  const bounds=await resolvePartSuggestion({...prediction,target:{left:0,top:0,right:150,bottom:200}},record,decoded,allowed);
+  assert.equal(bounds.decision,'needs_input');
+  assert.equal((await resolvePartSuggestion({...prediction,changesSilhouette:true},record,decoded,allowed)).decision,'needs_input');
+  const clipped=await resolvePartSuggestion({...prediction,target:{left:0,top:0,right:1000,bottom:1000},protect:[]},record,decoded,allowed);
+  assert.equal(clipped.count,100);assert.equal(clipped.targetClipped,true);
+  console.log('Part planning passed: real multipart-independent vision evidence, original coordinates, correction, scope and alpha guards, concurrent replay, recovery, stale base. 2 mocked vision calls; no real network.');
+} finally { globalThis.fetch=nativeFetch; }

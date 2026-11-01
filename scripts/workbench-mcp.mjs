@@ -48,6 +48,31 @@ const server = new McpServer(
 );
 
 function success(value, name) {
+  if (value.plan?.previewPng) {
+    const {previewPng,localPreviewPng,softReferencePreviewPng,...plan}=value.plan;
+    const images=[{role:'writable-area',data:previewPng,mimeType:'image/png'}];
+    if (softReferencePreviewPng) images.push({role:plan.softReference.kind==='rgb'?'rgb-control':'diffuse-shading',data:softReferencePreviewPng,mimeType:'image/png'});
+    if (localPreviewPng) images.push({role:'clean-crop',data:localPreviewPng,mimeType:'image/png'});
+    return success({...value,plan,images},name);
+  }
+  if (value.analysis?.previews) {
+    const {previews,...analysis}=value.analysis;
+    const images=Object.entries(previews).map(([role,data])=>({role,data,mimeType:'image/png'}));
+    return success({...value,analysis,images},name);
+  }
+  if(value.check?.views?.some(view=>view.png)){
+    const views=value.check.views;
+    return success({...value,check:{...value.check,views:views.map(({png:_png,...metadata})=>metadata)},
+      images:views.map(view=>({role:view.role,data:view.png,mimeType:'image/png'}))},name);
+  }
+  if (value.part?.views?.some(view => view.png)) {
+    const { views, suggestion, ...context } = value.part;
+    const images = views.map(view => ({ role: view.role, data: view.png, mimeType: 'image/png' }));
+    const { previewPng, ...fields } = suggestion ?? {};
+    if (previewPng) images.push({ role: 'suggested-scope', data: previewPng, mimeType: 'image/png' });
+    const part = { ...context, views: views.map(({ png: _png, ...view }) => view), ...(suggestion ? { suggestion: fields } : {}) };
+    return success({ ...value, part, images }, name);
+  }
   if (Array.isArray(value.images) && value.images.some(image => image.data)) {
     const metadata = { ...value, images: value.images.map(({ data: _data, ...image }) => image) };
     return { content: [{ type: 'text', text: mcpContent(name, metadata) }, ...value.images.filter(image => image.data).map(image => ({ type: 'image', data: image.data, mimeType: image.mimeType }))], structuredContent: metadata };
@@ -130,10 +155,13 @@ function registerTool(name, options, handler) {
         if (blocked) return success(blocked, name);
         following = !workbuddyPreview.disabledReason;
       }
-      if (name === 'workbench_edit_image_region' && input.operation?.type === 'ai-edit' && workbuddyPreview.enabled) {
+      if (workbuddyPreview.enabled && (name === 'workbench_request_candidate_check' || name === 'workbench_request_part_suggestion' || (name === 'workbench_edit_image_region' && input.operation?.type === 'ai-edit'))) {
         workbuddyPreview.configure(input.previewPolicy);
         const manifest = await loadManifest();
-        const target = await agentRequest(manifest, 'image-inspect', input.targetId ? { targetId: input.targetId } : { target: input.target });
+        let targetId = input.targetId;
+        if (name === 'workbench_request_part_suggestion') targetId = (await agentRequest(manifest, 'image-part-get', {partRef:input.partRef})).part.targetId;
+        if (name === 'workbench_request_candidate_check') targetId = (await agentRequest(manifest,'image-critic-get',{reviewRef:input.reviewRef})).check.targetId;
+        const target = await agentRequest(manifest, 'image-inspect', targetId ? { targetId } : { target: input.target });
         const kind = target.target.targetRef.kind;
         const moduleId = kind === 'interactable' ? 'interactable-editor' : ['scene-layer', 'scene-instance'].includes(kind) ? 'scene-composer' : 'map-stitcher';
         const route = kind === 'image-task' ? manifest.agentAssets.assetCatalog.route : [...manifest.capabilities, ...manifest.editorModules].find(module => module.id === moduleId)?.ui?.route;
@@ -415,7 +443,7 @@ for (const [name, operation, description] of documentTools) {
   registerTool(name, { description, inputSchema: documentInputs[operation].shape, annotations: { readOnlyHint: ['documents', 'document-get', 'document-observe', 'document-validate', 'document-simulate'].includes(operation), destructiveHint: false, idempotentHint: operation !== 'document-export', openWorldHint: false } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of imageEditTools) {
-  registerTool(name, { description, inputSchema: imageEditInputs[operation].shape, annotations: { readOnlyHint: ['image-inspect', 'image-session-get', 'image-panel-suggest'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: operation === 'image-edit' } }, async input => agentRequest(await loadManifest(), operation, input));
+  registerTool(name, { description, inputSchema: imageEditInputs[operation].shape, annotations: { readOnlyHint: ['image-inspect', 'image-session-get', 'image-panel-suggest', 'image-plan-get', 'image-analysis-get', 'image-part-get', 'image-critic-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: ['image-edit', 'image-part-suggest', 'image-critic-run'].includes(operation) } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of previewTools) {
   registerTool(name, {

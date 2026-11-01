@@ -2,6 +2,9 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { ImageEditWorkspace } from '../../components/image-edit/image-edit-workspace';
+import { ImageAttributePlan } from '../../components/image-edit/image-attribute-plan';
+import { attributeDefaults } from '../../features/image-edit/attribute-plan.mjs';
+import type { RegionSpec } from '../../features/image-edit/core.mjs';
 import { base64ToBytes, bytesToBase64, rgbaHash } from '../../features/image-edit/client';
 import type { ImageEditSession, ImagePixels, ImageTargetInfo, ImageTargetRef } from '../../features/image-edit/client';
 import { readImageEditNavigation, writeImageEditNavigation } from '../../features/image-edit/navigation';
@@ -104,6 +107,39 @@ try {
   await until(() => readImageEditNavigation()?.candidateVersion === 'candidate-ui-1');
   check(readImageEditNavigation()?.editId === 'edit-created-1', 'Completed candidate URL remains in the new session');
   check(editPayloads.length === 1, 'Preview, restore and navigation do not submit another edit');
+  const plannerSession=sessions.get(selection.editId)!;
+  const maximum:RegionSpec={type:'all'},box:RegionSpec={type:'rectangle',x:1,y:0,width:2,height:2};
+  const manual:RegionSpec={type:'rectangle',x:4,y:1,width:2,height:1};
+  const instruction='Replace badge';
+  let submitted:{targetRegion?:RegionSpec;influenceRegion?:RegionSpec}|undefined;
+  window.fetch=async(url,init)=>{
+    if(typeof url!=='string' || typeof init?.body!=='string')throw Error('Expected an image edit fixture request');
+    const op=url.split('/').at(-1);
+    if(op==='resolve')return Response.json({regionRef:'maximum'});
+    if(op==='part-context')return Response.json({part:{status:'completed',partRef:'fixture',instruction,views:[],
+      service:{configured:true,endpoint:'http://localhost/',profile:{model:'fixture'}},
+      suggestion:{decision:'propose',part:'badge',reason:'fixture',kind:'replace',policy:attributeDefaults.part,
+        changesSilhouette:false,successCriteria:['visible badge'],target:box,influence:{...box,x:3}}}});
+    if(op==='plan-prepare'){
+      submitted=JSON.parse(init.body);
+      return Response.json({plan:{part:'badge',scope:{count:2},maxImageCalls:1,previewPng:original.imageBase64,warnings:[]}});
+    }
+    throw Error('Unexpected planner fixture request '+op);
+  };
+  const draw=(region:RegionSpec)=>root.render(<ImageAttributePlan target={currentTarget} session={plannerSession} baseVersion="source"
+    region={region} prompt={instruction} references={[]} preserveAlpha disabled={false} offerPlanner onBusy={()=>{}}
+    onSelectRegion={draw} onExecute={()=>{throw Error('Unexpected generation');}}/>);
+  draw(maximum);
+  await until(()=>!document.querySelector('.ie-workspace') && !!document.querySelector('.ie-part-planner'));
+  await click('准备部件定位视图（本地）');
+  await click('使用核对后的框和属性');
+  await until(()=>document.body.textContent!.includes('已指定影响区'));
+  draw(manual);
+  await until(()=>document.body.textContent!.includes('画布选区已改变'));
+  await click('只载入属性，保留手选范围');
+  await click('准备计划并预览范围');
+  await until(()=>!!submitted);
+  check(JSON.stringify(submitted?.targetRegion)===JSON.stringify(manual) && !submitted?.influenceRegion,'A redrawn selection replaces the suggested target and influence in the prepared request');
   results.textContent = JSON.stringify({ status: 'passed', checks: passed.length, assertions: passed, fixtureEditRequests: editPayloads.length, realProviderRequests: 0, canvasEncodingCalls: blobCalls }, null, 2);
   results.dataset.status = 'passed';
 } catch (cause) {

@@ -96,6 +96,11 @@ versions.beginMaskStroke('replace'); versions.maskStroke({ x: 0, y: 0 }, 'add');
 const vite = await createTestViteServer({ configFile: false, appType: 'custom', resolve: { alias: { '@': process.cwd() } }, optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true }, logLevel: 'error' });
 try {
   const client = await vite.ssrLoadModule('/features/image-edit/client.ts');
+  const {CandidateCheck}=await vite.ssrLoadModule('/components/image-edit/candidate-check.tsx');
+  const criticMarkup=canEdit=>renderToStaticMarkup(createElement(CandidateCheck,{editId:'fixture',candidate:{version:'v',visualReviewRefs:['existing']},disabled:false,canEdit,onAction:()=>{}}));
+  check(criticMarkup(false).includes('查询原复核记录'),true);
+  check(criticMarkup(false).includes('准备成品复核'),false);
+  check(criticMarkup(true).includes('准备成品复核'),true);
   const { ImageVersionCache, ImageViewRequest } = await vite.ssrLoadModule('/features/image-edit/version-cache.ts');
   const lastView = new ImageViewRequest(); const firstView = lastView.begin(); const secondView = lastView.begin(); check(firstView.aborted, true); check(secondView.aborted, false); lastView.cancel(); check(secondView.aborted, true);
   const cache = new ImageVersionCache(200);

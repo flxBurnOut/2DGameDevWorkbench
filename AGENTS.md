@@ -11,6 +11,7 @@ Forge 是资产制作、共享编辑与 Godot 交付工作台。先按当前任�
 | MCP 连接、指导读取或宿主工具排错 | [客户端接入](docs/agent-clients.md) |
 | 安装、启动、服务排错或数据恢复 | [操作手册](docs/operations-manual.md)中的对应章节 |
 | 讨论方案、解释功能或梳理需求 | [对话指南](workbench/conversation-guide.md)，按需要查询现状 |
+| 明确要求用 grill-me 或通过追问检验方案、决策与假设 | [Grill Me Skill](.agents/skills/grill-me/SKILL.md)，按决策依赖分轮提问 |
 
 用户要求决定执行范围。在已有目标、对象和预算内处理常规选择并完成工作；关键目标不明、超出授权范围或出现实际冲突时再询问。纯讨论按讨论交付；获准实施时继续到可验证的结果。
 

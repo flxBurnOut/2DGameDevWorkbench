@@ -19,7 +19,7 @@ const request = async (url, options) => {
   calls.push([url, options?.method || 'GET']);
   if (url.startsWith('/api/workbench/tasks/')) return Response.json({ task: task() });
   const path = new URL(url, 'http://localhost').searchParams.get('path');
-  if (path.endsWith('/result.json')) return Response.json({ image: 'image.png', kind, width, height: 1024, sha256, hasAlpha: true, hasTransparency: transparent, provider: 'gpt-image-2.5', model: 'gpt-image-2.5' });
+  if (path.endsWith('/result.json')) return Response.json({ image: 'image.png', kind, width, height: 1024, sha256, hasAlpha: true, hasTransparency: transparent, provider: 'gpt-image-2.6', model: 'gpt-image-2.6' });
   if (path.endsWith('/image.png')) return new Response(tamper ? Buffer.concat([png, Buffer.from('changed')]) : png, { headers: { 'content-type': 'image/png' } });
   throw new Error(`Unexpected request: ${url}`);
 };

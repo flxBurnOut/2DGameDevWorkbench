@@ -133,7 +133,7 @@ CLI 使用 `node scripts/workbench.mjs agent <operation> --input request.json --
     "expectedRevision": 1,
     "description": "创建侧视工厂地图，连续向右扩展两块，生成一盏旧灯并摆放。",
     "mapMode": "create",
-    "generationProviders": { "prop": "gpt-image-2.5", "map": "gpt-image-2.5" },
+    "generationProviders": { "prop": "gpt-image-2.6", "map": "gpt-image-2.6" },
     "budget": { "planningCalls": 16, "reviewCalls": 9, "imageCalls": 0, "generationCalls": 4, "mapTiles": 3, "revisions": 2 },
     "autoExecute": true
   }

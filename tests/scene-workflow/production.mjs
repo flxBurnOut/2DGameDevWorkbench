@@ -42,20 +42,20 @@ maps.connector = {
   type: 'local-adapter',
   adapter: 'map-stitcher',
   providers: [
-    provider('gpt-image-2.5', 'fixture-object'),
+    provider('gpt-image-2.6', 'fixture-object'),
     provider('production-map', 'fixture-map'),
   ],
   defaultProvider: 'production-map',
 };
-maps.inputSchema.properties.provider.enum = ['gpt-image-2.5', 'production-map'];
+maps.inputSchema.properties.provider.enum = ['gpt-image-2.6', 'production-map'];
 art.connector = {
   type: 'local-adapter',
   adapter: 'image-assets',
   providerSource: 'map-stitcher',
-  providerIds: ['gpt-image-2.5'],
-  defaultProvider: 'gpt-image-2.5',
+  providerIds: ['gpt-image-2.6'],
+  defaultProvider: 'gpt-image-2.6',
 };
-art.inputSchema.properties.provider.enum = ['gpt-image-2.5'];
+art.inputSchema.properties.provider.enum = ['gpt-image-2.6'];
 const previousKey = process.env.SCENE_PRODUCTION_TEST_KEY;
 process.env.SCENE_PRODUCTION_TEST_KEY = 'isolated-test-secret';
 const originalFetch = globalThis.fetch;
@@ -250,7 +250,7 @@ const specFor = (document, extra = {}) => ({
     mapTiles: 2,
     revisions: 1,
   },
-  generationProviders: { prop: 'gpt-image-2.5', map: 'production-map' },
+  generationProviders: { prop: 'gpt-image-2.6', map: 'production-map' },
   ...extra,
 });
 async function empty(name) {

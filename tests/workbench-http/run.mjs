@@ -84,7 +84,7 @@ try {
   assert.equal(initialSettings.active, false);
   assert.deepEqual(
     initialSettings.providers.map((provider) => provider.id),
-    ['nano-banana', 'gpt-image-2.5', 'gpt-image-2', 'hunyuan-image-3'],
+    ['nano-banana', 'gpt-image-2.6', 'gpt-image-2', 'hunyuan-image-3'],
   );
   assert.equal(JSON.stringify(initialSettings).includes('apiKey'), false);
 

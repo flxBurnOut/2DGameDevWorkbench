@@ -1,6 +1,6 @@
 # 阶段二：资产目录与交接清单
 
-物品原图以 `kind=prop` 收录，独立于角色和已配置交互物。GPT Image 2.5 素材保留 `image:<task-id>` 身份，编辑链接为 `/tools/interactable-editor?imageTask=...`；旧 PixelLab 保留 `reference:<task-id>` 和 `?artTask=...`。下载提供真实 PNG，不会自动采用、创建行为或导出 Godot。
+物品原图以 `kind=prop` 收录，独立于角色和已配置交互物。GPT Image 2.6 素材保留 `image:<task-id>` 身份，编辑链接为 `/tools/interactable-editor?imageTask=...`；旧 PixelLab 保留 `reference:<task-id>` 和 `?artTask=...`。下载提供真实 PNG，不会自动采用、创建行为或导出 Godot。
 
 MCP 0.8.0 增加三个只读工具，前端入口为“资产库”。资产与执行任务分开：查询不会 prepare/run，不会调用生图或检查模型，也不会修改源文件。游戏架构设计和脚本编写由[第三阶段工程 Skill](game-engineering.md)承接。
 
@@ -9,7 +9,7 @@ MCP 0.8.0 增加三个只读工具，前端入口为“资产库”。资产与�
 - 扫描 manifest 配置的全部任务记录，不局限于最近 200 条；只纳入有已登记产物的记录。纯准备记录、空任务和明确的 fixture 诊断任务不算资产。
 - 从 SpritePipeline 的 `/v1/artworks` 读取原生作品库。角色 preset 和每个有画面的动画候选分别有稳定 ID；原生作品库导入的单张地图不纳入统一资产库。
 - 角色原图生成与 transfer 用明确的 sourceTaskId / characterId 关系合并展示；不同角色或独立生成不会因为像素相同被擅自合并。
-- `image-assets` 的 `generate-background`、`generate-prop` 和 `edit-image` 使用 GPT Image 2.5（模型 `gpt-image-2.5-sunburst`）。每个完成任务形成独立的 `image:<taskId>`；`kind=prop` 为透明物件，背景为 `kind=map` / `mapType=image`。编辑不覆盖源图，也不因像素相同合并独立来源。候选仍标记 `requiresAdoption=true`，资产存在不代表已被任何地图、交互物或场景采用。
+- `image-assets` 的 `generate-background`、`generate-prop` 和 `edit-image` 使用 GPT Image 2.6（模型 `gpt-image-2.6-sunburst`）。每个完成任务形成独立的 `image:<taskId>`；`kind=prop` 为透明物件，背景为 `kind=map` / `mapType=image`。编辑不覆盖源图，也不因像素相同合并独立来源。候选仍标记 `requiresAdoption=true`，资产存在不代表已被任何地图、交互物或场景采用。
 - 动画 ID 为 `animation:<jobId>:<candidateIndex>`。创建、查询、检查和导出同一候选的多条任务不会增加资产数。旧的本地产物快照与当前原生资产区分标注。
 - 交互物以 projectId + definitionId 标识。完整保存更新当前对象集合；导出部分对象不删除其余对象。重新保存后不把旧导出包声称为当前版本。
 - 地图同时保留完整可编辑工程（`map-project:<projectId>`）和已保存的原图、扩图、拼接等历史图片（原有 `map:<taskId>:<name>` ID 不变）。工程读取 `workspace.mapProjectDirectory`，同一工程保存更新同一资产并保留创建时间。`kind=map` 返回两类，`mapType=project|image` 可筛选；地图生产仍仅由人工编辑器执行。

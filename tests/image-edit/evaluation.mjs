@@ -49,7 +49,7 @@ const big = Buffer.alloc(1024 * 1024 * 4);
 for (let i = 0; i < big.length; i += 4) { big[i] = 17; big[i + 1] = 23; big[i + 2] = 29; big[i + 3] = i % 5 === 0 ? 1 : 255; }
 const sourceFile = path.join(directory, 'source.png'); await writeFile(sourceFile, await encode(big, 1024, 1024));
 const cases = categories.flatMap(category => Array.from({ length: 4 }, (_, i) => ({ id: `${category}-${i + 1}`, category, family: 'synthetic-only', source: path.relative(root, sourceFile), style: 'pixel', displayWidth: 160, preserveAlpha: !(category === 'geometry' && i >= 2), ...(category === 'geometry' ? { subtype: i < 2 ? 'part' : 'silhouette' } : {}), instruction: 'Change only the selected area.', keep: 'Protected RGBA and selected base alpha.', failureExample: 'Changed protected pixel.', annotationStatus: 'agent-draft', annotation: { allowed: rect(117, 213, 13, 17), target: rect(117, 213, 13, 17), protected: [rect(120, 217, 3, 4)] }, operation: category === 'color' && i === 0 ? { type: 'replace-color', from: '#11171d', to: '#304050' } : { type: 'ai-edit', prompt: 'Change only the selected area.' } })));
-const batch = { schemaVersion: 1, execution: 'fixture', id: `fixture-${randomUUID()}`, service: { endpoint: 'https://api.openai.com/v1/images/edits', model: 'gpt-image-2.5-sunburst' }, budget, pricing: { perMillion: rates }, cases };
+const batch = { schemaVersion: 1, execution: 'fixture', id: `fixture-${randomUUID()}`, service: { endpoint: 'https://api.openai.com/v1/images/edits', model: 'gpt-image-2.6-sunburst' }, budget, pricing: { perMillion: rates }, cases };
 validateBatch(batch); checks++;
 const wrong = structuredClone(batch); wrong.cases.find(c => c.subtype === 'silhouette').preserveAlpha = true;
 rejects(() => validateBatch(wrong), /conflicts/);

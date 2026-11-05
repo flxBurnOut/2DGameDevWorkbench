@@ -9,7 +9,7 @@ let beforeGenerateCalls = 0;
 const wait = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
 window.fetch = async (input, options) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-  if (url === '/api/workbench/image-assets/settings') return Response.json({ active: true, provider: 'gpt-image-2.5', providers: [{ id: 'gpt-image-2.5', configured: true, name: '本地测试桩', model: 'no-provider' }] });
+  if (url === '/api/workbench/image-assets/settings') return Response.json({ active: true, provider: 'gpt-image-2.6', providers: [{ id: 'gpt-image-2.6', configured: true, name: '本地测试桩', model: 'no-provider' }] });
   if (url.startsWith('/api/workbench/tasks/')) {
     const id = decodeURIComponent(url.split('/').pop()!);
     const task = fixtureTasks.find(task => task.id === id);

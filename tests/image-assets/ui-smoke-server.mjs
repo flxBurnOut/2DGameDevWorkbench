@@ -51,7 +51,7 @@ const gatewayUrl = `http://127.0.0.1:${gateway.address().port}`;
 const bridgePort = await freePort(), bridgeUrl = `http://127.0.0.1:${bridgePort}`;
 const child = spawn(process.execPath, ['scripts/workbench-http.mjs'], {
   cwd: repositoryRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, WORKBENCH_TEST_RUN: run, WORKBENCH_RUNTIME_PORT: String(bridgePort), OPENAI_API_KEY: 'fixture-no-production-key', MAP_STITCHER_OPENAI_API_URL: `${gatewayUrl}/v1/images/edits`, MAP_STITCHER_OPENAI_GENERATION_API_URL: `${gatewayUrl}/v1/images/generations`, IMAGE_ASSETS_PROVIDER: 'gpt-image-2.5', MAP_STITCHER_IMAGE_PROVIDER: 'gpt-image-2.5', SPRITE_PIPELINE_API_URL: gatewayUrl },
+  env: { ...process.env, WORKBENCH_TEST_RUN: run, WORKBENCH_RUNTIME_PORT: String(bridgePort), OPENAI_API_KEY: 'fixture-no-production-key', MAP_STITCHER_OPENAI_API_URL: `${gatewayUrl}/v1/images/edits`, MAP_STITCHER_OPENAI_GENERATION_API_URL: `${gatewayUrl}/v1/images/generations`, IMAGE_ASSETS_PROVIDER: 'gpt-image-2.6', MAP_STITCHER_IMAGE_PROVIDER: 'gpt-image-2.6', SPRITE_PIPELINE_API_URL: gatewayUrl },
 });
 child.stdout.resume(); child.stderr.on('data', data => process.stderr.write(data));
 const until = async callback => { for (let attempt = 0; attempt < 100; attempt++) { try { if (await callback()) return; } catch {} await new Promise(resolve => setTimeout(resolve, 200)); } throw new Error('Isolated bridge readiness timeout'); };

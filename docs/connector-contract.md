@@ -16,7 +16,7 @@ v4 增加 `target-motion-stage`（制作前本地绑定真实末图）、`repair
 
 | 能力 | 适配器 | 是否依赖外部服务 |
 | --- | --- | --- |
-| `image-assets` | `image-assets` | GPT Image 2.5；独立背景、透明 prop 与参考图/蒙版编辑 |
+| `image-assets` | `image-assets` | GPT Image 2.6；独立背景、透明 prop 与参考图/蒙版编辑 |
 | `reference-art` | `reference-art` | PixelLab，经 SpritePipeline 共享凭据 |
 | `sprite-generator` | `sprite-pipeline` | 连接本地或自管 SpritePipeline；其生成提供方由该工具配置 |
 | `map-stitcher` | `map-stitcher` | `compose` 本地；`generate-origin` / `generate-layer` 调用所选 Gemini、OpenAI 或混元 |
@@ -87,7 +87,7 @@ get/status: running ───→ 刷新同一上游任务后保持或进入终�
 
 刷新运行中任务发生短暂异常时，原任务保持 `running`，读取结果可以附带 `refreshError`。轮询不得重新提交计费请求。
 
-Image 2.5 先持久化 running 任务和执行进程租约，再提交后台请求，前端不必等待模型响应才获得 taskId。查询只观察原执行与产物；执行进程退出或租约失效时转为 attention_required，提示结果可能未知，不自动重新提交。已保存输入、原始返回图和诊断文件用于检查；running 不代表已经收到图片。
+Image 2.6 先持久化 running 任务和执行进程租约，再提交后台请求，前端不必等待模型响应才获得 taskId。查询只观察原执行与产物；执行进程退出或租约失效时转为 attention_required，提示结果可能未知，不自动重新提交。已保存输入、原始返回图和诊断文件用于检查；running 不代表已经收到图片。
 
 ## 4. 输出与路径约束
 
@@ -113,7 +113,7 @@ Image 2.5 先持久化 running 任务和执行进程租约，再提交后台请�
 | `GET /v1/artifacts?path=outputs/...` | 下载 `outputs/` 内的真实文件 |
 | `GET /v1/map-stitcher/settings` | 返回不含 key 的 provider 就绪状态 |
 | `POST /v1/map-stitcher/settings` | 持久保存本机地图 provider/key 与启用状态，响应仅含公开配置状态 |
-| `GET/POST /v1/image-assets/settings` | Image 2.5 公开配置状态 / 专用受保护配置写入；共用 canonical provider 配置，不返回 key |
+| `GET/POST /v1/image-assets/settings` | Image 2.6 公开配置状态 / 专用受保护配置写入；共用 canonical provider 配置，不返回 key |
 | `GET /v1/interactable-assets?path=...` | 预览允许的本地交互物素材 |
 | `POST /v1/interactable-assets` | 上传交互物图像或音频到受控目录 |
 | `GET/POST /v1/documents` | 分页列共享工程 / 创建场景或交互物文档 |
@@ -194,7 +194,7 @@ Pixelwork v2 包可由地图编辑器恢复。新 Godot 包内嵌同一份可编
 ```
 
 - `nano-banana` 使用 Gemini Generate Content 协议与 `gemini-3.1-flash-image`。
-- `gpt-image-2.5` 使用共享 OpenAI 图片协议与 `gpt-image-2.5`；独立素材生成见下文 image-assets。
+- `gpt-image-2.6` 使用共享 OpenAI 图片协议与 `gpt-image-2.6`；独立素材生成见下文 image-assets。
 - `gpt-image-2` 使用 OpenAI Images Edits 协议与 `gpt-image-2`。
 
 返回图像统一解码并规范为 `generated-layer.png`。输入 PNG 的 alpha 通道定义可编辑区：只有 alpha 为 0 的像素可替换；服务端恢复模板中全部非透明 RGBA 像素，包括半透明边缘。明显不同的宽高比会被拒绝。`mask_mode` 只是旧客户端兼容字段，不按黑白颜色建立 provider mask。
@@ -261,9 +261,9 @@ key 只来自 runtime 进程内设置或 `GEMINI_API_KEY`/`OPENAI_API_KEY`/`TOKE
 
 validate 检查模型、媒体与 scene.links 依赖；simulate 使用确定性交互模拟器，最多 200 个类型化输入事件，返回状态、联动诊断和 expectEvents/expectStates 检查；截断或联动错误令 passed=false。场景支持 set-links/add-link/update-link/remove-links 类型化命令，最多 256 条联动，拒绝启用的有向循环。observe 只支持保存场景，可选 region、maxWidth/maxHeight、time、mode、overlay，或 events 回放后渲染；events 与 time 互斥，时间推进使用 tick，回放不完整会失败。export 也只支持明确 revision 的场景。它们不读取浏览器未保存内容，不代表 Godot 引擎验证。字段与锁定规则见 [场景组装](scene-composer.md) 和 [交互物](interactable-editor.md)。
 
-### Image 2.5 独立素材
+### Image 2.6 独立素材
 
-image-assets 的外部操作为 generate-background、generate-prop、edit-image，使用gpt-image-2.5且prompt必填，最多12000字。edit-image带mask时，本地处理器仅在Alpha=0处采用候选，Alpha=1–255恢复源图RGBA8；尺寸改变在付费调用前拒绝。process-image为本地操作，image必填，preserveFrom/mask成对可选，不接受prompt/provider/references/width/height，不访问图片服务。alphaCleanupThreshold为0–16，prop默认1、background默认0；有蒙版只清理可编辑区。rawImage/rawSha256与image/sha256分别记录原始候选和交付图，processingEvidence保存处理及编码后保护区校验。local结果不包含虚构的model/usageEvidence。旧地图扩图契约不变。
+image-assets 的外部操作为 generate-background、generate-prop、edit-image，使用gpt-image-2.6且prompt必填，最多12000字。edit-image带mask时，本地处理器仅在Alpha=0处采用候选，Alpha=1–255恢复源图RGBA8；尺寸改变在付费调用前拒绝。process-image为本地操作，image必填，preserveFrom/mask成对可选，不接受prompt/provider/references/width/height，不访问图片服务。alphaCleanupThreshold为0–16，prop默认1、background默认0；有蒙版只清理可编辑区。rawImage/rawSha256与image/sha256分别记录原始候选和交付图，processingEvidence保存处理及编码后保护区校验。local结果不包含虚构的model/usageEvidence。旧地图扩图契约不变。
 
 默认尺寸由适配器规划；显式 width/height 必须成对提供、为 16 的倍数且满足机器 schema 的尺寸、像素数和比例限制。图片源每张最多 40 MiB、总计最多 80 MiB。任务保存规范 PNG、原始返回图片、输入副本与来源哈希，结果 requiresAdoption=true；完成不修改任何编辑器。document-adopt-image 仅在 sourceTaskId 和 sha256 重校验后，按预期文档版本采用图片。
 

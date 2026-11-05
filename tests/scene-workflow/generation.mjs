@@ -49,23 +49,23 @@ mapCapability.connector = {
   type: 'local-adapter',
   adapter: 'map-stitcher',
   providers: [
-    provider('gpt-image-2.5', 'fixture-object-model'),
+    provider('gpt-image-2.6', 'fixture-object-model'),
     provider('fixture-map', 'fixture-map-model'),
   ],
   defaultProvider: 'fixture-map',
 };
 mapCapability.inputSchema.properties.provider.enum = [
-  'gpt-image-2.5',
+  'gpt-image-2.6',
   'fixture-map',
 ];
 propCapability.connector = {
   type: 'local-adapter',
   adapter: 'image-assets',
   providerSource: 'map-stitcher',
-  providerIds: ['gpt-image-2.5'],
-  defaultProvider: 'gpt-image-2.5',
+  providerIds: ['gpt-image-2.6'],
+  defaultProvider: 'gpt-image-2.6',
 };
-propCapability.inputSchema.properties.provider.enum = ['gpt-image-2.5'];
+propCapability.inputSchema.properties.provider.enum = ['gpt-image-2.6'];
 const previousKey = process.env.SCENE_WORKFLOW_FIXTURE_GENERATION_KEY;
 process.env.SCENE_WORKFLOW_FIXTURE_GENERATION_KEY =
   'fixture-scene-generation-secret';
@@ -130,7 +130,7 @@ async function fixture(budget = 4) {
     spec: { documentId: scene.id, budget: { generationCalls: budget } },
     generationCalls: [],
     generationConfiguration: freezeWorkflowGeneration(manifest, {
-      prop: 'gpt-image-2.5',
+      prop: 'gpt-image-2.6',
       map: 'fixture-map',
     }),
     steps: [],
@@ -155,7 +155,7 @@ test('typed object generation projects metadata and rejects paths, providers and
   assert.equal(parsed.width, 1024);
   assert.equal(parsed.visualWidth, 64);
   for (const invalid of [
-    { provider: 'gpt-image-2.5' },
+    { provider: 'gpt-image-2.6' },
     { references: ['secret.png'] },
     { purpose: 'background' },
     { width: 1000 },
@@ -173,12 +173,12 @@ test('typed object generation projects metadata and rejects paths, providers and
 
 test('provider snapshots preserve distinct registered production models and expose no credentials', () => {
   const frozen = freezeWorkflowGeneration(manifest, {
-    prop: 'gpt-image-2.5',
+    prop: 'gpt-image-2.6',
     map: 'fixture-map',
   });
   assert.equal(
     freezeWorkflowGeneration(manifest).prop.provider,
-    'gpt-image-2.5',
+    'gpt-image-2.6',
   );
   assert.equal(frozen.prop.model, 'fixture-object-model');
   assert.equal(frozen.map.model, 'fixture-map-model');
@@ -221,7 +221,7 @@ test('new artwork uses the frozen prop pipeline and saves CAS, usage, hashes and
   const before = calls.length;
   const frozenEndpoint = f.work.generationConfiguration.prop.generationEndpoint;
   const registered = mapCapability.connector.providers.find(
-    (item) => item.id === 'gpt-image-2.5',
+    (item) => item.id === 'gpt-image-2.6',
   );
   const previous = {
     model: registered.model,

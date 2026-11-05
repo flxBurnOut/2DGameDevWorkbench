@@ -87,7 +87,7 @@ async function run() {
     process.env.MAP_STITCHER_OPENAI_API_URL = batch.service.endpoint;
   } else if (batch.cases.some(c => c.operation.type === 'ai-edit')) {
     const { resolveMapGenerationProvider } = await import('../lib/workbench/map-generation-settings.mjs');
-    const configured = resolveMapGenerationProvider(findCapability(await loadManifest(), 'image-assets').connector, 'gpt-image-2.5', 'edit-image');
+    const configured = resolveMapGenerationProvider(findCapability(await loadManifest(), 'image-assets').connector, 'gpt-image-2.6', 'edit-image');
     if (!configured?.apiKey) throw new Error('Image provider is not configured; no task or reservation created.');
     if (configured.endpoint !== batch.service.endpoint || configured.model !== batch.service.model) throw new Error('Provider differs from the frozen service.');
     process.env.OPENAI_API_KEY = configured.apiKey;

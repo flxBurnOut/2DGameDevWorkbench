@@ -137,7 +137,7 @@ const port = await freePort(), base = `http://127.0.0.1:${port}`;
 let active, proxy;
 async function start(gate, commandId) {
   const env = { ...process.env, WORKBENCH_RUNTIME_PORT: String(port), WORKBENCH_RUNTIME_URL: base,
-    OPENAI_API_KEY: 'fixture-ai-recovery-no-real-key', MAP_STITCHER_IMAGE_PROVIDER: 'gpt-image-2.5', IMAGE_ASSETS_PROVIDER: 'gpt-image-2.5',
+    OPENAI_API_KEY: 'fixture-ai-recovery-no-real-key', MAP_STITCHER_IMAGE_PROVIDER: 'gpt-image-2.6', IMAGE_ASSETS_PROVIDER: 'gpt-image-2.6',
     MAP_STITCHER_OPENAI_API_URL: providerUrl, MAP_STITCHER_OPENAI_GENERATION_API_URL: providerUrl,
     AI_RECOVERY_TASK_DIRECTORY: taskDirectory, AI_RECOVERY_GATE: gate || '', AI_RECOVERY_LEDGER: commandId ? ledgerFile(commandId) : '',
   };

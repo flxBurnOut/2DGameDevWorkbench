@@ -688,10 +688,10 @@ try {
   await writeFile(trashIndex, validTrash);
   for (const kind of ['background', 'prop']) {
     const imageId = `image-assets-${kind}`;
-    await task(imageId, 'image-assets', { operation: kind === 'prop' ? 'generate-prop' : 'generate-background', name: `Image 2.5 ${kind}` }, {
+    await task(imageId, 'image-assets', { operation: kind === 'prop' ? 'generate-prop' : 'generate-background', name: `Image 2.6 ${kind}` }, {
       'image.png': png,
       'provider-response.png': png,
-      'result.json': JSON.stringify({ kind, image: 'image.png', width: 128, height: 128, sha256: createHash('sha256').update(png).digest('hex'), model: 'gpt-image-2.5-sunburst' }),
+      'result.json': JSON.stringify({ kind, image: 'image.png', width: 128, height: 128, sha256: createHash('sha256').update(png).digest('hex'), model: 'gpt-image-2.6-sunburst' }),
     });
     const imageAsset = (await agentRequest(manifest, 'asset', { assetId: `image:${imageId}` })).asset;
     assert.equal(imageAsset.kind, kind === 'prop' ? 'prop' : 'map');

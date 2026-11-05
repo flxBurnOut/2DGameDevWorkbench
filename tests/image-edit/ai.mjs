@@ -98,7 +98,7 @@ try {
   }
   check(calls.length, 0);
   const original = await fixture('manual-then-ai');
-  check(original.target.aiEdit.supported, true); check(original.target.aiEdit.model, 'gpt-image-2.5-sunburst');
+  check(original.target.aiEdit.supported, true); check(original.target.aiEdit.model, 'gpt-image-2.6-sunburst');
   check(original.target.aiEdit.constraints.preserveAlpha, true); check(original.target.operationConstraints['pixel-patch'].preserveAlpha, true);
   check(original.target.aiEdit.alphaPreservation, 'copy-edit-base-alpha');
   const beforeInvalid = await countTasks();
@@ -131,7 +131,7 @@ try {
   check(persisted.imageEditContext, { editId: manual.edit.editId, candidateVersion: submitted.candidateVersion, target: original.target.targetRef });
   check((await getDocument(repositoryRoot, manifest, { documentId: original.document.id })).document.revision, 1, 'Starting AI does not adopt any image.');
   while (!release.resolve) await new Promise(resolve => setTimeout(resolve, 5));
-  check(calls.length, 1); check(calls[0].model, 'gpt-image-2.5-sunburst'); check(calls[0].images.length, 9);
+  check(calls.length, 1); check(calls[0].model, 'gpt-image-2.6-sunburst'); check(calls[0].images.length, 9);
   check(sha(calls[0].images[0]), sha(await readFile(path.resolve(repositoryRoot, persisted.input.image))));
   check(await decode(calls[0].images[0]), manualPixels, 'The provider base is the manual candidate, not the original source.');
   const maskPixels = await decode(calls[0].mask);

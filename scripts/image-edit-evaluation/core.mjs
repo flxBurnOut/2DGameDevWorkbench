@@ -30,7 +30,7 @@ export const encode = (pixels, width, height) => sharp(pixels, { raw: { width, h
 export function validateBatch(batch) {
   if (batch.schemaVersion !== 1 || !/^[a-z0-9-]+$/.test(batch.id)) throw new Error('Invalid batch identity.');
   if (!['real', 'fixture'].includes(batch.execution)) throw new Error('Explicit execution mode is required.');
-  if (batch.service?.model !== 'gpt-image-2.5-sunburst' || !batch.service?.endpoint?.startsWith('https://')) throw new Error('Freeze the current image provider explicitly.');
+  if (batch.service?.model !== 'gpt-image-2.6-sunburst' || !batch.service?.endpoint?.startsWith('https://')) throw new Error('Freeze the current image provider explicitly.');
   for (const key of ['textInput', 'imageInput', 'imageOutput']) if (!Number.isFinite(batch.pricing?.perMillion?.[key]) || batch.pricing.perMillion[key] < 0) throw new Error('Explicit price rates are required.');
   if (!Array.isArray(batch.cases) || batch.cases.length !== 24) throw new Error('P0 requires 24 diagnostic cases.');
   if (new Set(batch.cases.map(c => c.id)).size !== 24) throw new Error('Duplicate case identity.');

@@ -7,8 +7,8 @@
 | 需求 | 使用路径 | 外部 API |
 | --- | --- | --- |
 | 在可视画布中布图、画区域、修图和导出 | Web 地图编辑器 | 仅原图生成和整体层扩图需要 |
-| 生成背景并预览后用作中心图 | `image-assets` / `generate-background` | GPT Image 2.5，共用地图 Key |
-| 独立图片参考编辑 | `image-assets` / `edit-image` | GPT Image 2.5，结果单独采用 |
+| 生成背景并预览后用作中心图 | `image-assets` / `generate-background` | GPT Image 2.6，共用地图 Key |
+| 独立图片参考编辑 | `image-assets` / `edit-image` | GPT Image 2.6，结果单独采用 |
 | 已保存单张源图的局部清理与像素调整 | 7A 高层图像 API | 不需要 |
 | 旧地图原图请求兼容 | Web `map-stitcher` / `generate-origin` | 沿用地图生成设置 |
 | 确定性拼接已有图片并生成状态/引擎包 | 本地适配器 `compose` | 不需要 |
@@ -30,7 +30,7 @@
 
 ## 原图生成
 
-场景首页的“生成地图原图”、编辑器工具栏和空白画布入口打开“生成场景背景 · GPT Image 2.5”。默认能力为 `image-assets` / `generate-background`，模型 ID 为 `gpt-image-2.5-sunburst`，默认 1536×1024，可选方形或竖向尺寸，并可上传最多 8 张参考图。图片 Key 与地图生成共用受保护的本机配置，也可用 `OPENAI_API_KEY`；已有 GPT Image 2 Key 自动复用，不回显到浏览器。请求使用提示词与明确选择的参考图，不上传当前地图草稿。
+场景首页的“生成地图原图”、编辑器工具栏和空白画布入口打开“生成场景背景 · GPT Image 2.6”。默认能力为 `image-assets` / `generate-background`，模型 ID 为 `gpt-image-2.6-sunburst`，默认 1536×1024，可选方形或竖向尺寸，并可上传最多 8 张参考图。图片 Key 与地图生成共用受保护的本机配置，也可用 `OPENAI_API_KEY`；已有 GPT Image 2 Key 自动复用，不回显到浏览器。请求使用提示词与明确选择的参考图，不上传当前地图草稿。
 
 提交后立即得到已保存的 `running` 任务；面板只查询该任务，不重复付费提交。服务端完整解码返回 PNG 并校验尺寸，原始字节保存在 `provider-response.png`，经过本地处理的可采用版本为 `image.png`，分别记录rawSha256 / sha256。`processing-report.json` 保存蒙版保护和透明清理证据，元数据保留模型、提示词和全部输入副本哈希；Key 不进入任务与产物。输出不裁切、不缩成128×128。`result.json` 标记 `requiresAdoption=true`。
 
@@ -44,7 +44,7 @@
 
 孤儿任务的 `refresh` 状态检查只报告派生的 `attention_required`，不回写旧快照，以免覆盖执行进程稍后提交的完成结果。底层记录可能仍为 `running`；未刷新读取不等于确认执行进程仍活跃。只有实际执行进程提交最终状态，没有自动续发或恢复动作。
 
-OpenAI 纯文本原图使用 `/v1/images/generations`，参考图 / 编辑 / 扩图使用 `/v1/images/edits`。原有自定义地址保留：edits 地址以 `/edits` 结尾时会沿用同一服务的 `/generations`；其他自定义地址需设置 `MAP_STITCHER_OPENAI_GENERATION_API_URL`。独立图片能力从 manifest 的地图 provider 列表引用 GPT Image 2.5 配置，不复制一份 provider 或 Key。
+OpenAI 纯文本原图使用 `/v1/images/generations`，参考图 / 编辑 / 扩图使用 `/v1/images/edits`。原有自定义地址保留：edits 地址以 `/edits` 结尾时会沿用同一服务的 `/generations`；其他自定义地址需设置 `MAP_STITCHER_OPENAI_GENERATION_API_URL`。独立图片能力从 manifest 的地图 provider 列表引用 GPT Image 2.6 配置，不复制一份 provider 或 Key。
 
 旧 `map-stitcher` / `generate-origin` 及其 `generated-origin.png` 记录继续兼容，前端与场景协作执行器均可按固定配置使用 Nano Banana 2、GPT Image 2 / 2.5 或混元 Image 3.0。旧图的身份与历史不改写。
 

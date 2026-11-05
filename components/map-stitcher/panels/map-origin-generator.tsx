@@ -14,7 +14,7 @@ export function MapOriginGenerator({ open, onOpenChange, c }: {
   return <Dialog open={open} onOpenChange={(value) => { if (!busy) onOpenChange(value); }}>
     <DialogContent className="map-origin-dialog">
       <DialogHeader>
-        <DialogTitle>生成场景背景 · GPT Image 2.5</DialogTitle>
+        <DialogTitle>生成场景背景 · GPT Image 2.6</DialogTitle>
         <DialogDescription>生成图片后确认采用，再沿用地图编辑器制作区域和组装场景。</DialogDescription>
       </DialogHeader>
       <ImageAssetsPanel kind="background" name="场景背景" disabled={c.busy} onBusy={setBusy} adoptionLabel="用作地图中心图" onAdopt={async (taskId) => {

@@ -14,7 +14,7 @@ Forge 的公开文档面向安装、制作资产、MCP 接入与游戏项目交�
 | [视觉专家与争议复核](sprite-review-evaluation.md) | 独立意见、争议复核、实际画面对比与调用边界 |
 | [选帧修改与备选版本](motion-adjustments.md) | 用户范围与意图、独立额度、对比采用与原版保护 |
 | [角色视觉结构](visual-structures.md) | 原图部件、时序追踪、结构辅助复核、独立分割环境与版本化纠正 |
-| [地图拼接](map-stitcher.md) | Image 2.5 背景、手动扩展、碰撞和导出 |
+| [地图拼接](map-stitcher.md) | Image 2.6 背景、手动扩展、碰撞和导出 |
 | [交互物编辑器](interactable-editor.md) | 外观、交互行为与 Godot 资源 |
 | [交互物原图](prop-art.md) | 物品原图生成与采用 |
 | [图片局部调整](image-editing.md) | 精确源图、区域配方、本地候选与版本保护 |

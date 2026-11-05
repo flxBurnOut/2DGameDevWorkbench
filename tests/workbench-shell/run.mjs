@@ -88,7 +88,7 @@ try {
     assert.equal(item.title,'物品原图');
     assert.equal(item.href,'/tools/interactable-editor?artTask=prop-task');
   });
-  test('Image 2.5 work items use existing editors without duplicate navigation modules', () => {
+  test('Image 2.6 work items use existing editors without duplicate navigation modules', () => {
     assert.equal(modules.some((entry) => entry.id === 'image-assets'), false);
     for (const [operation, kind, module] of [['generate-background', 'background', 'map-stitcher'], ['generate-prop', 'prop', 'interactable-editor'], ['edit-image', 'prop', 'interactable-editor']]) {
       const [item] = taskWorkItems([{ id: 'image-result', capabilityId: 'image-assets', status: 'completed', input: { operation, kind } }], modules);

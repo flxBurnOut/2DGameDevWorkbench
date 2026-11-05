@@ -82,7 +82,7 @@ flowchart LR
     X --> S[SpritePipeline]
     X --> T[Map Stitcher]
     X --> O[Interactable Editor]
-    X --> G[Image 2.5 assets]
+    X --> G[Image 2.6 assets]
     G --> E
     T -.可选外部生成.-> E[Gemini / OpenAI Images / Hunyuan]
     R --> Q[work/tasks]
@@ -121,9 +121,9 @@ MCP、CLI 和 Web 在允许的能力范围内汇入同一套运行时，因此�
 
 ## 5. 生产能力
 
-### Image 2.5 独立素材
+### Image 2.6 独立素材
 
-`image-assets` 负责路线 A 的背景、透明物品与已有图片编辑。它嵌入地图/交互物页面，不创建重复的导航模块。统一适配器使用 `gpt-image-2.5-sunburst`，保存原始响应、规范化 PNG、尺寸、实际 Alpha 和 SHA-256。任务先持久化为 running，再异步调用；轮询不重复提交，结果不确定时需要检查。生成与采用分开：采用重读文件并核对哈希，背景成为独立地图层，透明物品绑定现有交互物。旧 PixelLab 链路继续可用；不接入 Qwen 分层。
+`image-assets` 负责路线 A 的背景、透明物品与已有图片编辑。它嵌入地图/交互物页面，不创建重复的导航模块。统一适配器使用 `gpt-image-2.6-sunburst`，保存原始响应、规范化 PNG、尺寸、实际 Alpha 和 SHA-256。任务先持久化为 running，再异步调用；轮询不重复提交，结果不确定时需要检查。生成与采用分开：采用重读文件并核对哈希，背景成为独立地图层，透明物品绑定现有交互物。旧 PixelLab 链路继续可用；不接入 Qwen 分层。
 
 新图片请求另保存白名单用量证据 `provider-usage.json`，包括可取得的 token 计数、HTTP/请求身份、耗时和返回质量。在图片校验前持久化，输出验证失败仍能保留已返回的 usage；缺失计数与实际账单金额保持 null。记录失败不会重新请求。费率估算属于独立评测，不能由任务 completed 推断质量通过或实际收费。
 

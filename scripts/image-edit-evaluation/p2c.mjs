@@ -65,7 +65,7 @@ for (const row of protocol.order) assert.match(row.ticket, /^[a-zA-Z0-9_-]+$/);
 assert.equal(new Set(protocol.order.map((row) => row.ticket)).size, 8);
 const provider = resolveMapGenerationProvider(
   findCapability(await loadManifest(), 'image-assets').connector,
-  'gpt-image-2.5',
+  'gpt-image-2.6',
   'edit-image',
 );
 assert.equal(provider.endpoint, protocol.endpoints[0]);

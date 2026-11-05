@@ -78,7 +78,7 @@
 | pickup / 拾取 | 只提交一次 `picked_up`，完成后保留、隐藏或释放 |
 | sequence / 序列 | 成功后推进一项；末项可停止、循环或停留末项 |
 
-四种触发为 `proximity_press`（靠近按键）、`pointer_click`（点击）、`automatic_enter`（每次进入触发一次）、`external_request`（游戏代码请求）。默认 action 为 `workbench_interact`，键为 E；Godot 中已有 action 的映射保持不变。
+四种触发为 `proximity_press`（靠近按键）、`pointer_click`（点击）、`automatic_enter`（每次进入触发一次）、`external_request`（游戏代码请求）。默认 action 为 `workbench_interact`，键为 E。Godot 工程已有该 action 时使用游戏的按键映射。运行时自行创建 action 时，共用它的物件各自响应配置的按键。
 
 同一运行时一次只受理一个交互，重叠时只显示最近且符合条件的物件提示。指针触发先按物件 Z，再按优先级、距离和节点路径消歧。自动触发在进入时排队，站在原地不会连续触发。显式外部请求可以省略来源和靠近要求，仍受完成、启用、冷却和忙碌状态限制。
 

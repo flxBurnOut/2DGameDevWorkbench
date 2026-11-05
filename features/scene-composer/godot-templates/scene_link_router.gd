@@ -22,6 +22,7 @@ var _exhausted: Dictionary = {}
 var _stopping := false
 
 func _ready() -> void:
+	_stopping = false
 	runtime = get_node_or_null(runtime_path)
 	if not is_instance_valid(runtime) or not runtime.has_signal("interactable_registered"):
 		push_error("Scene links require the shared Workbench interaction runtime.")
@@ -154,6 +155,7 @@ func _flush() -> void:
 
 func _exit_tree() -> void:
 	_stopping = true
+	request_ready()
 	_queue.clear()
 	for record in _bindings.values().duplicate():
 		_disconnect_object(record.object)

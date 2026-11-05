@@ -469,6 +469,8 @@ test('deterministic overlap restoration and clipping keep holes and context exac
     before = { x: 0, y: 0, width: 24, height: 16 };
   const template = await mapGenerationTemplate(scene, target),
     templateData = await raw(template);
+  scene.map.layers[0].hidden = true;
+  assert.deepEqual(await mapGenerationTemplate(scene, target), template, 'Editor visibility cannot change the generator reference');
   assert.deepEqual(
     [...templateData.subarray(0, 4)],
     await worldPixel(scene.map.layers[0], scene.map, 18, 0),
@@ -528,6 +530,10 @@ test('native extension preserves locked old pixels, collisions, offsets, source 
         await beforeZip.file(filename).async('nodebuffer'),
       );
     assert.equal((await inspectMapSource(root, map)).canExtend, true);
+    const toggled = structuredClone(map);
+    toggled.layers[0].locked = !toggled.layers[0].locked;
+    toggled.layers[0].hidden = !toggled.layers[0].hidden;
+    assert.equal((await inspectMapSource(root, toggled)).canExtend, true);
     await assertMapPolicy(root, f.source.content.map, map, f.work);
     assert.equal(
       receipt.mapOutput.sourceTaskId,

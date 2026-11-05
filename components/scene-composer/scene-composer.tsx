@@ -73,6 +73,7 @@ import {
   type SceneMap,
 } from '@/features/scene-composer/model.mjs';
 import { createSceneSimulation } from '@/features/scene-composer/simulation.mjs';
+import { mapSplitCollisionOwner, removeMapSplitElements } from '@/features/scene-composer/map-split.mjs';
 import {
   downloadScene,
   exportScene,
@@ -97,6 +98,10 @@ import { ScenePreviewFeedback } from './scene-preview-feedback';
 import { ObjectArt } from './scene-art';
 import { SceneImagePreview } from './scene-image-preview';
 import { SceneWorkflowPanel } from './scene-workflow-panel';
+import { SceneSplitPanel } from './scene-split-panel';
+import { splitCollisionTransfer } from './scene-split-client.mjs';
+import { mapSplitElementRect } from '@/features/scene-composer/render-model.mjs';
+import type { MapSplitElement } from '@/features/scene-composer/map-split.mjs';
 import { sceneWorkflowNavigation, writeSceneWorkflowNavigation } from '@/features/scene-workflow/client';
 import { ImageEditWorkspace } from '@/components/image-edit/image-edit-workspace';
 import { imageSlotChoices, imageTargetEquals, readImageEdit, validateSceneImageReceipt, verifiedSceneImageSource } from '@/features/image-edit/client';
@@ -233,14 +238,17 @@ export function SceneComposer() {
   const [imageOpening, setImageOpening] = useState(false), [imageSlot, setImageSlot] = useState('visual');
   const [workflow, setWorkflow] = useState<DocumentSavedSnapshot<Scene> | null>(null);
   const [workflowOpening, setWorkflowOpening] = useState(false);
+  const [splitWindow, setSplitWindow] = useState<DocumentSavedSnapshot<Scene> | null>(null);
+  const [splitOpening, setSplitOpening] = useState(false), [splitInitialMode, setSplitInitialMode] = useState<'auto' | 'local' | 'vision'>();
+  const splitGuard = useRef<DocumentSavedSnapshot<Scene> | null>(null);
   const [workflowInitialId, setWorkflowInitialId] = useState<string>();
   const workflowGuard = useRef<DocumentSavedSnapshot<Scene> | null>(null);
   const workflowNavigationConsumed = useRef(false);
   const imageEditRef = useRef(imageEdit), imageEditing = useRef(false), imageNavigationConsumed = useRef(false);
   useLayoutEffect(() => { imageEditRef.current = imageEdit; }, [imageEdit]);
-  const doc = useSceneDocument(Boolean(imageEdit) || Boolean(workflow), imageOpening || workflowOpening),
+  const doc = useSceneDocument(Boolean(imageEdit) || Boolean(workflow) || Boolean(splitWindow), imageOpening || workflowOpening || splitOpening),
     { scene, ready, busy: documentBusy } = doc;
-  const busy = documentBusy || imageOpening || Boolean(imageEdit) || workflowOpening || Boolean(workflow);
+  const busy = documentBusy || imageOpening || Boolean(imageEdit) || workflowOpening || Boolean(workflow) || splitOpening || Boolean(splitWindow);
   const [selected, setSelected] = useState<string[]>([]),
     [tab, setTab] = useState<'materials' | 'nodes'>('materials');
   const [search, setSearch] = useState(''),
@@ -354,20 +362,26 @@ export function SceneComposer() {
   const active =
     selectedInstances.length === 1 ? selectedInstances[0] : undefined;
   const activeMaterial = active && materialFor(scene, active);
+  const activeSplit = selected.length === 1 ? scene.mapSplit?.elements.find(element => element.id === selected[0]) : undefined;
+  const [splitPartId, setSplitPartId] = useState(''), [splitImageWindow, setSplitImageWindow] = useState('');
+  const splitPart = activeSplit?.parts.find(part => part.id === splitPartId) ?? activeSplit?.parts[0];
   const slotChoices = activeMaterial ? imageSlotChoices(activeMaterial.project.objects[0], true) : [];
   const selectedSlot = slotChoices.find(choice => choice.value === imageSlot) || slotChoices[0];
   const layer =
     selected.length === 1
       ? scene.map?.layers.find((l) => l.id === selected[0])
       : undefined;
-  const flagNodes = [...scene.instances, ...(scene.map?.layers || [])].filter(
+  const flagNodes = [...scene.instances, ...(scene.map?.layers || []), ...(scene.mapSplit?.elements || [])].filter(
     (i) => selected.includes(i.id),
   );
   const warnings = sceneWarnings(scene);
+  const visibleNodeIds = scene.order.filter(id => !scene.mapSplit || scene.mapSplit.stale || !scene.map?.layers.some(mapLayer => mapLayer.id === id));
+  const objectCount = scene.instances.length + (scene.mapSplit && !scene.mapSplit.stale ? scene.mapSplit.elements.filter(element => element.kind === 'object').length : 0);
   const nodeName = (id: string) =>
     id === 'actor'
       ? '玩家所在层'
       : scene.instances.find((i) => i.id === id)?.name ||
+        scene.mapSplit?.elements.find(element => element.id === id)?.name ||
         scene.map?.layers.find((l) => l.id === id)?.name ||
         id;
   const select = (ids: string[]) => {
@@ -407,7 +421,9 @@ export function SceneComposer() {
       setTab('nodes');
       return;
     }
-    doc.edit((s) => reorder(s, selected, action, target));
+    doc.edit((s) => {
+      reorder(s, selected, action, target);
+    });
     setTargetMode(null);
   };
   const duplicate = (offset = 16, selection = selected) => {
@@ -415,6 +431,15 @@ export function SceneComposer() {
     doc.edit((s) => {
       const originals = s.order.filter((id) => selection.includes(id));
       for (const key of originals) {
+        const element = s.mapSplit?.elements.find(item => item.id === key);
+        if (element && !element.locked) {
+          const copied = { ...structuredClone(element), id: makeId('map_object'), name: `${element.name} 副本`, x: element.x + offset, y: element.y + offset };
+          delete copied.sourceKey;
+          copied.collision.mapIndices = [];
+          s.mapSplit!.elements.push(copied); s.mapSplit!.review = 'unverified';
+          s.order.splice(s.order.indexOf(key), 0, copied.id); ids.push(copied.id);
+          continue;
+        }
         const i = s.instances.find((item) => item.id === key);
         if (!i || i.locked) continue;
         const copied = {
@@ -442,6 +467,10 @@ export function SceneComposer() {
           .map((i) => i.id),
       );
       removedLinks = removeInstances(s, [...ids]).length;
+      if (s.mapSplit) {
+        const removed = s.mapSplit.elements.filter(element => selected.includes(element.id) && !element.locked).map(element => element.id);
+        removeMapSplitElements(s, removed);
+      }
     });
     if (applied) {
       setSelected([]);
@@ -462,9 +491,13 @@ export function SceneComposer() {
   };
   const flags = (key: 'locked' | 'hidden' | 'included', value: boolean) =>
     doc.edit((s) => {
-      for (const node of [...s.instances, ...(s.map?.layers || [])])
-        if (selected.includes(node.id)) node[key] = value;
+      for (const node of [...s.instances, ...(s.map?.layers || []), ...(s.mapSplit?.elements || [])])
+        if (selected.includes(node.id) && (key === 'locked' || !node.locked)) node[key] = value;
     });
+  const changeSplit = (fn: (element: MapSplitElement) => void) => doc.edit(s => {
+    const element = s.mapSplit?.elements.find(item => item.id === activeSplit?.id);
+    if (element && !element.locked) { fn(element); s.mapSplit!.review = 'unverified'; }
+  });
   const openPicker = (kind: typeof dialog) => {
     if (preview) setPreview(false);
     replacementIds.current = selectedInstances
@@ -595,6 +628,18 @@ export function SceneComposer() {
     } catch (error) { setNotice(error instanceof Error ? error.message : '场景协作尚未打开。'); }
     finally { setWorkflowOpening(false); }
   }, [busy, preview, doc]);
+  const openSplit = useCallback(async (mode?: 'auto' | 'local' | 'vision') => {
+    if (busy || preview || splitGuard.current || !doc.current.current.map) return;
+    setSplitOpening(true);
+    try {
+      const original = await documentFingerprint({ ...validateScene(doc.current.current), revision: 0 });
+      await doc.save();
+      const guard = await doc.shared.flushSaved();
+      if (original !== guard.fingerprint) throw new Error('保存期间场景发生变化，草稿已保留，请重新打开分层。');
+      splitGuard.current = guard; setSplitInitialMode(mode); setSplitWindow(guard);
+    } catch (cause) { setNotice(cause instanceof Error ? cause.message : '地图分层尚未打开。'); }
+    finally { setSplitOpening(false); }
+  }, [busy, preview, doc]);
   useEffect(() => {
     if (!ready || busy || preview || workflowNavigationConsumed.current) return;
     const navigation = sceneWorkflowNavigation(location.href);
@@ -609,12 +654,13 @@ export function SceneComposer() {
       const original = await documentFingerprint({ ...validateScene(doc.current.current), revision: 0 });
       await doc.save();
       const guard = await doc.shared.flushSaved();
-      if (!['scene-layer', 'scene-instance'].includes(target.kind) || !('documentId' in target) || target.documentId !== guard.document.id || original !== guard.fingerprint) throw new Error('保存期间场景或图片目标已变化，请重新选择。');
+      if (!['scene-layer', 'scene-instance', 'scene-split-part'].includes(target.kind) || !('documentId' in target) || target.documentId !== guard.document.id || original !== guard.fingerprint) throw new Error('保存期间场景或图片目标已变化，请重新选择。');
       if (target.kind === 'scene-layer' && !guard.document.content.map?.layers.some(item => item.id === target.layerId)) throw new Error('选中的场景图层已不存在。');
       if (target.kind === 'scene-instance' && !guard.document.content.instances.some(item => item.id === target.instanceId)) throw new Error('选中的场景实例已不存在。');
+      if (target.kind === 'scene-split-part' && !guard.document.content.mapSplit?.elements.some(element => element.id === target.elementId && element.parts.some(part => part.id === target.partId))) throw new Error('选中的分层子片已不存在。');
       const next = { target, guard, navigation }; imageEditRef.current = next; setImageEdit(next);
     } catch (error) {
-      if (navigation && ['scene-layer', 'scene-instance'].includes(target.kind)) { const next = { target, guard: null, navigation }; imageEditRef.current = next; setImageEdit(next); }
+      if (navigation && ['scene-layer', 'scene-instance', 'scene-split-part'].includes(target.kind)) { const next = { target, guard: null, navigation }; imageEditRef.current = next; setImageEdit(next); }
       else imageEditing.current = false;
       setNotice(error instanceof Error ? error.message : '图片调整尚未打开。');
     } finally { setImageOpening(false); }
@@ -622,7 +668,7 @@ export function SceneComposer() {
   const resumeImageEdit = useEffectEvent(() => {
     const navigation = readImageEditNavigation(); if (!navigation) return;
     void readImageEdit(navigation.editId).then(({ edit }) => {
-      if (!['scene-layer', 'scene-instance'].includes(edit.target.targetRef.kind)) throw new Error('此图片会话不属于场景图层或实例。');
+      if (!['scene-layer', 'scene-instance', 'scene-split-part'].includes(edit.target.targetRef.kind)) throw new Error('此图片会话不属于场景图层、实例或分层子片。');
       return openImageEdit(edit.target.targetRef, navigation);
     }).catch(error => setNotice(error instanceof Error ? error.message : '历史会话读取失败。'));
   });
@@ -689,7 +735,7 @@ export function SceneComposer() {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         if (
           sim.waiting?.type === 'show_text' &&
-          ['Enter', ' ', sim.active?.definition.activation.key].includes(e.key)
+          ['enter', ' ', sim.active?.definition.activation.key.toLowerCase()].includes(e.key.toLowerCase())
         ) {
           e.preventDefault();
           sim.advanceText();
@@ -725,6 +771,10 @@ export function SceneComposer() {
                 e.key === 'ArrowLeft' ? -n : e.key === 'ArrowRight' ? n : 0;
               i.y += e.key === 'ArrowUp' ? -n : e.key === 'ArrowDown' ? n : 0;
             }
+          for (const element of s.mapSplit?.elements ?? []) if (selected.includes(element.id) && !element.locked) {
+            element.x += e.key === 'ArrowLeft' ? -n : e.key === 'ArrowRight' ? n : 0;
+            element.y += e.key === 'ArrowUp' ? -n : e.key === 'ArrowDown' ? n : 0;
+          }
         });
       } else if (e.key === '0') fit();
     };
@@ -808,6 +858,8 @@ export function SceneComposer() {
             {scene.map ? <RefreshCw /> : <Upload />}
             {scene.map ? '替换地图' : '选择地图'}
           </Button>
+          <Button size="sm" variant="outline" disabled={busy || preview || !ready || !scene.map} onClick={() => void openSplit('auto')}>一键地图粗分</Button>
+          <Button size="sm" variant="ghost" disabled={busy || preview || !ready || !scene.map} onClick={() => void openSplit()}>分层候选 / 恢复</Button>
           <Button
             size="sm"
             variant="outline"
@@ -914,7 +966,7 @@ export function SceneComposer() {
               aria-pressed={tab === 'nodes'}
               onClick={() => setTab('nodes')}
             >
-              场景节点 <span>{scene.order.length}</span>
+              场景节点 <span>{visibleNodeIds.length}</span>
             </button>
           </div>
           <label className="sc-search" htmlFor="sc-search">
@@ -988,17 +1040,18 @@ export function SceneComposer() {
             ) : (
               <>
                 <p className="sc-note">上方在前 · 拖动节点调整遮挡</p>
-                {scene.order
+                {visibleNodeIds
                   .filter((id) => nodeName(id).includes(search))
                   .map((id) => {
                     const node =
                       scene.instances.find((i) => i.id === id) ||
+                      scene.mapSplit?.elements.find(element => element.id === id) ||
                       scene.map?.layers.find((l) => l.id === id);
                     return (
                       <div
                         key={id}
                         className={`sc-node ${selected.includes(id) ? 'is-selected' : ''} ${id === 'actor' ? 'sc-actor-node' : ''}`}
-                        draggable={!busy && !preview}
+                        draggable={!busy && !preview && !node?.locked}
                         onDragStart={(e) => {
                           draggedNodes.current = selected.includes(id)
                             ? selected
@@ -1048,19 +1101,20 @@ export function SceneComposer() {
                             );
                           }}
                         >
-                          <span>{scene.order.indexOf(id) + 1}</span>
+                          <span>{visibleNodeIds.indexOf(id) + 1}</span>
                           <strong title={nodeName(id)}>{nodeName(id)}</strong>
                         </button>
                         {node && (
                           <>
                             <button
                               aria-label={`${node.hidden ? '显示' : '隐藏'} ${nodeName(id)}（仅编辑）`}
-                              disabled={busy || preview}
+                              disabled={busy || preview || node.locked}
                               onClick={() =>
                                 doc.edit((s) => {
                                   const item = [
                                     ...s.instances,
                                     ...(s.map?.layers || []),
+                                    ...(s.mapSplit?.elements || []),
                                   ].find((n) => n.id === id)!;
                                   item.hidden = !item.hidden;
                                 })
@@ -1080,6 +1134,7 @@ export function SceneComposer() {
                                   const item = [
                                     ...s.instances,
                                     ...(s.map?.layers || []),
+                                    ...(s.mapSplit?.elements || []),
                                   ].find((n) => n.id === id)!;
                                   item.locked = !item.locked;
                                 })
@@ -1124,7 +1179,6 @@ export function SceneComposer() {
             time={clock}
             targetMode={targetMode}
             target={(id) => arrange(targetMode!, id)}
-            fit={0}
             notice={setNotice}
           />
           {preview && (
@@ -1375,6 +1429,48 @@ export function SceneComposer() {
                   </Button>
                 </>
               )}
+              {activeSplit && <>
+                <h3>{activeSplit.kind === 'object' ? '独立地图物件' : activeSplit.kind === 'background' ? '场景背景' : '地图地表'}</h3>
+                <p className="sc-note">{activeSplit.id} · {activeSplit.parts.length} 个子片 · {Math.round(mapSplitElementRect(scene, activeSplit).width)} × {Math.round(mapSplitElementRect(scene, activeSplit).height)}</p>
+                {scene.mapSplit?.stale && <p className="sc-note">地图已替换，旧分层待迁移。请打开“分层候选 / 恢复”检查新版。</p>}
+                <label className="sc-field" htmlFor="sc-split-object-name">物件名称<Input id="sc-split-object-name" value={activeSplit.name} disabled={activeSplit.locked} maxLength={200} onChange={event => changeSplit(element => { element.name = event.target.value; })} /></label>
+                <div className="sc-two"><NumberField label="地图内 X" value={activeSplit.x} change={n => changeSplit(element => { element.x = n; })} /><NumberField label="地图内 Y" value={activeSplit.y} change={n => changeSplit(element => { element.y = n; })} /></div>
+                <label className="sc-field">下次地图替换时<select aria-label="物件迁移定位方式" value={activeSplit.positionMode} disabled={activeSplit.locked} onChange={event => changeSplit(element => { element.positionMode = event.target.value as 'relative' | 'world'; })}><option value="relative">随新版物件位置重放场景位移</option><option value="world">固定当前世界位置</option></select></label>
+                <label className="sc-field">图片与效果子片<select aria-label="分层图片与效果子片" value={splitPart?.id ?? ''} onChange={event => { setSplitPartId(event.target.value); setSplitImageWindow(''); }}>{activeSplit.parts.map(part => <option key={part.id} value={part.id}>{part.id} · {part.role === 'effect' ? '效果' : '美术'} · {part.width}×{part.height}</option>)}</select></label>
+                {splitPart && <>
+                  <label className="sc-check"><input type="checkbox" checked={splitPart.enabled} disabled={activeSplit.locked} onChange={event => changeSplit(element => { element.parts.find(part => part.id === splitPart.id)!.enabled = event.target.checked; })} />启用此{splitPart.role === 'effect' ? '效果' : '子片'}</label>
+                  <label className="sc-field">相对玩家的遮挡<select aria-label="分层子片玩家前后关系" value={splitPart.plane} disabled={activeSplit.locked} onChange={event => changeSplit(element => { element.parts.find(part => part.id === splitPart.id)!.plane = event.target.value as 'back' | 'front'; })}><option value="back">玩家后方</option><option value="front">玩家前方</option></select></label>
+                  <details><summary>大图编辑窗口</summary><label className="sc-field" htmlFor="sc-split-edit-window">子片内原像素坐标 JSON<Input id="sc-split-edit-window" value={splitImageWindow} placeholder={'{"x":0,"y":0,"width":512,"height":512}'} onChange={event => setSplitImageWindow(event.target.value)} /></label></details>
+                  <Button size="sm" variant="outline" disabled={busy || activeSplit.locked || scene.mapSplit?.stale} onClick={() => {
+                    try {
+                      const window = splitImageWindow.trim() ? JSON.parse(splitImageWindow) as { x: number; y: number; width: number; height: number } : undefined;
+                      if (window && (![window.x, window.y, window.width, window.height].every(Number.isInteger) || window.x < 0 || window.y < 0 || window.width < 1 || window.height < 1 || window.x + window.width > splitPart.width || window.y + window.height > splitPart.height)) throw new Error('编辑窗口超出所选子片。');
+                      void openImageEdit({ kind: 'scene-split-part', documentId: scene.id, elementId: activeSplit.id, partId: splitPart.id, ...(window ? { window } : {}) });
+                    } catch (cause) { setNotice(cause instanceof Error ? cause.message : '编辑窗口无效。'); }
+                  }}>局部调整此分层子片</Button>
+                </>}
+                <h3>独立阻挡轮廓</h3>
+                <label className="sc-check"><input type="checkbox" checked={activeSplit.collision.enabled} disabled={activeSplit.locked} onChange={event => changeSplit(element => { element.collision.enabled = event.target.checked; })} />启用此物件碰撞</label>
+                <details><summary>修正轮廓（相对物件锚点）</summary><label className="sc-field">碰撞多边形 JSON<textarea aria-label="分层物件碰撞多边形JSON" key={`${activeSplit.id}:${JSON.stringify(activeSplit.collision.polygons)}`} rows={5} defaultValue={JSON.stringify(activeSplit.collision.polygons, null, 2)} disabled={activeSplit.locked} onBlur={event => {
+                  try { const polygons = JSON.parse(event.target.value) as Array<Array<Point>>; if (!Array.isArray(polygons) || polygons.some(poly => !Array.isArray(poly) || poly.length < 3 || poly.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y)))) throw new Error('每个轮廓需要至少三个有效坐标点。'); changeSplit(element => { element.collision.polygons = polygons; }); }
+                  catch (cause) { doc.setError(cause instanceof Error ? cause.message : '碰撞轮廓无效，草稿已保留。'); }
+                }} /></label></details>
+                <p className="sc-note">碰撞建议可修正；{activeSplit.collision.mapIndices.length ? `已接管 ${activeSplit.collision.mapIndices.length} 个原地图区域。` : '未接管原地图碰撞。'}</p>
+                {!!scene.map?.collisions.length && <details><summary>接管 / 解除原地图碰撞</summary>
+                  <p className="sc-note">接管会用选中地图区域替换此物件的轮廓，并继承地图的启用状态。取消全部区域会关闭此物件轮廓，恢复原地图阻挡。</p>
+                  {scene.map.collisions.map((points, index) => {
+                    const ownership = mapSplitCollisionOwner(scene, index);
+                    const owner = ownership && !ownership.deleted && ownership.elementId !== activeSplit.id ? ownership : undefined;
+                    const deleted = ownership?.deleted;
+                    return <label className="sc-check" key={index}><input type="checkbox" aria-label={`接管地图碰撞区域 ${index + 1}`} checked={activeSplit.collision.mapIndices.includes(index)} disabled={activeSplit.locked || scene.mapSplit?.stale || !!owner || !!deleted} onChange={event => {
+                      const indices = event.target.checked ? [...activeSplit.collision.mapIndices, index] : activeSplit.collision.mapIndices.filter(value => value !== index);
+                      try { const collision = splitCollisionTransfer(doc.current.current, activeSplit.id, indices); changeSplit(element => { element.collision = collision; }); }
+                      catch (cause) { setNotice(cause instanceof Error ? cause.message : '碰撞归属未改变。'); }
+                    }} />区域 {index + 1} · {points.length} 点{owner ? ` · 已归属 ${owner.name}` : deleted ? ' · 已随删除物件停用' : ''}</label>;
+                  })}
+                </details>}
+                <Button size="sm" variant="outline" disabled={busy || activeSplit.locked} onClick={remove}>删除此分层对象</Button>
+              </>}
               {layer && scene.map && (
                 <>
                   <h3>{layer.name}</h3>
@@ -1445,10 +1541,10 @@ export function SceneComposer() {
                   {selected.length === 1 && (
                     <NumberField
                       label="层级序号（1 在最前）"
-                      value={scene.order.indexOf(selected[0]) + 1}
+                      value={visibleNodeIds.indexOf(selected[0]) + 1}
                       min={1}
-                      max={scene.order.length}
-                      change={(n) => arrange('index', Math.round(n))}
+                      max={visibleNodeIds.length}
+                      change={(n) => { const index = Math.round(n) - 1, target = visibleNodeIds[index]; if (target) arrange(index > visibleNodeIds.indexOf(selected[0]) ? 'after' : 'before', target); }}
                     />
                   )}
                   <Button
@@ -1575,7 +1671,7 @@ export function SceneComposer() {
           {busy ? '正在处理文件，请稍候…' : notice}
         </output>
         <span>
-          {scene.instances.length} 个物件 · {Math.round(scene.view.zoom * 100)}%
+          {objectCount} 个物件 · {Math.round(scene.view.zoom * 100)}%
         </span>
       </footer>
       <input
@@ -1884,11 +1980,13 @@ export function SceneComposer() {
                       x: oldPoint.x - newPoint.x,
                       y: oldPoint.y - newPoint.y,
                     };
+                  const needsMigration = Boolean(doc.current.current.mapSplit);
                   if (!doc.edit((s) => replaceMap(s, map))) return;
                   setPendingMap(null);
                   setSelected([]);
-                  setNotice('地图已应用；原物件位置已保留。可撤销本次替换。');
+                  setNotice(needsMigration ? '地图已应用，正在为新版创建本地迁移候选；可从“分层候选 / 恢复”继续核对对应与冲突。' : '地图已应用；原物件位置已保留。可撤销本次替换。');
                   setTimeout(fit, 0);
+                  if (needsMigration) setTimeout(() => void openSplit('auto'), 0);
                 }}
               >
                 应用地图
@@ -2031,6 +2129,21 @@ export function SceneComposer() {
       }}
       onClose={() => { workflowGuard.current = null; setWorkflow(null); writeSceneWorkflowNavigation(workflow.document.id, null); }}
     />}
+    {splitWindow && <SceneSplitPanel document={splitWindow.document} initialMode={splitInitialMode}
+      beforeAdopt={async () => {
+        const guard = splitGuard.current;
+        if (!guard || doc.current.current.id !== guard.document.id || await documentFingerprint({ ...validateScene(doc.current.current), revision: 0 }) !== guard.fingerprint) throw new Error('本机场景在分层期间发生变化，候选和草稿已保留，请重新打开。');
+      }}
+      onAdopt={async receipt => {
+        const guard = splitGuard.current;
+        if (!guard || receipt.documentId !== guard.document.id || receipt.currentRevision !== receipt.revision) throw new Error('分层采用回执与当前场景不匹配。');
+        const { document } = await readDocument<Scene>(receipt.documentId, receipt.revision);
+        if (document.contentHash !== receipt.contentHash) throw new Error('分层采用后的确切场景版本校验未通过。');
+        const next = await doc.shared.acceptAdopted(document, guard);
+        splitGuard.current = next; setSplitWindow(next); setSelected([]); setTab('nodes');
+        setNotice('地图分层已采用；选择对象即可独立移动、修改子片或碰撞。');
+      }}
+      onClose={() => { splitGuard.current = null; setSplitWindow(null); }} />}
     {imageEdit && <ImageEditWorkspace
       onNavigationChange={writeImageEditNavigation}
       target={imageEdit.target}
@@ -2059,7 +2172,7 @@ export function SceneComposer() {
         const { document } = await readDocument<Scene>(current.target.documentId, receipt.revision as number);
         const guard = await doc.shared.acceptAdopted(document, current.guard);
         const next = { ...current, guard }; imageEditRef.current = next; setImageEdit(next);
-        setNotice(current.target.kind === 'scene-instance' ? '仅选中实例图片已采用；其他共享实例、位置与联动保留。' : '选中图层与嵌入源包已同步采用。');
+        setNotice(current.target.kind === 'scene-instance' ? '仅选中实例图片已采用；其他共享实例、位置与联动保留。' : current.target.kind === 'scene-split-part' ? '选中分层子片图片已采用到场景。' : '选中图层与嵌入源包已同步采用。');
       }}
       onClose={closeImageEdit}
     />}

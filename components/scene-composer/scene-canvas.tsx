@@ -11,6 +11,7 @@ import {
   type Point,
 } from '@/features/scene-composer/model.mjs';
 import { ObjectArt, instanceRect } from './scene-art';
+import { activeMapCollisions, mapSplitElementOrigin, mapSplitElementRect, sceneDisplayOrder, type SceneDisplayEntry } from '@/features/scene-composer/render-model.mjs';
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -35,7 +36,6 @@ type Props = {
   time: number;
   targetMode: 'before' | 'after' | null;
   target: (id: string) => void;
-  fit: number;
   notice: (text: string) => void;
 };
 export function SceneCanvas(p: Props) {
@@ -65,6 +65,8 @@ export function SceneCanvas(p: Props) {
     moved: boolean;
   } | null>(null);
   const b = sceneBounds(scene);
+  const display = sceneDisplayOrder(scene, { includeDisabled: !preview });
+  const splitElements = scene.mapSplit && !scene.mapSplit.stale ? scene.mapSplit.elements : [];
   const view = scene.view;
   const screenPoint = (clientX: number, clientY: number): Point => {
     const rect = svg.current!.getBoundingClientRect();
@@ -74,7 +76,12 @@ export function SceneCanvas(p: Props) {
     };
   };
   const hitTest = (q: Point) =>
-    scene.order.filter((id) => {
+    [...new Set(display.filter((entry) => {
+      const id = entry.id;
+      if (entry.kind === 'map-split-part') {
+        const r = entry.rect;
+        return !entry.element.hidden && entry.part.enabled && q.x >= r.x && q.x <= r.x + r.width && q.y >= r.y && q.y <= r.y + r.height;
+      }
       const i = scene.instances.find((item) => item.id === id);
       if (i && !i.hidden) {
         const r = instanceRect(i, materialFor(scene, i)!);
@@ -95,11 +102,12 @@ export function SceneCanvas(p: Props) {
         q.x <= b.x + l.width &&
         q.y <= b.y + l.height
       );
-    });
+    }).map(entry => entry.id))];
   const name = (id: string) =>
     id === 'actor'
       ? '玩家所在层'
       : scene.instances.find((i) => i.id === id)?.name ||
+        splitElements.find((element) => element.id === id)?.name ||
         scene.map?.layers.find((l) => l.id === id)?.name ||
         id;
   const start = (event: PointerEvent<SVGSVGElement>) => {
@@ -134,7 +142,7 @@ export function SceneCanvas(p: Props) {
       };
     else {
       const hit = hitTest(q).find(
-        (id) => !scene.instances.find((i) => i.id === id)?.locked,
+        (id) => !scene.instances.find((i) => i.id === id)?.locked && !splitElements.find(element => element.id === id)?.locked,
       );
       if (hit) {
         let ids = selected.includes(hit)
@@ -207,6 +215,10 @@ export function SceneCanvas(p: Props) {
               i.x += motion.dx;
               i.y += motion.dy;
             }
+          for (const element of next.mapSplit?.elements ?? []) if (d.ids.includes(element.id) && !element.locked) {
+            element.x += motion.dx;
+            element.y += motion.dy;
+          }
           if (
             next.map &&
             next.map.layers.some((l) => d.ids.includes(l.id) && !l.locked)
@@ -241,6 +253,10 @@ export function SceneCanvas(p: Props) {
                 );
               })
               .map((i) => i.id),
+            ...splitElements.filter(element => {
+              const r = mapSplitElementRect(scene, element);
+              return !element.locked && !element.hidden && r.x <= x + w && r.x + r.width >= x && r.y <= y + h && r.y + r.height >= y;
+            }).map(element => element.id),
           ]),
         ]);
       }
@@ -253,7 +269,15 @@ export function SceneCanvas(p: Props) {
   };
   const panX = drag.current?.mode === 'pan' ? motion?.dx || 0 : 0,
     panY = drag.current?.mode === 'pan' ? motion?.dy || 0 : 0;
-  const drawing = (id: string) => {
+  const drawing = (entry: SceneDisplayEntry) => {
+    const id = entry.id;
+    if (entry.kind === 'map-split-part') {
+      const { element, part, rect } = entry;
+      if ((preview ? !element.included : element.hidden) || !part.enabled) return null;
+      const moving = motion?.ids.includes(id) && drag.current?.mode === 'move';
+      return <image key={entry.key} href={part.source} x={rect.x + (moving ? motion!.dx : 0)} y={rect.y + (moving ? motion!.dy : 0)} width={rect.width} height={rect.height}
+        opacity={!preview && !element.included ? 0.25 : 1} style={{ imageRendering: 'pixelated' }} />;
+    }
     if (id === 'actor')
       return (
         view.showActor && (
@@ -388,7 +412,7 @@ export function SceneCanvas(p: Props) {
           <g
             transform={`translate(${view.x + panX} ${view.y + panY}) scale(${view.zoom})`}
           >
-            {[...scene.order].reverse().map(drawing)}
+            {[...display].reverse().map(drawing)}
             {!preview && view.showGrid && (
               <rect
                 x={b.x}
@@ -401,9 +425,9 @@ export function SceneCanvas(p: Props) {
             )}
             {view.showShapes && (
               <g pointerEvents="none">
-                {scene.map?.collisions.map((points, n) => (
+                {activeMapCollisions(scene).map(({ points, index }) => (
                   <polygon
-                    key={n}
+                    key={index}
                     points={points
                       .map(
                         (q) =>
@@ -415,6 +439,12 @@ export function SceneCanvas(p: Props) {
                     strokeWidth={1 / view.zoom}
                   />
                 ))}
+                {splitElements.filter(element => element.collision.enabled && (preview ? element.included : !element.hidden)).flatMap(element => {
+                  const origin = mapSplitElementOrigin(scene, element);
+                  return element.collision.polygons.map((points, index) => <polygon key={`${element.id}:collision:${index}`}
+                    points={points.map(point => `${point.x + origin.x},${point.y + origin.y}`).join(' ')} fill="var(--theme-warning)" fillOpacity={0.095}
+                    stroke="var(--theme-warning)" strokeWidth={1 / view.zoom} />);
+                })}
                 {scene.instances
                   .filter((i) => (preview ? i.included : !i.hidden))
                   .map((i) => (
@@ -482,6 +512,15 @@ export function SceneCanvas(p: Props) {
                     </g>
                   );
                 })}
+            {!preview && splitElements.filter(element => !element.hidden).map(element => {
+              const r = mapSplitElementRect(scene, element), active = selected.includes(element.id) || hover === element.id;
+              const dx = motion?.ids.includes(element.id) ? motion.dx : 0, dy = motion?.ids.includes(element.id) ? motion.dy : 0;
+              return <g key={`outline:${element.id}`} pointerEvents="none" transform={`translate(${dx} ${dy})`}>
+                {active && <rect {...r} fill="none" stroke="var(--theme-cyan)" strokeWidth={1.5 / view.zoom} />}
+                {view.showNames && (active || element.kind === 'object') && <text x={r.x} y={r.y - 6 / view.zoom} fontSize={12 / view.zoom}
+                  fill={active ? 'var(--theme-cyan)' : 'var(--theme-panel)'} paintOrder="stroke" stroke="var(--theme-text)" strokeWidth={3 / view.zoom}>{element.name}{element.locked ? ' · 已锁定' : ''}</text>}
+              </g>;
+            })}
             {preview &&
               sim.focus &&
               (() => {
@@ -586,7 +625,7 @@ export function SceneCanvas(p: Props) {
         <ContextMenuSeparator />
         <ContextMenuItem
           disabled={
-            preview || !scene.instances.some((i) => selected.includes(i.id))
+            preview || (!scene.instances.some((i) => selected.includes(i.id)) && !splitElements.some(element => selected.includes(element.id)))
           }
           onClick={() => p.duplicate()}
         >
@@ -602,7 +641,7 @@ export function SceneCanvas(p: Props) {
         </ContextMenuItem>
         <ContextMenuItem
           disabled={
-            preview || !scene.instances.some((i) => selected.includes(i.id))
+            preview || (!scene.instances.some((i) => selected.includes(i.id)) && !splitElements.some(element => selected.includes(element.id)))
           }
           onClick={p.remove}
         >

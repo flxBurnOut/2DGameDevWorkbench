@@ -99,6 +99,8 @@ Bridge 接口为 `POST /v1/agent/image-inspect|image-resolve|image-panel-suggest
 
 ## 状态与场景引用（7D）
 
+已采用整图分层的场景另支持 `scene-split-part`。按场景、元素和绘制片的稳定 ID 读取目标，局部编辑只改变该片的纹理。可传绘制片内部的原像素矩形 `window` 分区编辑大图，采用前复核完整绘制片绑定与当前场景版本。归属调整、跨物件补拆及换底图迁移使用[场景分层候选](scene-composer.md#场景地图整图分层)。
+
 交互物状态和序列入口传入完整 `documentId + definitionId + slot + index`。状态继承默认图时，采用只创建该状态自己的图片绑定；默认图和其他条目保留。序列重排、槽位变动、锁变化或版本冲突会拒绝旧写入，候选和未保存笔划留在原会话。
 
 `scene-instance` 目标使用 `{documentId,instanceId,slot,index?}`，默认 `slot=visual` 不带 index，状态 / 序列必须明确 index。返回 `scope=single-instance`、`affectedInstanceIds` 和 `sharedInstanceCount`。采用创建独立素材并仅重绑所选实例，原素材、同素材的其他实例、位置、锚点、缩放、排序、联动、碰撞与行为保持。场景动画外观只读；不能以当前播放帧代替静态源。

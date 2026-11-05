@@ -98,7 +98,8 @@ async function fixture() {
       Object.assign(object.behavior.states[1].appearance, { visible: false, solidEnabled: false });
     }
     project.objects = [object];
-    const material = addMaterial(scene, project, object.definitionId);
+    // This legal material ID is also the map layer ID in the same TSCN.
+    const material = addMaterial(scene, project, object.definitionId, id === 'switch' ? 'map_overall' : undefined);
     const instance = addInstance(scene, material.id, x, 180);
     scene.order = scene.order.map(value => value === instance.id ? id : value);
     instance.id = id;

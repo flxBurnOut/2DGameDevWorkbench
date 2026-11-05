@@ -34,7 +34,12 @@ func _process(delta: float) -> void:
 		label.visible_characters = int(_shown)
 
 func _unhandled_input(event: InputEvent) -> void:
-	if is_open() and (event.is_action_pressed(_action) or event.is_action_pressed("ui_accept")) and not event.is_echo():
+	if not is_open() or event.is_echo():
+		return
+	# The runtime handles its active object's own key and the project's remaps.
+	if get_parent().has_method("accepts_activation") and is_instance_valid(get_parent().get("active_object")):
+		return
+	if event.is_action_pressed(_action) or event.is_action_pressed("ui_accept"):
 		get_viewport().set_input_as_handled()
 		advance()
 

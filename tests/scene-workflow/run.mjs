@@ -17,6 +17,7 @@ import {
   candidateDocument,
   validateWorkflowPlan,
   assertProtected,
+  observeWorkflow,
 } from '../../lib/workbench/scene-workflow-execution.mjs';
 import {
   applyDocumentCommands,
@@ -24,6 +25,10 @@ import {
 } from '../../lib/workbench/editor-documents.mjs';
 import { hash } from '../../lib/workbench/scene-workflow-store.mjs';
 import { acceptanceSchema } from '../../lib/workbench/scene-workflow-contract.mjs';
+import { sceneSummary } from '../../lib/workbench/scene-workflow-prompts.mjs';
+import { splitFixture } from '../scene-composer/map-split-fixture.mjs';
+import { createScene, addMaterial, addInstance } from '../../features/scene-composer/model.mjs';
+import { observeScene } from '../../lib/workbench/scene-observation.mjs';
 
 const originalFetch = globalThis.fetch;
 globalThis.fetch = () => {
@@ -53,6 +58,54 @@ const movePlan = plan([
     commands: [{ type: 'move-instances', ids: ['gate'], dx: 4 }],
   }),
 ]);
+test('split protection, mask summaries and cumulative revisions survive collaboration', async () => {
+  const scene = await splitFixture();
+  const tree = scene.mapSplit.elements[1];
+  tree.locked = true;
+  tree.parts[0].mask = tree.parts[0].source;
+  const current = structuredClone(scene);
+  current.mapSplit.elements[1].included = false;
+  const spec = { description: '拉杆开门', protectedInstanceIds: [], editableMapLayerIds: [] };
+  assert.throws(() => assertProtected({ content: scene }, current, spec), /锁定的分层/);
+  const summary = JSON.stringify(sceneSummary({ content: scene }));
+  assert.ok(!summary.includes('base64,'));
+  const revised = structuredClone(movePlan);
+  revised.requirements.push({ id: 'lamp', text: '保留灯', source: 'user', evidence: '保留灯' });
+  revised.visualCriteria.push({ id: 'lamp-visible', description: '灯可见', requirementIds: ['lamp'], region: null });
+  const work = { spec, steps: [], plans: [{ plan: movePlan }, { plan: revised }], clarifications: [{ text: '保留灯' }] };
+  assert.throws(() => validateWorkflowPlan(movePlan, work, { document: { content: scene } }, scene), /已确认需求/);
+  const removedCriterion = { ...revised, visualCriteria: movePlan.visualCriteria };
+  assert.throws(() => validateWorkflowPlan(removedCriterion, work, { document: { content: scene } }, scene), /原视觉验收/);
+});
+test('an interrupted source-object observation reuses the exact recorded evidence', async () => {
+  const service = make(planner(movePlan));
+  const { work } = await launch(service, 'source-observation');
+  const before = await service.store.load(work.id);
+  const source = (await service.store.source(before)).materials[0];
+  const options = { sourceObject: { documentId: source.id, definitionId: source.content.objects[0].definitionId } };
+  const saved = await observeWorkflow(service.store, before, options, 'source-check');
+  const restored = await observeWorkflow(service.store, await service.store.load(work.id), options, 'source-check');
+  assert.deepEqual(restored.metadata, saved.metadata);
+
+  // Reproduce the orphan written by the previous exporter with random IDs.
+  const originalWork = await service.store.load(work.id);
+  const scene = createScene(source.name);
+  scene.id = saved.metadata.documentId;
+  const material = addMaterial(scene, source.content, options.sourceObject.definitionId);
+  material.project.assets = source.content.assets;
+  addInstance(scene, material.id, 0, 0);
+  const contentHash = hash(scene), label = 'older-source';
+  const raw = await observeScene(root, service.store.candidateManifest(work), {
+    id: scene.id, kind: 'scene', revision: source.revision, content: scene, contentHash,
+  }, {});
+  const old = {
+    id: `${label}-${originalWork.evidence.length + 1}`,
+    requestHash: hash({ documentId: scene.id, revision: source.revision, contentHash, options: {}, label }),
+    ...raw, images: raw.images.map(({ data: _data, ...info }) => info),
+  };
+  await service.store.freeze(work.id, `evidence-${old.id}`, old);
+  assert.deepEqual((await observeWorkflow(service.store, originalWork, options, label)).metadata, old);
+});
 
 test('behavior acceptance cannot pass by listing an instance without a state assertion', () => {
   assert.equal(

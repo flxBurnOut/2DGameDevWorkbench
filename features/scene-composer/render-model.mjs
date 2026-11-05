@@ -1,5 +1,61 @@
 import { initialState, stateAppearance } from '../interactable-editor/simulator.mjs';
 import { instanceOrigin } from './model.mjs';
+import { mapSplitDeletedCollisionOwners } from './map-split.mjs';
+
+export function mapSplitElementOrigin(scene, element) {
+  const mapOrigin = scene.map ? { x: scene.map.origin.x + scene.map.offset.x, y: scene.map.origin.y + scene.map.offset.y } : scene.mapSplit?.origin || { x: 0, y: 0 };
+  return { x: mapOrigin.x + element.x, y: mapOrigin.y + element.y };
+}
+
+export function mapSplitElementRect(scene, element) {
+  const origin = mapSplitElementOrigin(scene, element);
+  if (!element.parts.length) return { ...origin, width: 1, height: 1 };
+  const x = Math.min(...element.parts.map(part => part.x));
+  const y = Math.min(...element.parts.map(part => part.y));
+  return { x: origin.x + x, y: origin.y + y,
+    width: Math.max(1, ...element.parts.map(part => part.x + part.width - x)),
+    height: Math.max(1, ...element.parts.map(part => part.y + part.height - y)) };
+}
+
+/** Map indices are ownership, independent of the new owner's enable/export flag. */
+export function activeMapCollisions(scene) {
+  const split = scene.mapSplit && !scene.mapSplit.stale ? scene.mapSplit : null;
+  const transferred = new Set(split ? [...split.elements.flatMap(element => element.collision.mapIndices), ...mapSplitDeletedCollisionOwners(split).flatMap(entry => entry.mapIndices)] : []);
+  return (scene.map?.collisions || []).map((points, index) => ({ index, points })).filter(entry => !transferred.has(entry.index));
+}
+
+/** One front-first order for canvas, saved observations and Godot global Z. */
+export function sceneDisplayOrder(scene, { includeDisabled = false } = {}) {
+  const active = Boolean(scene.mapSplit && !scene.mapSplit.stale);
+  const actorRank = scene.order.indexOf('actor');
+  const entries = [];
+  const elements = new Map((scene.mapSplit?.elements || []).map(element => [element.id, element]));
+  for (const [rank, id] of scene.order.entries()) {
+    if (id === 'actor') { entries.push({ key: id, id, kind: 'actor', rank }); continue; }
+    const layer = scene.map?.layers.find(entry => entry.id === id);
+    if (layer && !active) entries.push({ key: id, id, kind: 'layer', layer, rank });
+    const instance = scene.instances.find(entry => entry.id === id);
+    if (instance) entries.push({ key: id, id, kind: 'instance', instance, rank });
+    const element = active ? elements.get(id) : null;
+    if (!element) continue;
+    const origin = mapSplitElementOrigin(scene, element);
+    element.parts.forEach((part, partIndex) => {
+      if (!includeDisabled && !part.enabled) return;
+      const planeRank = part.plane === 'front' ? Math.min(rank, actorRank - 0.25) : Math.max(rank, actorRank + 0.25);
+      entries.push({ key: `${id}:${part.id}`, id, kind: 'map-split-part', element, part, rank: planeRank, parentRank: rank, partIndex,
+        rect: { x: origin.x + part.x, y: origin.y + part.y, width: part.width, height: part.height } });
+    });
+  }
+  entries.sort((a, b) => a.rank - b.rank || (a.parentRank ?? a.rank) - (b.parentRank ?? b.rank) || (a.partIndex || 0) - (b.partIndex || 0));
+  return entries.map(({ rank: _rank, parentRank: _parentRank, partIndex: _partIndex, ...entry }, index) => ({ ...entry,
+    zIndex: entries.length <= 4096 ? entries.length - index - 1 : 4095 - index,
+  }));
+}
+
+export function mapSplitPartRenderEntries(scene, { includeHidden = true, includedOnly = false } = {}) {
+  return sceneDisplayOrder(scene).filter(entry => entry.kind === 'map-split-part' &&
+    (includeHidden || !entry.element.hidden) && (!includedOnly || entry.element.included));
+}
 
 // Shared by the interactive canvas and versioned server observations.
 export function instanceRect(instance, material) {

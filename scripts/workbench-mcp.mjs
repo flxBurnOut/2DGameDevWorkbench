@@ -6,6 +6,7 @@ import * as z from 'zod/v4';
 import { assetInputs, assetTools } from '../lib/workbench/asset-contract.mjs';
 import { documentInputs, documentTools } from '../lib/workbench/document-contract.mjs';
 import { imageEditInputs, imageEditTools } from '../lib/workbench/image-edit-contract.mjs';
+import { sceneSplitInputs, sceneSplitTools } from '../lib/workbench/scene-split-contract.mjs';
 import { sceneWorkflowInputs, sceneWorkflowTools } from '../lib/workbench/scene-workflow-contract.mjs';
 import { sceneWorkflowPath } from '../lib/workbench/scene-workflow-presentation.mjs';
 import { mcpContent } from '../lib/workbench/presentation.mjs';
@@ -137,6 +138,11 @@ function registerTool(name, options, handler) {
   server.registerTool(name, options, async (input) => {
     try {
       const sceneOperation = sceneOperations.get(name);
+      if (workbuddyPreview.enabled && name === 'workbench_prepare_map_split' && input.mode === 'vision') {
+        workbuddyPreview.configure(input.previewPolicy);
+        const blocked = await workbuddyPreview.beforeRun(await loadManifest(), `/tools/scene-composer?document=${encodeURIComponent(input.documentId)}`);
+        if (blocked) return success(blocked, name);
+      }
       if (sceneProduction.has(sceneOperation) && workbuddyPreview.enabled) {
         workbuddyPreview.configure(input.previewPolicy);
         const manifest = await loadManifest();
@@ -163,7 +169,7 @@ function registerTool(name, options, handler) {
         if (name === 'workbench_request_candidate_check') targetId = (await agentRequest(manifest,'image-critic-get',{reviewRef:input.reviewRef})).check.targetId;
         const target = await agentRequest(manifest, 'image-inspect', targetId ? { targetId } : { target: input.target });
         const kind = target.target.targetRef.kind;
-        const moduleId = kind === 'interactable' ? 'interactable-editor' : ['scene-layer', 'scene-instance'].includes(kind) ? 'scene-composer' : 'map-stitcher';
+        const moduleId = kind === 'interactable' ? 'interactable-editor' : ['scene-layer', 'scene-instance','scene-split-part'].includes(kind) ? 'scene-composer' : 'map-stitcher';
         const route = kind === 'image-task' ? manifest.agentAssets.assetCatalog.route : [...manifest.capabilities, ...manifest.editorModules].find(module => module.id === moduleId)?.ui?.route;
         const blocked = await workbuddyPreview.beforeRun(manifest, route || '/');
         if (blocked) return success(blocked, name);
@@ -444,6 +450,11 @@ for (const [name, operation, description] of documentTools) {
 }
 for (const [name, operation, description] of imageEditTools) {
   registerTool(name, { description, inputSchema: imageEditInputs[operation].shape, annotations: { readOnlyHint: ['image-inspect', 'image-session-get', 'image-panel-suggest', 'image-plan-get', 'image-analysis-get', 'image-part-get', 'image-critic-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: ['image-edit', 'image-part-suggest', 'image-critic-run'].includes(operation) } }, async input => agentRequest(await loadManifest(), operation, input));
+}
+for (const [name, operation, description] of sceneSplitTools) {
+  const inputSchema = { ...sceneSplitInputs[operation].shape, ...(operation === 'scene-split-prepare' ? {previewPolicy:previewPolicySchema} : {}) };
+  registerTool(name, {description,inputSchema,annotations:{readOnlyHint:['scene-split-get','scene-split-inspect'].includes(operation),destructiveHint:false,idempotentHint:true,openWorldHint:operation==='scene-split-prepare'}},
+    async ({previewPolicy: _policy,...input}) => agentRequest(await loadManifest(),operation,input));
 }
 for (const [name, operation, description] of previewTools) {
   registerTool(name, {

@@ -1,6 +1,7 @@
 /* oxlint-disable react/react-compiler -- Immutable document history is maintained alongside the current revision. */
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { updateSplitSourceState } from '@/features/scene-composer/map-split-source.mjs';
 import { makeId } from '@/features/interactable-editor/contract.mjs';
 import { readWorkspaceDraft } from '@/lib/workbench/browser-store';
 import { readDocument } from '@/features/editor-documents/client';
@@ -44,11 +45,11 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
     future: [],
   });
   const saveQueue = useRef(Promise.resolve());
-  const save = useCallback(async () => {
+  const save = useCallback(async (allowEmpty = false) => {
     const snapshot = current.current,
       backupRevision = backupRef.current;
     if (
-      !snapshot.map &&
+      !allowEmpty && !snapshot.map &&
       !snapshot.materials.length &&
       snapshot.revision === 0 &&
       persistedId.current !== snapshot.id
@@ -76,11 +77,12 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
     id: scene.id,
     kind: 'scene',
     value: scene,
-    enabled: ready && !untouched,
+    enabled: ready,
+    automatic: !untouched,
     busy: busy || imageWindowOpen,
     // Browser history revisions and server CAS revisions are independent counters.
     prepare: (snapshot) => ({ ...validateScene(snapshot), revision: 0 }),
-    saveLocal: async () => { await save(); },
+    saveLocal: async () => { await save(true); },
     applyRemote: async (incoming) => {
       const next = validateScene(incoming);
       const previous = current.current;
@@ -163,7 +165,8 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
     const timer = setTimeout(() => void save().catch(() => {}), 650);
     return () => clearTimeout(timer);
   }, [scene, ready, busy, save, untouched]);
-  const commit = (next: Scene, remember = true) => {
+  const commit = (next: Scene, remember = true, fromHistory = false) => {
+    if (!fromHistory) updateSplitSourceState(current.current, next);
     next = validateScene(next);
     next.revision = current.current.revision + 1;
     if (remember) {
@@ -195,6 +198,7 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
       commit(
         { ...structuredClone(previous), view: { ...current.current.view } },
         false,
+        true,
       );
     }
   };
@@ -206,6 +210,7 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
       commit(
         { ...structuredClone(next), view: { ...current.current.view } },
         false,
+        true,
       );
     }
   };

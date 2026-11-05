@@ -43,6 +43,19 @@ function fixture(initial = { id: 'project_sync', name: 'local', version: 0 }) {
 }
 
 const test = fixture(), sync = test.make();
+const concurrent = fixture(), afterConflict = concurrent.make();
+await afterConflict.sync();
+concurrent.edit({ name: 'local', version: 1 });
+concurrent.external({ name: 'remote' });
+await afterConflict.sync();
+assert.equal(afterConflict.getState().status, 'conflict');
+await afterConflict.retry();
+assert.equal(afterConflict.getState().revision, 2, 'Reconnect reads the new head and preserves both drafts');
+assert.equal(concurrent.current().version, 1);
+assert.equal(concurrent.remote().name, 'remote');
+concurrent.external(concurrent.current());
+await afterConflict.retry();
+assert.equal(afterConflict.getState().status, 'synced', 'Converged drafts can resume without overwriting the remote');
 await sync.sync();
 assert.equal(sync.getState().status, 'synced');
 assert.equal(test.calls.length, 1);

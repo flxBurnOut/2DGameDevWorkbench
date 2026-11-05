@@ -3,6 +3,17 @@ import { validateScene } from './model.mjs';
 
 export const MAX_PACKAGE_BYTES = 256 * 1024 * 1024;
 function references(scene) {
+  const splitReferences = [];
+  const collect = (owner) => {
+    if (!owner || typeof owner !== 'object') return;
+    for (const [key, value] of Object.entries(owner)) {
+      if (typeof value === 'string' && /^(?:data:image\/png;base64,|media\/[0-9]+\.bin$)/.test(value)) splitReferences.push({ owner, key, mime: 'image/png' });
+      else if (value && typeof value === 'object') collect(value);
+    }
+  };
+  // Include baselines and conflict previews, so reopening a source package can
+  // still perform the same three-way merge without external candidate files.
+  collect(scene.mapSplit);
   return [
     ...(scene.map
       ? [
@@ -14,6 +25,7 @@ function references(scene) {
           })),
         ]
       : []),
+    ...splitReferences,
     ...scene.materials.flatMap((m) =>
       m.project.assets.map((a) => ({ owner: a, key: 'source', mime: a.mime })),
     ),
@@ -68,7 +80,7 @@ export async function readScenePackage(bytes) {
   const entry = zip.file('scene.json');
   if (!entry || entry._data?.uncompressedSize > 32 * 1024 * 1024)
     throw new Error('场景清单缺失或过大。');
-  const scene = validateScene(JSON.parse(await entry.async('string')));
+  const scene = validateScene(JSON.parse(await entry.async('string')), { allowPackageReferences: true });
   const cache = new Map();
   for (const ref of references(scene)) {
     const file = ref.owner[ref.key];

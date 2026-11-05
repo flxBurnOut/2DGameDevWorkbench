@@ -7,19 +7,20 @@ export type ImageTargetRef =
   | { kind: 'interactable'; documentId: string; definitionId: string; slot?: 'visual' | 'toggle-state' | 'sequence-entry'; index?: number }
   | { kind: 'image-task'; taskId: string }
   | { kind: 'scene-layer'; documentId: string; layerId: string }
+  | { kind: 'scene-split-part'; documentId: string; elementId: string; partId: string; window?: { x:number; y:number; width:number; height:number } }
   | { kind: 'scene-instance'; documentId: string; instanceId: string; slot?: 'visual' | 'toggle-state' | 'sequence-entry'; index?: number };
 export interface ImageTargetInfo {
   targetId: string; targetRef: ImageTargetRef; revision: number | string; sha256: string; rgbaSha256: string;
   width: number; height: number; editable: boolean; locked: boolean; kind: 'prop' | 'background'; name: string;
   placement?: { width: number; height: number; x: number; y: number; flipH: boolean; flipV: boolean };
   slotFingerprint?: string; readOnlyReason?: string; source?: Record<string, unknown>; willStopDefaultAnimations?: boolean;
-  scope?: 'single-instance' | 'scene-snapshot-layer'; affectedInstanceIds?: string[]; sharedInstanceCount?: number;
+  scope?: 'single-instance' | 'scene-snapshot-layer' | 'scene-split-part'; affectedInstanceIds?: string[]; sharedInstanceCount?: number;
   sourceEntry?: { kind?: string; documentId?: string; layerId?: string; sourceField?: string; filename?: string; format?: string; sha256?: string; viewPath?: string; action?: string };
   aiEdit?: { supported: boolean; reason?: string; code?: string; provider: string; model?: string; width: number; height: number; minPixels: number; maxPixels: number; maxEdge: number; dimensionStep: number; maxAspectRatio: number; maxReferences: number; maxImageBytes: number; maxTotalImageBytes: number; constraints: { preserveOutsideRegion: true; preserveDimensions: true; preserveAlpha: boolean }; alphaPreservation?: 'copy-edit-base-alpha' };
 }
 export interface ImageAdoptionReceipt {
   target: ImageTargetInfo; revision: number | string; currentRevision: number | string; replayed?: boolean;
-  adoption: { status: 'adopted' | 'saved_variant'; targetId?: string; sourceTaskId?: string; sha256: string; revision?: number | string; commandId: string; documentId?: string; definitionId?: string; slot?: string; index?: number; assetId?: string; sourceChanged?: boolean; previewInvalidated?: boolean; scope?: 'single-instance' | 'scene-snapshot-layer'; affectedInstanceIds?: string[]; sharedInstanceCount?: number };
+  adoption: { status: 'adopted' | 'saved_variant'; targetId?: string; sourceTaskId?: string; sha256: string; revision?: number | string; commandId: string; documentId?: string; definitionId?: string; slot?: string; index?: number; assetId?: string; sourceChanged?: boolean; previewInvalidated?: boolean; scope?: 'single-instance' | 'scene-snapshot-layer' | 'scene-split-part'; affectedInstanceIds?: string[]; sharedInstanceCount?: number };
 }
 export interface ImageEditContextLayer { id?: string; url: string; x?: number; y?: number; width: number; height: number; opacity?: number; target?: boolean }
 export interface ImagePixels {
@@ -159,7 +160,14 @@ export function mergeImageWorkspaceRefresh<TController>(current: ImageWorkspaceS
 }
 export interface ImageSessionBootstrap { commandId: string; createInput?: ReturnType<typeof imageSessionInput>; editId?: string }
 export function imageTargetEquals(left: ImageTargetRef, right: ImageTargetRef) {
-  const normalize = (ref: ImageTargetRef) => JSON.stringify(Object.entries(['interactable', 'scene-instance'].includes(ref.kind) ? { ...ref, slot: 'slot' in ref ? ref.slot || 'visual' : 'visual' } : ref).filter(([, value]) => value !== undefined).sort(([first], [second]) => first.localeCompare(second)));
+  const normalize = (ref: ImageTargetRef) => {
+    const normalized = ref.kind === 'scene-split-part' && ref.window
+      ? { ...ref, window: [ref.window.x, ref.window.y, ref.window.width, ref.window.height] }
+      : ['interactable', 'scene-instance'].includes(ref.kind)
+        ? { ...ref, slot: 'slot' in ref ? ref.slot || 'visual' : 'visual' }
+        : ref;
+    return JSON.stringify(Object.entries(normalized).filter(([, value]) => value !== undefined).sort(([first], [second]) => first.localeCompare(second)));
+  };
   return normalize(left) === normalize(right);
 }
 export function imageSlotChoices(object: Interactable, scene = false) {
@@ -173,7 +181,7 @@ export function imageSlotChoices(object: Interactable, scene = false) {
   return choices;
 }
 export function validateSceneImageReceipt(target: ImageTargetRef, receipt: ImageAdoptionReceipt) {
-  if (!['scene-instance', 'scene-layer'].includes(target.kind) || !imageTargetEquals(target, receipt.target.targetRef) || typeof receipt.revision !== 'number' || receipt.currentRevision !== receipt.revision) throw new Error('已采用结果与选中的场景图片或共享版本不匹配。');
+  if (!['scene-instance', 'scene-layer','scene-split-part'].includes(target.kind) || !imageTargetEquals(target, receipt.target.targetRef) || typeof receipt.revision !== 'number' || receipt.currentRevision !== receipt.revision) throw new Error('已采用结果与选中的场景图片或共享版本不匹配。');
   if (target.kind === 'scene-instance' && (receipt.adoption.scope !== 'single-instance' || receipt.adoption.affectedInstanceIds?.length !== 1 || receipt.adoption.affectedInstanceIds[0] !== target.instanceId)) throw new Error('实例采用作用域不匹配，未替换本机场景。');
 }
 export interface ImageSourceActionState { busy: boolean; pending: boolean; pixelDirty: boolean; aiDraftDirty: boolean; referencesLoading: boolean }

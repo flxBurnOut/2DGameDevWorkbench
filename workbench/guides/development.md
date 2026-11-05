@@ -12,6 +12,7 @@
 | 部件属性计划与本地分层 | `features/image-edit/attribute-plan.mjs`、`intrinsic-recolor.mjs`、`lib/workbench/image-edit-intrinsics.mjs`、`Tools/MarigoldAnalysis/`；[使用与安装](image-attribute-editing.md) | `test:image-attribute-plan`；编辑回归、typecheck、lint、build |
 | 单候选视觉复核与诊断 | `lib/workbench/image-edit-critic.mjs`、`components/image-edit/candidate-check.tsx`、[使用指南](image-attribute-editing.md#独立复核成品) | `test:image-attribute-plan` 覆盖独立上下文、候选身份与中断恢复，`tests/image-edit/transport.mjs` 验证 MCP 图片输出 |
 | 场景 / 交互物共享文档 | `features/scene-composer/`、`features/interactable-editor/`、`lib/workbench/document-*.mjs` | `test:editor-documents`、`test:scene-composer`、`test:interactable`；观察或接线变化加相应测试 |
+| 场景地图分层 | `features/scene-composer/map-split.mjs`、`lib/workbench/scene-splits.mjs`、`lib/workbench/map-split-*.mjs`、场景分层面板 | `test:scene-split`、`test:scene-composer`、`test:image-edit`、`test:editor-documents`。浏览器用 `tests/scene-split/browser.mjs`；引擎检查用 `tests/scene-composer/map-split-engine.mjs` 与 Godot 4.7.x。 |
 | 场景专家协作 | `lib/workbench/scene-workflow*.mjs`、`features/scene-workflow/`、`components/scene-composer/scene-workflow-panel.tsx` | `test:scene-workflow`；共享保存或图片执行变化加对应回归；[流程与边界](../../docs/scene-collaboration.md) |
 | 开放动作 | `Tools/SpritePipeline/sprite_pipeline/collaboration/`、`components/sprite-generator/` | 受影响的 Python 测试、`test:open-motion` |
 | 游戏交付 / 工程 helper | `features/godot-export/`、`lib/workbench/game-export*.mjs`、工程 Skill 的脚本 | `test:game-export`、`test:engineering` |

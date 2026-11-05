@@ -39,6 +39,7 @@ import {
   addInstance,
 } from '../../features/scene-composer/model.mjs';
 import { buildSceneGodotPackage } from '../../features/scene-composer/godot-builder.mjs';
+import { splitFixture } from '../scene-composer/map-split-fixture.mjs';
 import { loadManifest, repositoryRoot, agentRequest, runConnector, findCapability } from '../../lib/workbench/runtime.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -594,6 +595,25 @@ test('4.7 baseline rejects historical engine evidence and warns on older project
     });
     assert.equal(result.integration.engine.baselineValidated, expected);
   }
+});
+test('a scenery-only scene from an older exporter installs into a clean game', async () => {
+  const scene = await splitFixture();
+  const built = await buildSceneGodotPackage(scene, { repositoryRoot });
+  const zip = await JSZip.loadAsync(built.bytes);
+  const name = `scenes/${scene.id}/scene-manifest.json`;
+  const older = JSON.parse(await zip.file(name).async('string'));
+  assert.equal(older.runtime, null);
+  delete older.runtime;
+  zip.file(name, JSON.stringify(older));
+  const target = path.join(sandbox, '独立景物关卡');
+  await mkdir(target);
+  await writeFile(path.join(target, 'project.godot'), config);
+  const receipt = await deliverGodotPackage(repositoryRoot, manifest, { bytes: await zip.generateAsync({ type: 'nodebuffer' }), projectPath: target });
+  const details = await getGameExport(repositoryRoot, manifest, receipt);
+  const installed = await installGameExport(repositoryRoot, manifest, { ...receipt, projectRevision: details.inspection.projectRevision });
+  assert.equal(installed.installed, true);
+  assert.deepEqual(await readFile(path.join(target, built.scenePath.slice(6))), await zip.file(built.scenePath.slice(6)).async('nodebuffer'));
+  assert.ok(!(await readdir(target)).includes('addons'));
 });
 let passed = 0;
 try {

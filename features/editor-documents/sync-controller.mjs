@@ -130,6 +130,10 @@ export class DocumentSyncController {
       }
     } catch (error) {
       if (error.status === 409) {
+        // A rejected CAS was never committed. Re-read the server and compare
+        // with the saved baseline before issuing a new submission.
+        this.pending = null;
+        await this.remember(this.cache?.revision ?? null, this.cache?.fingerprint ?? null);
         this.update({ status: 'conflict', message: '共享工程已被其他编辑修改；本机草稿已保留', conflict: true });
       } else {
         this.update({ status: 'offline', message: `共享工程未同步，本机草稿保留：${error.message}`, conflict: false });

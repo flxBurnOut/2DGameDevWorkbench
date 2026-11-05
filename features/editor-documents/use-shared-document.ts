@@ -4,8 +4,8 @@ import { readWorkspaceDraft, saveWorkspaceDraft } from '@/lib/workbench/browser-
 import { createDocument, readDocument, readDocumentMetadata, saveDocument, type DocumentKind, type SharedDocument } from './client';
 import { DocumentSyncController, type DocumentSyncCache, type DocumentSyncState, type DocumentSavedSnapshot } from './sync-controller.mjs';
 
-export function useSharedDocument<T>({ id, kind, value, enabled, busy, prepare, saveLocal, applyRemote, backupLocal }: {
-  id: string; kind: DocumentKind; value: T; enabled: boolean; busy: boolean;
+export function useSharedDocument<T>({ id, kind, value, enabled, automatic = true, busy, prepare, saveLocal, applyRemote, backupLocal }: {
+  id: string; kind: DocumentKind; value: T; enabled: boolean; automatic?: boolean; busy: boolean;
   prepare: (snapshot: T) => T | Promise<T>;
   saveLocal: (snapshot: T) => Promise<void>;
   applyRemote: (snapshot: T) => Promise<void>;
@@ -17,12 +17,6 @@ export function useSharedDocument<T>({ id, kind, value, enabled, busy, prepare, 
   const [state, setState] = useState<DocumentSyncState>({ status: 'connecting', message: '开始编辑后同步共享工程', revision: null, conflict: false });
   useEffect(() => {
     if (!enabled) return;
-    const url = new URL(location.href);
-    const localKey = kind === 'scene' ? 'scene' : 'project';
-    url.searchParams.set(localKey, id);
-    if (url.searchParams.has('document') && url.searchParams.get('document') !== id)
-      url.searchParams.delete('document');
-    history.replaceState(null, '', url.pathname + url.search);
     const key = `document-sync:${kind}:${id}`;
     const current = new DocumentSyncController<T>({
       id, kind,
@@ -47,15 +41,25 @@ export function useSharedDocument<T>({ id, kind, value, enabled, busy, prepare, 
         history.replaceState(null, '', nextUrl.pathname + nextUrl.search);
       }
     });
-    void current.sync();
-    const timer = setInterval(() => void current.poll(), 5000);
-    return () => { clearInterval(timer); unsubscribe(); current.dispose(); if (controller.current === current) controller.current = null; };
+    return () => { unsubscribe(); current.dispose(); if (controller.current === current) controller.current = null; };
   }, [id, kind, enabled]);
   useEffect(() => {
-    if (!enabled || busy) return;
+    const current = controller.current;
+    if (!enabled || !automatic || !current) return;
+    const url = new URL(location.href);
+    url.searchParams.set(kind === 'scene' ? 'scene' : 'project', id);
+    if (url.searchParams.has('document') && url.searchParams.get('document') !== id)
+      url.searchParams.delete('document');
+    history.replaceState(null, '', url.pathname + url.search);
+    void current.sync();
+    const timer = setInterval(() => void current.poll(), 5000);
+    return () => clearInterval(timer);
+  }, [id, kind, enabled, automatic]);
+  useEffect(() => {
+    if (!enabled || !automatic || busy) return;
     const timer = setTimeout(() => void controller.current?.sync(), 1200);
     return () => clearTimeout(timer);
-  }, [value, enabled, busy]);
+  }, [value, enabled, automatic, busy]);
   const retry = useCallback(() => controller.current?.retry(), []);
   const reloadRemote = useCallback(() => controller.current?.reloadRemote(), []);
   const flushSaved = useCallback(async () => {

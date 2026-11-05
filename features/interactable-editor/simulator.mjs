@@ -124,6 +124,16 @@ export class InteractionSimulation {
     );
   }
   tick(delta) {
+    // A replay can advance several seconds at once. Finish each timed step
+    // at its own time, then give the following step or cooldown the remainder.
+    while (this.waiting?.remaining !== undefined && this.waiting.remaining < delta) {
+      const elapsed = Math.max(0, this.waiting.remaining);
+      this.tickSlice(elapsed);
+      delta -= elapsed;
+    }
+    this.tickSlice(delta);
+  }
+  tickSlice(delta) {
     this.time += delta;
     for (const i of this.objects) {
       if (i.animation?.feedback && this.time >= i.animation.ends) {

@@ -105,7 +105,8 @@
         }
       ]
     },
-    "imageEditing": { "schemaVersion": 1, "contract": "lib/workbench/image-edit-contract.mjs", "guide": "docs/image-editing.md", "mode": "existing-image-edit", "targetKinds": ["map-layer", "interactable", "image-task", "scene-layer", "scene-instance"], "sceneTargets": "verified-source-snapshot-or-single-instance", "intentPreview": true, "paletteMapMaxPairs": 64, "metalPanelTrial": {"maxSelectionEdge": 1024, "optionalSegmenter": "SAM 2.1 Tiny"}, "attributePlans": true, "softReferences": {"kinds":["rgb","shading"],"requiresCleanCrop":true,"reservedReferenceSlots":2,"qualityValidated":false}, "visualReviewer": {"provider":"openai","model":"gpt-5.4-2026-03-05","maxOutputTokens":2048,"timeoutSeconds":90,"reasoningEffort":"low"}, "partPlanner": {"provider":"openai","model":"gpt-5.4-2026-03-05","maxOutputTokens":2048,"timeoutSeconds":90,"reasoningEffort":"low"}, "intrinsicRecolorTrial": {"optionalLocalPython": true, "model": "prs-eth/marigold-iid-lighting-v1-1", "maxEdge": 1536, "automaticDownload": false, "qualityCalibrated": false, "simpleMappings":["rgb","luminance"], "partAssessmentAtPlanTime":true, "cacheScope":"same-session-base-and-profile"}, "placementComparison": true, "aiEditing": true, "localRequiresPython": false, "localRequiresKey": false, "manualMapProductionBoundary": "unchanged" },
+    "sceneMapSplit": {"schemaVersion":1,"guide":"docs/scene-composer.md#场景地图整图分层","contract":"lib/workbench/scene-split-contract.mjs","modes":["auto","local","vision","sam"],"webDefault":"auto","candidateReview":"unverified-until-explicit-check","adoption":"exact-scene-and-candidate-revision","sourceScope":"scene-owned","samMaxWindowEdge":1024,"engine":"Godot 4.7.x"},
+    "imageEditing": { "schemaVersion": 1, "contract": "lib/workbench/image-edit-contract.mjs", "guide": "docs/image-editing.md", "mode": "existing-image-edit", "targetKinds": ["map-layer", "interactable", "image-task", "scene-layer", "scene-instance", "scene-split-part"], "sceneTargets": "verified-source-snapshot-or-single-instance", "intentPreview": true, "paletteMapMaxPairs": 64, "metalPanelTrial": {"maxSelectionEdge": 1024, "optionalSegmenter": "SAM 2.1 Tiny"}, "attributePlans": true, "softReferences": {"kinds":["rgb","shading"],"requiresCleanCrop":true,"reservedReferenceSlots":2,"qualityValidated":false}, "visualReviewer": {"provider":"openai","model":"gpt-5.4-2026-03-05","maxOutputTokens":2048,"timeoutSeconds":90,"reasoningEffort":"low"}, "partPlanner": {"provider":"openai","model":"gpt-5.4-2026-03-05","maxOutputTokens":2048,"timeoutSeconds":90,"reasoningEffort":"low"}, "intrinsicRecolorTrial": {"optionalLocalPython": true, "model": "prs-eth/marigold-iid-lighting-v1-1", "maxEdge": 1536, "automaticDownload": false, "qualityCalibrated": false, "simpleMappings":["rgb","luminance"], "partAssessmentAtPlanTime":true, "cacheScope":"same-session-base-and-profile"}, "placementComparison": true, "aiEditing": true, "localRequiresPython": false, "localRequiresKey": false, "manualMapProductionBoundary": "unchanged" },
     "presentationGuide": "docs/agent-preview-follow.md",
     "skill": ".agents/skills/2d-game-workbench/SKILL.md",
     "engineering": { "skill": ".agents/skills/forge-game-engineering/SKILL.md", "guide": "docs/game-engineering.md", "deliveryGuide": "docs/godot-delivery.md", "mode": "external-agent", "engine": "Godot 4.7.x", "source": "https://github.com/flxBurnOut/copyWorms", "createsTask": false },
@@ -160,6 +161,12 @@
         "workbench_adopt_scene_workflow",
         "workbench_get_scene_workflow_settings",
         "workbench_inspect_image_target",
+        "workbench_prepare_map_split",
+        "workbench_get_map_split",
+        "workbench_inspect_map_split",
+        "workbench_revise_map_split",
+        "workbench_adopt_map_split",
+        "workbench_edit_map_split_element",
         "workbench_resolve_image_region",
         "workbench_suggest_panel_region",
         "workbench_prepare_part_context",

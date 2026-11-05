@@ -275,6 +275,9 @@ async function referenceHostRegression(client, vite) {
   const sequenceRef = { kind: 'interactable', documentId: project.projectId, definitionId: sequence.definitionId, slot: 'sequence-entry', index: 0 };
   check(client.imageTargetEquals(sequenceRef, { ...sequenceRef, index: 1 }), false, 'an index change cannot be mistaken for the original appearance slot');
   check(client.imageTargetEquals({ kind: 'scene-instance', documentId: 'scene', instanceId: 'selected' }, { kind: 'scene-instance', documentId: 'scene', instanceId: 'selected', slot: 'visual' }), true);
+  const splitRef = { kind: 'scene-split-part', documentId: 'scene', elementId: 'tree', partId: 'art', window: { width: 4, height: 3, x: 2, y: 1 } };
+  check(client.imageTargetEquals(splitRef, { ...splitRef, window: { x: 2, y: 1, width: 4, height: 3 } }), true, 'nested window key order cannot reject a committed adoption');
+  check(client.imageTargetEquals(splitRef, { ...splitRef, window: { ...splitRef.window, x: 3 } }), false);
   const scene = createScene('Reference UI');
   scene.map = { name: 'map', origin: { x: 0, y: 0 }, offset: { x: 35, y: 20 }, layers: [{ id: 'map_overall', name: 'map', source: originalSource, width: 512, height: 256, locked: false, hidden: false, included: true }], collisions: [], source: 'data:application/zip;base64,UEs=', warnings: [] };
   scene.order.push('map_overall');
@@ -294,6 +297,19 @@ async function referenceHostRegression(client, vite) {
   imageEditInputs['image-apply'].parse(client.imageApplyInput(target, 'edit-reference', 'source', 'restore-selected')); checks++;
   const before = JSON.stringify(scene);
   const { SceneImagePreview } = await vite.ssrLoadModule('/components/scene-composer/scene-image-preview.tsx');
+  const { splitFixture } = await import('../scene-composer/map-split-fixture.mjs');
+  const splitScene = await splitFixture();
+  const piece = splitScene.mapSplit.elements[1].parts[0];
+  const cleared = await sharp({ create: { width: 4, height: 3, channels: 4, background: '#00000000' } }).png().toBuffer();
+  const editedPixels = await sharp(Buffer.from(piece.source.split(',')[1], 'base64')).ensureAlpha().raw().toBuffer();
+  for (let y = 1; y < 4; y++) editedPixels.fill(0, (y * piece.width + 2) * 4, (y * piece.width + 6) * 4);
+  const applied = await sharp(editedPixels, { raw: { width: piece.width, height: piece.height, channels: 4 } }).png().toBuffer();
+  const previewTarget = { ...splitRef, documentId: splitScene.id, elementId: 'split_tree' };
+  const renderPreview = async (target, png) => {
+    const svg = renderToStaticMarkup(createElement(SceneImagePreview, { scene: splitScene, target, source: `data:image/png;base64,${png.toString('base64')}` })).replace('width="100%" height="100%"', 'width="280" height="200"');
+    return sharp(Buffer.from(svg)).ensureAlpha().raw().toBuffer();
+  };
+  check(await renderPreview(previewTarget, cleared), await renderPreview({ ...previewTarget, window: undefined }, applied), 'window preview clears original pixels exactly like RGBA adoption, including transparent holes');
   const markup = renderToStaticMarkup(createElement(SceneImagePreview, { scene, target: targetRef, source: 'blob:isolated-candidate' }));
   check(JSON.stringify(scene), before, 'candidate context preserves materials, sibling art, anchor, map offset, order and source ZIP');
   check((markup.match(/href="blob:isolated-candidate"/g) || []).length, 1, 'candidate is overlaid on exactly one scene instance');

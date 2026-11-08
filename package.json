@@ -37,6 +37,7 @@
     "test:http": "node tests/workbench-http/run.mjs",
     "test:scene-composer": "node tests/scene-composer/run.mjs",
     "test:scene-split": "node tests/scene-split/pixels.mjs && node tests/scene-composer/map-split.mjs && node tests/scene-split/service.mjs && node tests/scene-split/execution.mjs && node tests/scene-split/frontend.mjs",
+    "test:affordance": "node tests/affordance/run.mjs",
     "test:scene-links": "node tests/scene-links/run.mjs && node tests/scene-links/frontend.mjs",
     "test:scene-links-engine": "node tests/scene-links/engine.mjs",
     "test:map-stitcher": "node tests/map-stitcher/run.mjs && node tests/map-stitcher/projects.mjs",

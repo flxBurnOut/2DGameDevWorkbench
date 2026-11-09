@@ -11,7 +11,7 @@ const vec = (p) => `Vector2(${p.x}, ${p.y})`;
 const interactionRuntime = 'res://addons/workbench_interaction/runtime/v1/interaction_runtime_2d.tscn';
 
 /** Local web exporter. Uses the existing interaction kit, never an Agent operation. */
-export async function buildSceneGodotPackage(input, { repositoryRoot } = {}) {
+export async function buildSceneGodotPackage(input, { repositoryRoot, sourcePackage, provenance } = {}) {
   const scene = validateScene(input);
   const activeSplit = scene.mapSplit && !scene.mapSplit.stale ? scene.mapSplit : null;
   if (!scene.map || (activeSplit ? !activeSplit.elements.some(element => element.included && element.parts.some(part => part.enabled)) : !scene.map.layers.some(layer => layer.included)))
@@ -206,7 +206,7 @@ export async function buildSceneGodotPackage(input, { repositoryRoot } = {}) {
     `${root}/scene.tscn`,
     `[gd_scene load_steps=${ext.length + 1} format=3]\n\n${ext.join('\n')}\n\n${nodes.join('\n')}\n`,
   );
-  zip.file(`${root}/scene-source.zip`, await createScenePackage(scene));
+  zip.file(`${root}/scene-source.zip`, sourcePackage || await createScenePackage(scene, { provenance }));
   zip.file(
     `${root}/scene-manifest.json`,
     JSON.stringify(
@@ -214,6 +214,7 @@ export async function buildSceneGodotPackage(input, { repositoryRoot } = {}) {
         format: 'workbench-scene-godot',
         version: 1,
         sceneId: scene.id,
+        ...(provenance ? { source: provenance } : {}),
         name: scene.name,
         scene: `res://${root}/scene.tscn`,
         runtime: needsRuntime ? interactionRuntime : null,

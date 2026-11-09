@@ -40,8 +40,12 @@ async function request<T>(url: string, body?: unknown, signal?: AbortSignal): Pr
   if (!response.ok) throw new DocumentClientError(typeof value.error === 'string' ? value.error : '共享工程请求未完成。', response.status, value.code);
   return value as T;
 }
-export function readDocument<T>(id: string, revision?: number) {
-  return request<DocumentResult<T>>(`/${encodeURIComponent(id)}${revision === undefined ? '' : `?revision=${revision}`}`);
+export type DocumentMediaOptions = { media?: 'references' | 'embedded' };
+export function readDocument<T>(id: string, revision?: number, options: DocumentMediaOptions = {}) {
+  const query = new URLSearchParams();
+  if (revision !== undefined) query.set('revision', String(revision));
+  if (options.media) query.set('media', options.media);
+  return request<DocumentResult<T>>(`/${encodeURIComponent(id)}${query.size ? `?${query}` : ''}`);
 }
 export function readDocumentMetadata(id: string) {
   return request<DocumentResult<never>>(`/${encodeURIComponent(id)}?metadataOnly=true`);
@@ -51,11 +55,11 @@ export function listDocuments(kind?: DocumentKind, offset = 0, signal?: AbortSig
   if (kind) query.set('kind', kind);
   return request<SharedDocumentPage>(`?${query}`, undefined, signal);
 }
-export function createDocument<T>(kind: DocumentKind, content: T, commandId = crypto.randomUUID()) {
-  return request<DocumentResult<T>>('', { kind, content, commandId });
+export function createDocument<T>(kind: DocumentKind, content: T, commandId = crypto.randomUUID(), options: DocumentMediaOptions = {}) {
+  return request<DocumentResult<T>>(options.media ? `?media=${options.media}` : '', { kind, content, commandId });
 }
-export function saveDocument<T>(id: string, expectedRevision: number, content: T, commandId = crypto.randomUUID()) {
-  return request<DocumentResult<T>>(`/${encodeURIComponent(id)}/save`, { expectedRevision, content, commandId });
+export function saveDocument<T>(id: string, expectedRevision: number, content: T, commandId = crypto.randomUUID(), options: DocumentMediaOptions = {}) {
+  return request<DocumentResult<T>>(`/${encodeURIComponent(id)}/save${options.media ? `?media=${options.media}` : ''}`, { expectedRevision, content, commandId });
 }
 export function applyDocument<T>(id: string, expectedRevision: number, commands: Array<Record<string, unknown>>, commandId = crypto.randomUUID()) {
   return request<DocumentResult<T>>(`/${encodeURIComponent(id)}/apply`, { expectedRevision, commands, commandId });

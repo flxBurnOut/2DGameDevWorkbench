@@ -207,7 +207,7 @@ export async function verifiedSceneImageSource(target: ImageTargetInfo, snapshot
   if (await rgbaHash(bytes) !== entry.sha256) throw new Error('嵌入源包内容已变化，与当前图片来源证据不一致；请关闭调整窗口并刷新宿主场景。');
   return { source: map.source, blob: new Blob([bytes], { type: match[1] }) };
 }
-export async function openImageSession(target: ImageTargetRef, attempt: ImageSessionBootstrap) {
+export async function openImageSession(target: ImageTargetRef, attempt: ImageSessionBootstrap, create?: (input: ReturnType<typeof imageSessionInput>) => Promise<{ edit: ImageEditSession }>) {
   if (attempt.editId) {
     const { edit } = await readImageEdit(attempt.editId);
     if (!imageTargetEquals(target, edit.target.targetRef)) throw new Error('会话属于另一图片目标，未打开历史。');
@@ -219,7 +219,7 @@ export async function openImageSession(target: ImageTargetRef, attempt: ImageSes
   }
   const inspection = await inspectImage(target);
   attempt.createInput ||= imageSessionInput(inspection.target, attempt.commandId);
-  const { edit } = await imageEditRequest<{ edit: ImageEditSession }>('session-create', attempt.createInput);
+  const { edit } = await (create ? create(attempt.createInput) : imageEditRequest<{ edit: ImageEditSession }>('session-create', attempt.createInput));
   attempt.editId = edit.editId;
   return { inspection, edit };
 }

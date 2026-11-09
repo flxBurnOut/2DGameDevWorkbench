@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { makeId, normalizeProject, referencedAssets, selectedProject } from '../interactable-editor/contract.mjs';
 import { sceneLinkSchema, MAX_SCENE_LINKS, validateSceneLinks, sceneLinkDiagnostics } from './links.mjs';
 import { mapSplitSchema, validateMapSplit } from './map-split.mjs';
+import { assertEditableSceneNodes } from './mutation-policy.mjs';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const coordinate = z.number().finite().min(-1e7).max(1e7);
@@ -34,6 +35,7 @@ export const sceneSchema = z.object({
       offset: point,
       layers: z.array(mapLayer).max(8),
       collisions: z.array(z.array(point).min(3).max(10000)).max(10000),
+      collisionOverride: z.object({ sourceCollisions: z.array(z.array(point).min(3).max(10000)).max(10000) }).optional(),
       source,
       warnings: z.array(z.string()),
     })
@@ -190,8 +192,7 @@ export function reorder(scene, ids, action, target) {
   const moving = scene.order.filter((key) => chosen.has(key));
   if (!moving.length || chosen.has(target)) return;
   const nodes = [...scene.instances, ...(scene.map?.layers || []), ...(scene.mapSplit?.elements || [])];
-  if (nodes.some(node => chosen.has(node.id) && node.locked))
-    throw new Error('请先解锁要调整顺序的节点。');
+  assertEditableSceneNodes(nodes.filter(node => chosen.has(node.id)));
   const first = scene.order.indexOf(moving[0]);
   const last = scene.order.indexOf(moving.at(-1));
   const remaining = scene.order.filter((key) => !chosen.has(key));

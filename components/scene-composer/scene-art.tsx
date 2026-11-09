@@ -1,4 +1,5 @@
 'use client';
+import { documentMediaUrl } from '@/features/editor-documents/browser-media';
 import { useEffect, useState } from 'react';
 import type { Shape } from '@/features/interactable-editor/contract.mjs';
 import {
@@ -68,7 +69,7 @@ export function ObjectArt({
 }) {
   const render = objectRenderState(i, material, { time, simulated, preview });
   const { object: o, visual: v, appearance, completedHidden, frame, asset, rgb } = render;
-  const imageSource = asset?.source;
+  const imageSource = asset ? documentMediaUrl(asset.source) : undefined;
   const [dimensions, setDimensions] = useState({
     width: v.width,
     height: v.height,
@@ -132,7 +133,7 @@ export function ObjectArt({
             >
               <image
                 filter={`url(#scene-tint-${i.id})`}
-                href={asset.source}
+                href={documentMediaUrl(asset.source)}
                 width={dimensions.width}
                 height={dimensions.height}
                 style={{ imageRendering: 'pixelated' }}

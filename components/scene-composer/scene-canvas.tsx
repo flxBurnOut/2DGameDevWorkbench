@@ -1,6 +1,7 @@
 /* oxlint-disable react/react-compiler -- Pointer gesture refs drive transient canvas rendering. */
 /* oxlint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex -- This keyboard-operable SVG is an application canvas, not a static image. */
 'use client';
+import { documentMediaUrl } from '@/features/editor-documents/browser-media';
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import type { InteractionSimulation } from '@/features/interactable-editor/simulator.mjs';
 import {
@@ -275,7 +276,7 @@ export function SceneCanvas(p: Props) {
       const { element, part, rect } = entry;
       if ((preview ? !element.included : element.hidden) || !part.enabled) return null;
       const moving = motion?.ids.includes(id) && drag.current?.mode === 'move';
-      return <image key={entry.key} href={part.source} x={rect.x + (moving ? motion!.dx : 0)} y={rect.y + (moving ? motion!.dy : 0)} width={rect.width} height={rect.height}
+      return <image key={entry.key} href={documentMediaUrl(part.source)} x={rect.x + (moving ? motion!.dx : 0)} y={rect.y + (moving ? motion!.dy : 0)} width={rect.width} height={rect.height}
         opacity={!preview && !element.included ? 0.25 : 1} style={{ imageRendering: 'pixelated' }} />;
     }
     if (id === 'actor')
@@ -304,7 +305,7 @@ export function SceneCanvas(p: Props) {
       return (
         <image
           key={id}
-          href={layer.source}
+          href={documentMediaUrl(layer.source)}
           x={b.x + (moving ? motion!.dx : 0)}
           y={b.y + (moving ? motion!.dy : 0)}
           width={layer.width}

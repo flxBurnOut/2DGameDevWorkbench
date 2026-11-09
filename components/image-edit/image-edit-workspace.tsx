@@ -22,6 +22,8 @@ import type { ImagePixelTool, ImageViewMode } from './image-edit-canvas';
 import { ImageVersionCache, ImageViewRequest } from '@/features/image-edit/version-cache';
 import type { VerifiedPixels } from '@/features/image-edit/version-cache';
 import { imageDarkeningWarning } from '@/features/image-edit/appearance-check.mjs';
+import { browserRequestJournal } from '@/features/editor-documents/browser-journal';
+import { journalRequestIdentity } from '@/features/editor-documents/request-journal.mjs';
 import './image-edit.css';
 
 export interface ImageEditWorkspaceProps {
@@ -49,7 +51,32 @@ const tools: { id: ImagePixelTool; name: string }[] = [{ id: 'pencil', name: '�
 const message = (error: unknown) => error instanceof Error ? error.message : '局部调整未完成。';
 
 async function loadWorkspace(cache: ImageVersionCache, target: ImageTargetRef, attempt: ImageSessionBootstrap, requestedVersion?: string): Promise<LoadedWorkspace> {
-  const { inspection, edit } = await openImageSession(target, attempt);
+  const bootstrap = browserRequestJournal('image-bootstrap', journalRequestIdentity({ operation: 'image-target', input: { commandId: 'target', target } }));
+  if (!attempt.editId) {
+    const previous = await bootstrap.pending();
+    if (previous) {
+      if (previous.request.operation !== 'session-create') throw new Error('原图片会话请求无效，请保留记录后恢复。');
+      attempt.createInput = previous.request.input as unknown as NonNullable<ImageSessionBootstrap['createInput']>;
+      attempt.commandId = attempt.createInput.commandId;
+    }
+  }
+  const { inspection, edit } = await openImageSession(target, attempt, async input => {
+    const request = { operation: 'session-create', input };
+    const saved = await bootstrap.begin(request);
+    let awaitingResponse = false;
+    try {
+      awaitingResponse = !saved.response;
+      const response = saved.response as { edit: ImageEditSession } | undefined || await imageEditRequest<{ edit: ImageEditSession }>('session-create', input);
+      awaitingResponse = false;
+      if (!response.edit?.editId || response.edit.target.targetId !== input.targetId) throw new Error('图片会话回执身份不匹配。');
+      await bootstrap.respond(request, response); await bootstrap.complete(request);
+      return response;
+    } catch (cause) {
+      if (awaitingResponse && cause instanceof ImageEditClientError && cause.status >= 400 && cause.status < 500 && cause.status !== 408)
+        await bootstrap.complete(request, 'rejected');
+      throw cause;
+    }
+  });
   if (edit.target.targetId !== inspection.target.targetId) throw new Error('编辑会话属于另一张图片，未打开。');
   const original = await cache.load(edit.editId, 'source');
   if (original.width !== edit.target.width || original.height !== edit.target.height) throw new Error('会话原始图尺寸与目标绑定不一致。');
@@ -62,6 +89,8 @@ async function loadWorkspace(cache: ImageVersionCache, target: ImageTargetRef, a
 }
 
 export function ImageEditWorkspace({ target, initialEditId, initialCandidateVersion, readOnly = false, contextLayers = [], beforeApply, onBusyChange, onAdopt, onClose, onNavigationChange, renderContext, onOpenSource, onDownloadSource }: ImageEditWorkspaceProps) {
+  const adoptCallback = useRef(onAdopt);
+  useEffect(() => { adoptCallback.current = onAdopt; }, [onAdopt]);
   const [loaded, setLoaded] = useState<LoadedWorkspace | null>(null), [version, setVersion] = useState(0);
   const [busy, setBusy] = useState(''), [error, setError] = useState(''), [notice, setNotice] = useState(''), [pending, setPending] = useState<PendingCommand | null>(null);
   const [cache] = useState(() => new ImageVersionCache()), [viewRequest] = useState(() => new ImageViewRequest());
@@ -142,11 +171,27 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
     dialog.current?.focus();
     void Promise.resolve().then(() => { if (alive) { setBusy('正在读取并核验源像素'); setError(''); setLoaded(null); setPreview(null); setViewLoading(''); } });
     const attempt = boot.current?.key === key ? boot.current.attempt : { commandId: crypto.randomUUID(), editId: initialEditId };
+    const selection = JSON.parse(key) as { target: ImageTargetRef; initialEditId?: string; initialCandidateVersion?: string };
     if (!boot.current || boot.current.key !== key || retryLoad) {
-      const selection = JSON.parse(key) as { target: ImageTargetRef; initialEditId?: string; initialCandidateVersion?: string };
       boot.current = { key, attempt, promise: loadWorkspace(cache, selection.target, attempt, selection.initialCandidateVersion) };
     }
-    void boot.current.promise.then(value => { if (alive) { setLoaded(value); setBusy(''); } }).catch(cause => { if (alive) { setError(message(cause)); setBusy(''); } });
+    void boot.current.promise.then(async value => {
+      const original = await browserRequestJournal('image-edit', value.metadata.target.targetId).pending();
+      if (alive) {
+        setLoaded(value); setPending(original ? {
+          label: '恢复原图片请求', operation: original.request.operation, body: original.request.input, external: true,
+          complete: async response => {
+            const latest = loadedRef.current;
+            if (!latest || latest.controller.dirty) throw new Error('请保留当前笔划后再恢复原请求结果。');
+            if (original.request.operation === 'apply') await adoptCallback.current(response as ImageAdoptionReceipt);
+            const result = response as { edit?: ImageEditSession; candidateVersion?: string };
+            const editId = result.edit?.editId || (original.request.input.editId as string | undefined) || latest.session.editId;
+            const next = await loadWorkspace(cache, selection.target, { commandId: crypto.randomUUID(), editId }, result.candidateVersion);
+            setLoaded(next); setPreview(null); setNotice('原图片请求已确认，候选与采用回执已恢复。');
+          },
+        } : null); setBusy('');
+      }
+    }).catch(cause => { if (alive) { setError(message(cause)); setBusy(''); } });
     return () => { alive = false; if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
   }, [key, retryLoad, initialEditId, cache]);
   useEffect(() => { onBusyChange?.(!!busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
@@ -224,15 +269,29 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
   const execute = async (command: PendingCommand) => {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(command.label); setError(''); setNotice(''); setPending(command);
-    let submitted = false;
+    const input = command.body as Record<string, unknown>;
+    // apply binds through editId and deliberately has no targetId in its body.
+    const targetId = typeof input.targetId === 'string' ? input.targetId : loadedRef.current?.metadata.target.targetId;
+    const journal = targetId ? browserRequestJournal('image-edit', targetId) : null;
+    const request = { operation: command.operation, input };
+    let submitted = false, awaitingResponse = false;
     try {
+      if (!journal) throw new Error('图片目标尚未读取，未发送请求。');
       if (command.operation === 'apply') await beforeApply?.();
+      const original = await journal.begin(request);
       submitted = true;
-      const value = await imageEditRequest<unknown>(command.operation, command.body);
-      await command.complete(value); setPending(null);
+      awaitingResponse = !original.response;
+      const value = original.response || await imageEditRequest<unknown>(command.operation, command.body);
+      awaitingResponse = false;
+      await journal.respond(request, value);
+      await command.complete(value);
+      await journal.complete(request); setPending(null);
     } catch (cause) {
       setError(message(cause));
-      if (!submitted || (cause instanceof ImageEditClientError && cause.status < 500 && !['IMAGE_EDIT_BUSY', 'IMAGE_SUBMISSION_UNKNOWN'].includes(cause.code || ''))) setPending(null);
+      if (awaitingResponse && cause instanceof ImageEditClientError && cause.status >= 400 && cause.status < 500 && cause.status !== 408 && !['IMAGE_EDIT_BUSY', 'IMAGE_SUBMISSION_UNKNOWN'].includes(cause.code || '')) {
+        try { await journal?.complete(request, 'rejected'); setPending(null); }
+        catch (storageError) { setError(message(storageError)); }
+      } else if (!submitted && !await journal?.pending().catch(() => true)) setPending(null);
     } finally { busyRef.current = false; setBusy(''); }
   };
   const local = (operation: () => void) => { try { operation(); setSelectionVisible(true); changed(); setError(''); } catch (cause) { setError(message(cause)); } };

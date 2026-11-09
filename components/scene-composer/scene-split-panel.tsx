@@ -1,6 +1,6 @@
 /* oxlint-disable react/react-compiler -- A durable request body and exact candidate revision drive recovery and preview. */
 'use client';
-import { useEffect, useEffectEvent, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import type { Scene } from '@/features/scene-composer/model.mjs';
 import type {
   MapSplitConflict,
@@ -8,6 +8,7 @@ import type {
   MapSplitMatch,
 } from '@/features/scene-composer/map-split.mjs';
 import type { SharedDocument } from '@/features/editor-documents/client';
+import { browserRequestJournal } from '@/features/editor-documents/browser-journal';
 import {
   readWorkspaceDraft,
   saveWorkspaceDraft,
@@ -154,6 +155,7 @@ export function SceneSplitPanel({
     incomingError?: string;
   } | null>(null);
   const pendingKey = `scene-split-pending:${document.id}`;
+  const journal = useMemo(() => browserRequestJournal('scene-split', document.id), [document.id]);
   const selectedElement = candidate?.elements?.find(
     (element) => element.id === elementId,
   );
@@ -226,7 +228,7 @@ export function SceneSplitPanel({
     setBusy(true);
     setError('');
     setMessage('');
-    const intent = replay ?? {
+    let intent = replay ?? {
       operation,
       input: {
         documentId: document.id,
@@ -238,13 +240,14 @@ export function SceneSplitPanel({
     let awaitingResponse = false;
     try {
       if (intent.operation === 'adopt') await beforeAdopt();
-      await saveWorkspaceDraft(pendingKey, intent, []);
+      intent = (await journal.begin(intent)).request;
       setPending(intent);
       awaitingResponse = true;
       const result = await requestSceneSplit<
         { candidate?: Candidate } & Partial<SceneSplitReceipt>
       >(intent.operation, intent.input);
       awaitingResponse = false;
+      await journal.respond(intent, result);
       if (result.candidate) {
         if (result.candidate.status !== 'running')
           await load(
@@ -292,7 +295,7 @@ export function SceneSplitPanel({
           '请求已登记，正在处理。关闭面板后可查询同一候选，或恢复原请求。',
         );
       } else {
-        await saveWorkspaceDraft(pendingKey, null, []);
+        await journal.complete(intent);
         setPending(null);
       }
       await list();
@@ -300,7 +303,8 @@ export function SceneSplitPanel({
       const status =
         cause instanceof Error && 'status' in cause ? Number(cause.status) : 0;
       if (awaitingResponse && status >= 400 && status < 500 && status !== 408) {
-        await saveWorkspaceDraft(pendingKey, null, []);
+        try { await journal.complete(intent, 'rejected'); }
+        catch (storageError) { setError(describe(storageError)); return; }
         setPending(null);
         setError(`${describe(cause)} 可修正输入或重新打开最新版本后再提交。`);
       } else setError(describe(cause));
@@ -311,7 +315,12 @@ export function SceneSplitPanel({
   };
   const initialize = useEffectEvent(async () => {
     try {
-      const original = await readWorkspaceDraft<Pending | null>(pendingKey);
+      const legacy = await readWorkspaceDraft<Pending | null>(pendingKey);
+      if (legacy) {
+        await journal.begin(legacy);
+        await saveWorkspaceDraft(pendingKey, null, []);
+      }
+      const original = (await journal.pending())?.request;
       setPending(original ?? null);
       const rows = await list();
       if (original) {
@@ -355,10 +364,10 @@ export function SceneSplitPanel({
       displayCandidate(result.candidate);
     else setCandidate(result.candidate);
     if (
-      result.candidate.status !== 'running' &&
-      pending?.input.commandId === result.candidate.execution?.commandId
+      result.candidate.status !== 'running' && pending &&
+      pending.input.commandId === result.candidate.execution?.commandId
     ) {
-      await saveWorkspaceDraft(pendingKey, null, []);
+      await journal.complete(pending);
       setPending(null);
     }
     setError('');

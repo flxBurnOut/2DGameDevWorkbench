@@ -1,4 +1,5 @@
 'use client';
+import { documentMediaUrl } from '@/features/editor-documents/browser-media';
 import { useId } from 'react';
 import type { ImageTargetRef } from '@/features/image-edit/client';
 import { materialFor, sceneBounds, type Scene } from '@/features/scene-composer/model.mjs';
@@ -34,12 +35,12 @@ export function SceneImagePreview({ scene, target, source }: { scene: Scene; tar
             <rect x={entry.rect.x} y={entry.rect.y + window.y} width={window.x} height={window.height} />
             <rect x={entry.rect.x + window.x + window.width} y={entry.rect.y + window.y} width={entry.rect.width - window.x - window.width} height={window.height} />
           </clipPath></defs>}
-          <image href={selected && !window ? source : entry.part.source} {...entry.rect} clipPath={window ? `url(#${clipId})` : undefined} />
+          <image href={documentMediaUrl(selected && !window ? source : entry.part.source)} {...entry.rect} clipPath={window ? `url(#${clipId})` : undefined} />
           {window && <image href={source} x={entry.rect.x + window.x} y={entry.rect.y + window.y} width={window.width} height={window.height} />}
         </g>;
       }
       const layer = scene.map?.layers.find(item => item.id === id);
-      if (layer && scene.map) return <image key={id} href={target.kind === 'scene-layer' && target.layerId === id ? source : layer.source} x={scene.map.origin.x + scene.map.offset.x} y={scene.map.origin.y + scene.map.offset.y} width={layer.width} height={layer.height} opacity={layer.hidden || !layer.included ? .3 : 1} />;
+      if (layer && scene.map) return <image key={id} href={documentMediaUrl(target.kind === 'scene-layer' && target.layerId === id ? source : layer.source)} x={scene.map.origin.x + scene.map.offset.x} y={scene.map.origin.y + scene.map.offset.y} width={layer.width} height={layer.height} opacity={layer.hidden || !layer.included ? .3 : 1} />;
       const instance = scene.instances.find(item => item.id === id);
       if (!instance) return null;
       const material = materialFor(scene, instance); if (!material) return null;

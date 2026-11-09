@@ -48,7 +48,8 @@ const gameExportToken=randomUUID();
 const requireGameToken=request=>{if(request.headers['x-forge-game-token']!==gameExportToken)throw new Error('项目导出会话已失效，请关闭导出窗口后重试。');};
 
 import { readMapProject, saveMapProjectRequest } from '../lib/workbench/map-projects.mjs';
-import { documentRequest } from '../lib/workbench/editor-documents.mjs';
+import { documentRequest, readDocumentMedia, uploadDocumentMedia } from '../lib/workbench/editor-documents.mjs';
+import { MAX_DOCUMENT_MEDIA_BYTES } from '../lib/workbench/document-media.mjs';
 import { inspectAssetPackage, commitAssetPackages, readAssetPackageCommit, readAssetPackagePreview } from '../lib/workbench/asset-packages.mjs';
 import { ASSET_PACKAGE_LIMITS } from '../lib/workbench/asset-package-contract.mjs';
 
@@ -70,6 +71,27 @@ const server = http.createServer(async (request, response) => {
       });
       return;
     }
+    if (url.pathname.startsWith('/v1/document-media/')) {
+      try {
+        const manifest = await loadManifest(), key = url.pathname.slice('/v1/document-media/'.length);
+        if (request.method === 'PUT') {
+          const chunks = []; let total = 0;
+          for await (const chunk of request) {
+            total += chunk.length;
+            if (total > MAX_DOCUMENT_MEDIA_BYTES) throw Object.assign(new Error('媒体超过 256 MB。'), { status: 413 });
+            chunks.push(chunk);
+          }
+          const mime = (request.headers['content-type'] || '').split(';')[0];
+          sendJson(response, 200, { media: await uploadDocumentMedia(repositoryRoot, manifest, key, mime, Buffer.concat(chunks)) });
+        } else if (['GET', 'HEAD'].includes(request.method)) {
+          const result = await readDocumentMedia(repositoryRoot, manifest, key, { metadataOnly: request.method === 'HEAD' });
+          response.writeHead(200, { 'content-type': result.metadata.mime, 'content-length': String(result.metadata.bytes),
+            'cache-control': 'private, max-age=31536000, immutable', etag: `"${result.metadata.sha256}"`, 'x-content-type-options': 'nosniff' });
+          response.end(result.bytes);
+        } else sendJson(response, 405, { error: 'Unsupported media method.' });
+      } catch (error) { sendJson(response, error.status || 400, documentFailure(error)); }
+      return;
+    }
     if (url.pathname === '/v1/documents' || url.pathname.startsWith('/v1/documents/')) {
       try {
         const manifest = await loadManifest();
@@ -89,7 +111,7 @@ const server = http.createServer(async (request, response) => {
           }
         }
         if (!operation) { sendJson(response, 405, { error: 'Unsupported document route or method.' }); return; }
-        sendJson(response, 200, await documentRequest(repositoryRoot, manifest, operation, input));
+        sendJson(response, 200, await documentRequest(repositoryRoot, manifest, operation, input, { media: url.searchParams.get('media') === 'references' ? 'references' : 'embedded' }));
       } catch (error) { sendJson(response, error.status || 400, documentFailure(error)); }
       return;
     }

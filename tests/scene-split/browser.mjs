@@ -26,6 +26,8 @@ import {
   createDocument,
   documentRequest,
   getDocument,
+  readDocumentMedia,
+  uploadDocumentMedia,
 } from '../../lib/workbench/editor-documents.mjs';
 import { sceneSplitRequest } from '../../lib/workbench/scene-splits.mjs';
 import { loadManifest } from '../../lib/workbench/runtime.mjs';
@@ -42,6 +44,7 @@ await mkdir(out, { recursive: true });
 const manifest = await loadManifest(),
   calls = [],
   browserErrors = [];
+let mediaDownloads = 0, mediaAvailable = true;
 // Exercise the shipping default auto mode's honest missing-runtime fallback.
 // Real checkpoint accuracy/performance belongs to the separate map acceptance.
 process.env.FORGE_STRUCTURE_WEIGHTS = path.join(
@@ -240,6 +243,20 @@ try {
               return;
             }
             try {
+              if (url.pathname.startsWith('/api/workbench/document-media/')) {
+                if (!mediaAvailable) { sendJson(res, 503, { error: 'Media network deliberately unavailable' }); return; }
+                const key = url.pathname.split('/').at(-1);
+                if (req.method === 'PUT') {
+                  const chunks = []; for await (const chunk of req) chunks.push(chunk);
+                  sendJson(res, 200, { media: await uploadDocumentMedia(root, manifest, key, req.headers['content-type'], Buffer.concat(chunks)) });
+                } else {
+                  const media = await readDocumentMedia(root, manifest, key, { metadataOnly: req.method === 'HEAD' });
+                  if (req.method === 'GET') mediaDownloads++;
+                  res.writeHead(200, { 'content-type': media.metadata.mime, 'content-length': String(media.metadata.bytes) });
+                  res.end(media.bytes);
+                }
+                return;
+              }
               if (url.pathname.startsWith('/api/workbench/scene-split/')) {
                 const operation = url.pathname.split('/').at(-1),
                   input = await body(req);
@@ -317,7 +334,7 @@ try {
                 sendJson(
                   res,
                   200,
-                  await documentRequest(root, manifest, operation, input),
+                  await documentRequest(root, manifest, operation, input, { media: url.searchParams.get('media') === 'references' ? 'references' : 'embedded' }),
                 );
                 return;
               }
@@ -487,7 +504,14 @@ try {
   await waitFor("document.querySelector('.sc-dialogue')?.textContent.includes('第一页按键检查')", 'Lowercase e starts the conversation');
   await pressE();
   await waitFor("document.querySelector('.sc-dialogue')?.textContent.includes('第二页按键检查')", 'The same key advances dialogue');
+  const previewBaseline = (await getDocument(root, manifest, { documentId: scene.id })).document;
+  await documentRequest(root, manifest, 'document-apply', { documentId: scene.id, expectedRevision: previewBaseline.revision,
+    commandId: 'browser-preview-remote', commands: [{ type: 'move-instances', ids: [scene.instances[0].id], dx: 1 }] });
+  await delay(5500);
+  assert.ok(await evaluate("document.querySelector('.sc-dialogue')?.textContent.includes('第二页按键检查')"), 'remote edits do not rebuild an active preview');
+  assert.ok(await evaluate("Array.from(document.querySelectorAll('.sc-canvas image')).every(image=>image.getAttribute('href').startsWith('blob:'))"), 'actual scene art renders from verified local blobs');
   await click('退出预览');
+  await waitFor(`document.querySelector('.wb-document-sync')?.textContent.includes('版本 ${previewBaseline.revision + 1}')`, 'Preview exit accepts the new saved revision');
   console.log('Browser fixture loaded; checking the actual one-click UI.');
   await click('一键地图粗分');
   await waitFor(
@@ -536,6 +560,13 @@ try {
     "!document.querySelector('.sc-split-modal') && Array.from(document.querySelectorAll('.sc-node-name')).some(e=>e.textContent.includes('网页修订树'))",
     'Independent adopted node',
   );
+  const adoptedRevision = (await getDocument(root, manifest, { documentId: scene.id })).document.revision;
+  await evaluate("document.querySelector('.sc-canvas').dispatchEvent(new KeyboardEvent('keydown',{key:'z',code:'KeyZ',ctrlKey:true,bubbles:true}))");
+  await waitFor("!Array.from(document.querySelectorAll('.sc-node-name')).some(e=>e.textContent.includes('网页修订树'))", 'Adoption can be undone');
+  await waitFor(`document.querySelector('.wb-document-sync')?.textContent.includes('版本 ${adoptedRevision + 1}')`, 'Adoption undo commits through shared CAS');
+  await evaluate("document.querySelector('.sc-canvas').dispatchEvent(new KeyboardEvent('keydown',{key:'z',code:'KeyZ',ctrlKey:true,shiftKey:true,bubbles:true}))");
+  await waitFor("Array.from(document.querySelectorAll('.sc-node-name')).some(e=>e.textContent.includes('网页修订树'))", 'Adoption redo restores the exact split');
+  await waitFor(`document.querySelector('.wb-document-sync')?.textContent.includes('版本 ${adoptedRevision + 2}')`, 'Adoption redo commits through shared CAS');
   await evaluate(
     "Array.from(document.querySelectorAll('.sc-node-name')).find(e=>e.textContent.includes('网页修订树')).click()",
   );
@@ -588,6 +619,8 @@ try {
     };
     socket.addEventListener('message', listener);
   });
+  const downloadsBeforeReload = mediaDownloads;
+  mediaAvailable = false;
   await cdp('Page.reload');
   await loaded;
   await waitFor(
@@ -609,6 +642,9 @@ try {
     'Reload retains object move',
   );
   await screenshot('04-refreshed-scene.png');
+  assert.equal(mediaDownloads, downloadsBeforeReload, 'saved drafts and undo artwork reload without binary network requests');
+  assert.ok(await evaluate("Array.from(document.querySelectorAll('.sc-canvas image')).every(image=>image.getAttribute('href').startsWith('blob:'))"));
+  mediaAvailable = true;
   await click('分层候选 / 恢复');
   await waitFor(
     "document.querySelector('.sc-split-modal')?.textContent.includes('网页修订树')",
@@ -758,6 +794,9 @@ try {
         ],
         lateTransferDeletion: true,
         explicitReleaseDeletion: true,
+        previewBlocksRemote: true,
+        adoptionUndoRedo: true,
+        offlineMediaReload: true,
         paidCalls: 0,
       },
       null,

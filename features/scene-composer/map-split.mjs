@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseDocumentMediaReference } from '../editor-documents/media-references.mjs';
 
 const safeId = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const coordinate = z.number().finite().min(-1e7).max(1e7);
@@ -120,6 +121,10 @@ const uniqueIds = (entries, label) => {
 
 function checkPng(value, dimensions, allowPackageReferences) {
   if (allowPackageReferences && /^media\/[0-9]+\.bin$/.test(value)) return;
+  // Only immutable, same-service PNG identities are accepted. The media store
+  // verifies their bytes and dimensions before a document can be committed.
+  const reference = parseDocumentMediaReference(value);
+  if (reference?.mime === 'image/png') return;
   const match = /^data:image\/png;base64,([A-Za-z0-9+/]*={0,2})$/.exec(value);
   if (!match || match[1].length < 32 || match[1].length % 4)
     throw new Error('场景分层纹理与归属蒙版必须是内嵌 PNG。');

@@ -5,6 +5,7 @@ import {
   listWorkItems,
   readWorkspaceDraft,
   saveWorkspaceDraft,
+  updateWorkspaceDraft,
 } from '@/lib/workbench/browser-store';
 import type { WorkItem } from '@/lib/workbench/work-items';
 import { workbenchModules } from '@/lib/workbench/modules';
@@ -39,8 +40,52 @@ import {
   type SceneMap,
 } from './model.mjs';
 import { createScenePackage, readScenePackage } from './package.mjs';
+import type { SharedDocument } from '../editor-documents/client';
+import { readDocument } from '../editor-documents/client';
+import { documentFingerprint, type DocumentSyncCache } from '../editor-documents/sync-controller.mjs';
+import { browserRequestJournal } from '../editor-documents/browser-journal';
+import { browserDocumentMedia } from '../editor-documents/browser-media';
+import { parseDocumentMediaReference } from '../editor-documents/media-references.mjs';
+import { sharedSceneContent } from './shared-content.mjs';
 
 type SavedScene = { scene: Scene; backupRevision: number | null };
+export async function prepareSceneDraft(scene: Scene) {
+  const key = `document-sync:scene:${scene.id}`;
+  const cache = await readWorkspaceDraft<DocumentSyncCache>(key);
+  const original = sharedSceneContent(scene), fingerprint = await documentFingerprint(original);
+  if (cache?.pending?.fingerprint === fingerprint && !await browserRequestJournal('document-sync:scene', scene.id).pending()) {
+    const pending = cache.pending;
+    await browserRequestJournal('document-sync:scene', scene.id).begin({
+      operation: pending.expectedRevision ? 'save' : 'create',
+      input: { documentId: scene.id, kind: 'scene', content: original, commandId: pending.commandId, expectedRevision: pending.expectedRevision },
+    });
+  }
+  const next = validateScene(await browserDocumentMedia.compact('scene', scene));
+  if (cache && cache.fingerprint === fingerprint && cache.mediaVersion !== 2) {
+    const compactFingerprint = await documentFingerprint(sharedSceneContent(next));
+    await updateWorkspaceDraft<DocumentSyncCache>(key, latest => latest?.fingerprint === fingerprint
+      ? { ...latest, fingerprint: compactFingerprint, mediaVersion: 2 } : latest || cache);
+  }
+  return next;
+}
+export async function migrateSceneSyncCache(cache: DocumentSyncCache | undefined, scene: Scene) {
+  if (!cache) return cache;
+  if (cache.pending && !await browserRequestJournal('document-sync:scene', scene.id).pending())
+    throw new Error('旧保存请求尚未确认且原草稿已变化，请保留本机备份后读取共享版本。');
+  if (cache.mediaVersion === 2 || !cache.revision || !cache.fingerprint) return cache;
+  // Compare the historical embedded baseline before changing its representation.
+  const { document } = await readDocument<Scene>(scene.id, cache.revision);
+  const original = sharedSceneContent(document.content);
+  const compact = sharedSceneContent(await browserDocumentMedia.compact('scene', original));
+  const fingerprint = await documentFingerprint(compact);
+  if ([await documentFingerprint(original), fingerprint].includes(cache.fingerprint))
+    return { ...cache, fingerprint, mediaVersion: 2 };
+  return cache;
+}
+export async function compactMap(map: SceneMap): Promise<SceneMap> {
+  const scene = createScene(); scene.map = map;
+  return (await browserDocumentMedia.compact('scene', scene)).map!;
+}
 export const sceneHref = (id: string) =>
   `${workbenchModules.find((module) => module.id === 'scene-composer')!.href}?scene=${encodeURIComponent(id)}`;
 export function sceneItem(scene: Scene): WorkItem {
@@ -59,9 +104,10 @@ export function sceneItem(scene: Scene): WorkItem {
   };
 }
 export async function saveScene(scene: Scene, backupRevision: number | null) {
+  const compact = validateScene(await browserDocumentMedia.compact('scene', scene));
   await saveWorkspaceDraft(
     `scene:${scene.id}`,
-    { scene: validateScene(scene), backupRevision },
+    { scene: compact, backupRevision },
     [sceneItem(scene)],
     'scene-current',
   );
@@ -77,7 +123,7 @@ export async function loadScene(id?: string) {
     return undefined;
   }
   return {
-    scene: validateScene(saved.scene),
+    scene: await prepareSceneDraft(saved.scene),
     backupRevision: saved.backupRevision ?? null,
   };
 }
@@ -96,6 +142,10 @@ export async function portableProject(project: InteractableProject) {
   const clean = normalizeProject(project);
   for (const asset of clean.assets) {
     if (asset.source.startsWith('data:')) continue;
+    if (parseDocumentMediaReference(asset.source)) {
+      asset.source = await browserDocumentMedia.dataUrl(asset.source, asset.mime);
+      continue;
+    }
     const response = await fetch(
       `/api/workbench/interactable-assets?path=${encodeURIComponent(asset.source)}`,
     );
@@ -115,7 +165,7 @@ export async function readObjects(fileOrItem: File | WorkItem) {
         ? await readWorkspaceDraft<InteractableProject>(fileOrItem.draftKey)
         : await loadDraft(fileOrItem.scopeId);
   if (!project) throw new Error('交互物草稿不存在。');
-  return portableProject(project);
+  return browserDocumentMedia.compact('interactable', await portableProject(project));
 }
 export async function captureMap(
   snapshot: FrameRoninEditorSnapshot,
@@ -174,7 +224,7 @@ export async function captureMap(
     source.height,
     canvas!,
   );
-  return {
+  return compactMap({
     name: name || source.name.replace(/\.[^.]+$/, ''),
     origin: { x: canvas!.originX, y: canvas!.originY },
     offset: { x: 0, y: 0 },
@@ -184,7 +234,7 @@ export async function captureMap(
       .map((r) => r.points),
     source: await dataUrl((await createPixelworkStatePackage(snapshot)).blob),
     warnings: separated ? [] : [wholeMapSplitHint],
-  };
+  });
 }
 function release(snapshot: FrameRoninEditorSnapshot) {
   for (const tile of snapshot.tiles)
@@ -244,7 +294,7 @@ export async function readMap(fileOrItem: File | WorkItem): Promise<SceneMap> {
           included: true,
         });
       }
-      return {
+      return compactMap({
         name: fileOrItem.name,
         origin: { x: manifest.canvas.originX, y: manifest.canvas.originY },
         offset: { x: 0, y: 0 },
@@ -256,7 +306,7 @@ export async function readMap(fileOrItem: File | WorkItem): Promise<SceneMap> {
           fileOrItem.slice(0, undefined, 'application/zip'),
         ),
         warnings: ['此包缺少完整地图编辑源，保留合成图层、原点和碰撞。'],
-      };
+      });
     }
   }
   const loaded = await loadMapProject(fileOrItem);
@@ -279,21 +329,22 @@ export async function startSceneFromMap(snapshot: FrameRoninEditorSnapshot) {
   return `${sceneHref(scene.id)}&fit=1`;
 }
 export async function downloadScene(scene: Scene) {
-  const bytes = await createScenePackage(scene);
+  const bytes = await createScenePackage(await browserDocumentMedia.hydrate('scene', scene));
   downloadBlob(
     new Blob([bytes], { type: 'application/zip' }),
     `${scene.name.replace(/[\\/:*?"<>|]/g, '_')}.scene.zip`,
   );
 }
 export async function importScene(file: File) {
-  return readScenePackage(await file.arrayBuffer());
+  return browserDocumentMedia.compact('scene', await readScenePackage(await file.arrayBuffer()));
 }
-export async function exportScene(scene: Scene) {
-  const bytes = await createScenePackage(scene);
+export async function exportScene(scene: Scene, document?: SharedDocument<Scene>) {
+  if (document && (document.id !== scene.id || document.kind !== 'scene')) throw new Error('导出来源与当前场景不匹配。');
+  const body = document ? JSON.stringify({ documentId: document.id, revision: document.revision }) : new Blob([await createScenePackage(await browserDocumentMedia.hydrate('scene', scene))]);
   const response = await fetch('/api/workbench/scene-composer/export', {
     method: 'POST',
-    headers: { 'content-type': 'application/zip' },
-    body: new Blob([bytes]),
+    headers: { 'content-type': document ? 'application/json' : 'application/zip' },
+    body,
     signal: AbortSignal.timeout(370000),
   });
   const result = (await response.json()) as {
@@ -301,9 +352,13 @@ export async function exportScene(scene: Scene) {
     status: string;
     exportId: string;
     outputs: string[];
+    source: { kind: string; sceneId: string; snapshotHash: string; documentId?: string; documentRevision?: number; documentContentHash?: string };
   };
   if (!response.ok || result.status !== 'completed')
     throw new Error(result.error || '场景导出失败。');
+  if (!result.source || result.source.sceneId !== scene.id || !/^[a-f0-9]{64}$/.test(result.source.snapshotHash) ||
+      (document ? result.source.kind !== 'shared-document' || result.source.documentId !== document.id || result.source.documentRevision !== document.revision || result.source.documentContentHash !== document.contentHash
+        : result.source.kind !== 'local-snapshot')) throw new Error('导出回执的来源版本或哈希不匹配，未交付其他版本。');
   const output = result.outputs.find((p) => p.endsWith('/scene-godot.zip'));
   if (!output) throw new Error('导出结果缺少场景包。');
   offerGodotExport({name:scene.name,url:`/api/workbench/artifacts?path=${encodeURIComponent(output)}`});

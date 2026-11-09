@@ -6,7 +6,7 @@ export async function POST(request: Request) {
   try {
     const response = await fetchWorkbenchRuntime('/v1/scene-composer/export', {
       method: 'POST',
-      headers: { 'content-type': 'application/zip' },
+      headers: { 'content-type': request.headers.get('content-type') || 'application/zip' },
       body: request.body,
       duplex: 'half',
     } as RequestInit);

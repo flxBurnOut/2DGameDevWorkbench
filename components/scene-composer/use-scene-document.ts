@@ -1,9 +1,14 @@
 /* oxlint-disable react/react-compiler -- Immutable document history is maintained alongside the current revision. */
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { updateSplitSourceState } from '@/features/scene-composer/map-split-source.mjs';
+import { updateMapCollisionOverride } from '@/features/scene-composer/map-collisions.mjs';
+import { sharedSceneContent, sameSceneContent, sceneWithLocalView } from '@/features/scene-composer/shared-content.mjs';
+import { SceneEditSession } from '@/features/scene-composer/edit-session.mjs';
+import { documentFingerprint, type DocumentSyncCache } from '@/features/editor-documents/sync-controller.mjs';
+import { browserDocumentMedia } from '@/features/editor-documents/browser-media';
 import { makeId } from '@/features/interactable-editor/contract.mjs';
-import { readWorkspaceDraft } from '@/lib/workbench/browser-store';
+import { readWorkspaceDraft, updateWorkspaceDraft } from '@/lib/workbench/browser-store';
 import { readDocument } from '@/features/editor-documents/client';
 import { useSharedDocument } from '@/features/editor-documents/use-shared-document';
 import {
@@ -16,6 +21,8 @@ import {
   saveScene,
   sceneHref,
   sceneItem,
+  prepareSceneDraft,
+  migrateSceneSyncCache,
 } from '@/features/scene-composer/browser';
 import {
   publishEditorSession,
@@ -23,7 +30,7 @@ import {
   markEditorSaved,
 } from '@/lib/workbench/editor-session';
 
-export function useSceneDocument(imageWindowOpen = false, imageOpening = false) {
+export function useSceneDocument() {
   const [scene, setScene] = useState<Scene>(() => createScene());
   const current = useRef(scene);
   const [ready, setReady] = useState(false),
@@ -40,10 +47,6 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false),
     savedRevision = useRef(-1);
-  const history = useRef<{ past: Scene[]; future: Scene[] }>({
-    past: [],
-    future: [],
-  });
   const saveQueue = useRef(Promise.resolve());
   const save = useCallback(async (allowEmpty = false) => {
     const snapshot = current.current,
@@ -73,24 +76,41 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
       throw e;
     }
   }, []);
+  const sharedRef = useRef<ReturnType<typeof useSharedDocument<Scene>> | null>(null);
+  const [session] = useState(() => new SceneEditSession({
+    current: () => current.current,
+    fingerprint: async snapshot => documentFingerprint(sharedSceneContent(await browserDocumentMedia.compact('scene', snapshot))),
+    saveLocal: () => save(true),
+    flushSaved: () => sharedRef.current!.flushSaved(),
+    readDocument: (id, revision) => readDocument<Scene>(id, revision, { media: 'references' }),
+    acceptAdopted: (document, guard) => sharedRef.current!.acceptAdopted(document, guard),
+  }));
+  const sessionState = useSyncExternalStore(session.subscribe, session.getState, session.getState);
   const shared = useSharedDocument({
     id: scene.id,
     kind: 'scene',
+    media: 'references',
+    migrateCache: cache => migrateSceneSyncCache(cache, current.current),
     value: scene,
     enabled: ready,
     automatic: !untouched,
-    busy: busy || imageWindowOpen,
+    busy: busy || session.blocksSync,
+    current: () => current.current,
+    blocked: () => busyRef.current || session.blocksSync,
     // Browser history revisions and server CAS revisions are independent counters.
-    prepare: (snapshot) => ({ ...validateScene(snapshot), revision: 0 }),
+    prepare: async snapshot => sharedSceneContent(await browserDocumentMedia.compact('scene', snapshot)),
     saveLocal: async () => { await save(true); },
-    applyRemote: async (incoming) => {
-      const next = validateScene(incoming);
+    applyRemote: async (incoming, context) => {
       const previous = current.current;
       await saveQueue.current.catch(() => undefined);
+      const compact = await browserDocumentMedia.compact('scene', incoming);
       if (busyRef.current) throw new Error('场景正在处理内容，共享修改暂未替换本机草稿。');
-      if (current.current !== previous) throw new Error('读取期间本机场景已变化，修改已保留。');
+      if (context?.reason !== 'adopt' && session.blocksSync) throw new Error('当前场景会话暂不接收共享修改，请退出预览或候选窗口后重试。');
+      if (!sameSceneContent(current.current, previous)) throw new Error('读取期间本机场景已变化，修改已保留。');
+      const next = sceneWithLocalView(compact, current.current);
+      if (context?.reason === 'adopt') session.record(current.current, { revision: context.document.revision, contentHash: context.document.contentHash });
+      else session.clearHistory();
       current.current = next;
-      history.current = { past: [], future: [] };
       setScene(next);
       persistedId.current = next.id;
       backupRef.current = null;
@@ -107,17 +127,22 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
       return backup.name;
     },
   });
+  useEffect(() => { sharedRef.current = shared; }, [shared]);
   useEffect(() => {
     let alive = true;
     const params = new URLSearchParams(location.search);
     const documentId = params.get('document');
     const loadShared = async () => {
       const local = await readWorkspaceDraft<{ scene: Scene; backupRevision: number | null }>(`scene:${documentId}`);
-      if (local) return { ...local, scene: validateScene(local.scene) };
-      const { document } = await readDocument<Scene>(documentId!);
+      if (local) return { ...local, scene: await prepareSceneDraft(local.scene) };
+      const { document } = await readDocument<Scene>(documentId!, undefined, { media: 'references' });
       if (document.kind !== 'scene' || document.id !== documentId) throw new Error('共享场景身份或类型不匹配。');
-      const loaded = validateScene(document.content);
+      const loaded = validateScene(await browserDocumentMedia.compact('scene', document.content));
       await saveScene(loaded, null);
+      const fingerprint = await documentFingerprint(sharedSceneContent(loaded));
+      await updateWorkspaceDraft<DocumentSyncCache>(`document-sync:scene:${document.id}`, previous => previous?.pending ? previous : {
+        revision: document.revision, fingerprint, mediaVersion: 2,
+      });
       return { scene: loaded, backupRevision: null };
     };
     void (documentId ? loadShared() : loadScene(params.get('scene') || undefined))
@@ -150,15 +175,20 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
       capabilityId: 'scene-composer',
       items: untouched ? [] : [sceneItem(scene)],
       dirty: !untouched && scene.revision !== savedRevision.current,
-      busy: busy || imageWindowOpen || imageOpening,
+      busy: busy || !['editing', 'preview'].includes(sessionState.phase),
       save,
       beforeLeave: () => {
-        if (busyRef.current || imageWindowOpen || imageOpening)
+        if (session.getState().phase === 'preview') session.preview(false);
+        if (busyRef.current || session.blocksEditing)
           throw new Error('场景正在处理文件，请等待完成后再离开。');
       },
     });
-  }, [scene, ready, busy, save, saved, untouched, imageWindowOpen, imageOpening]);
+  }, [scene, ready, busy, save, saved, untouched, session, sessionState.phase]);
   useEffect(() => () => removeEditorSession('scene-composer'), []);
+  useEffect(() => {
+    browserDocumentMedia.retain('scene-composer', [{ kind: 'scene', content: scene }]);
+  }, [scene]);
+  useEffect(() => () => browserDocumentMedia.release('scene-composer'), []);
   useEffect(() => {
     if (!ready || busy || untouched || scene.revision === savedRevision.current)
       return;
@@ -166,13 +196,12 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
     return () => clearTimeout(timer);
   }, [scene, ready, busy, save, untouched]);
   const commit = (next: Scene, remember = true, fromHistory = false) => {
+    updateMapCollisionOverride(current.current, next);
     if (!fromHistory) updateSplitSourceState(current.current, next);
     next = validateScene(next);
     next.revision = current.current.revision + 1;
     if (remember) {
-      history.current.past.push(current.current);
-      history.current.past = history.current.past.slice(-60);
-      history.current.future = [];
+      session.record(current.current);
     }
     current.current = next;
     setScene(next);
@@ -182,6 +211,7 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
     try {
       const next = structuredClone(current.current);
       fn(next);
+      if (session.blocksEditing && !(sessionState.phase === 'preview' && !remember && sameSceneContent(next, current.current))) return false;
       commit(next, remember);
       setError('');
       return true;
@@ -190,37 +220,20 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
       return false;
     }
   };
-  const undo = () => {
+  const travel = (direction: 'undo' | 'redo') => {
     if (busyRef.current) return;
-    const previous = history.current.past.pop();
-    if (previous) {
-      history.current.future.push(current.current);
-      commit(
-        { ...structuredClone(previous), view: { ...current.current.view } },
-        false,
-        true,
-      );
-    }
+    void session.travel(direction, async snapshot => commit({ ...await browserDocumentMedia.compact('scene', snapshot), view: { ...current.current.view } }, false, true))
+      .catch(cause => setError(cause instanceof Error ? cause.message : '撤销或重做未完成，本机草稿已保留。'));
   };
-  const redo = () => {
-    if (busyRef.current) return;
-    const next = history.current.future.pop();
-    if (next) {
-      history.current.past.push(current.current);
-      commit(
-        { ...structuredClone(next), view: { ...current.current.view } },
-        false,
-        true,
-      );
-    }
-  };
+  const undo = () => travel('undo');
+  const redo = () => travel('redo');
   const replaceDocument = async (
     next: Scene,
     backedUp = false,
     existingBackup?: number | null,
   ) => {
     await save();
-    next = validateScene(next);
+    next = validateScene(await browserDocumentMedia.compact('scene', next));
     const backupRevision =
       existingBackup !== undefined
         ? existingBackup
@@ -229,7 +242,8 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
           : null;
     await saveScene(next, backupRevision);
     persistedId.current = next.id;
-    history.current = { past: [], future: [] };
+    session.clearHistory();
+    session.close();
     current.current = next;
     savedRevision.current = next.revision;
     setScene(next);
@@ -244,7 +258,7 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
     await save();
   };
   const perform = async (fn: () => Promise<void>) => {
-    if (busyRef.current) return false;
+    if (busyRef.current || !['editing', 'preview'].includes(session.getState().phase)) return false;
     busyRef.current = true;
     setBusy(true);
     setError('');
@@ -278,7 +292,9 @@ export function useSceneDocument(imageWindowOpen = false, imageOpening = false) 
     markBackup,
     perform,
     shared,
-    canUndo: !!history.current.past.length,
-    canRedo: !!history.current.future.length,
+    session,
+    sessionState,
+    canUndo: sessionState.canUndo,
+    canRedo: sessionState.canRedo,
   };
 }

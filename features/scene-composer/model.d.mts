@@ -16,6 +16,7 @@ export type SceneMap = {
   offset: Point;
   layers: SceneLayer[];
   collisions: Point[][];
+  collisionOverride?: { sourceCollisions: Point[][] };
   source: string;
   warnings: string[];
 };

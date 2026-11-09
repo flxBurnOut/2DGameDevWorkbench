@@ -19,9 +19,12 @@ import {
   type InteractionState,
 } from '@/features/interactable-editor/simulator.mjs';
 import { Check } from './property-panels';
+import { documentMediaUrl } from '@/features/editor-documents/browser-media';
+import { parseDocumentMediaReference } from '@/features/editor-documents/media-references.mjs';
 
 export function assetUrl(asset?: Asset) {
   if (!asset) return '';
+  if (parseDocumentMediaReference(asset.source)) return documentMediaUrl(asset.source);
   return asset.source.startsWith('data:')
     ? asset.source
     : `/api/workbench/interactable-assets?path=${encodeURIComponent(asset.source)}`;

@@ -265,7 +265,7 @@ const panel = await readFile(
   'utf8',
 );
 assert.match(composer, /SceneSplitPanel document=\{splitWindow.document\}/);
-assert.match(composer, /doc\.shared\.acceptAdopted\(document, guard\)/);
+assert.match(composer, /doc\.session\.accept\(receipt\)/);
 assert.match(composer, /kind: 'scene-split-part'/);
 assert.match(composer, /removeMapSplitElements\(s, removed\)/);
 assert.match(composer, /mapSplitCollisionOwner\(scene, index\)/);
@@ -276,7 +276,7 @@ assert.match(
   /candidate\.adoption\.candidateRevision === candidate\.revision/,
 );
 assert.match(panel, /view: 'conflict',\s+conflictId: id,\s+side,/);
-assert.match(panel, /await saveWorkspaceDraft\(pendingKey, intent, \[\]\)/);
+assert.match(panel, /await journal\.begin\(intent\)/);
 console.log(
   'Map split frontend passed: exact mask draft preservation, safe PNG evidence, one-shot transport and original-command recovery, versioned crop/part previews, conflict feedback, saved-scene adoption and shared renderer wiring. Browser layout is verified separately.',
 );

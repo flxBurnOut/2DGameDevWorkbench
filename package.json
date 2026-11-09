@@ -57,7 +57,7 @@
     "test:image-edit-evaluation": "node tests/image-edit/evaluation.mjs",
     "test:image-attribute-plan": "node tests/image-edit/attribute-plan.mjs && node tests/image-edit/part-planner.mjs && node tests/image-edit/analysis-recovery.mjs",
     "image-edit:evaluate": "node scripts/image-edit-evaluation.mjs",
-    "test:editor-documents": "node tests/editor-documents/run.mjs && node tests/editor-documents/frontend-sync.mjs && node tests/editor-documents/library.mjs",
+    "test:editor-documents": "node tests/editor-documents/run.mjs && node tests/editor-documents/frontend-sync.mjs && node tests/editor-documents/scene-boundaries.mjs && node tests/editor-documents/scene-sync.mjs && node tests/editor-documents/request-journal.mjs && node tests/editor-documents/scene-session.mjs && node tests/editor-documents/scene-export.mjs && node tests/editor-documents/media.mjs && node tests/editor-documents/library.mjs",
     "test:scene-observation": "node tests/scene-observation/run.mjs",
     "test:route-a": "node tests/route-a/run.mjs && node tests/route-a/audit.mjs",
     "test:preview-follow": "node tests/preview-follow/run.mjs && node tests/preview-follow/workbuddy.mjs",

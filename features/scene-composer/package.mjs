@@ -1,37 +1,10 @@
 import JSZip from 'jszip';
 import { validateScene } from './model.mjs';
+import { documentMediaReferences } from '../editor-documents/media-references.mjs';
 
 export const MAX_PACKAGE_BYTES = 256 * 1024 * 1024;
-function references(scene) {
-  const splitReferences = [];
-  const collect = (owner) => {
-    if (!owner || typeof owner !== 'object') return;
-    for (const [key, value] of Object.entries(owner)) {
-      if (typeof value === 'string' && /^(?:data:image\/png;base64,|media\/[0-9]+\.bin$)/.test(value)) splitReferences.push({ owner, key, mime: 'image/png' });
-      else if (value && typeof value === 'object') collect(value);
-    }
-  };
-  // Include baselines and conflict previews, so reopening a source package can
-  // still perform the same three-way merge without external candidate files.
-  collect(scene.mapSplit);
-  return [
-    ...(scene.map
-      ? [
-          { owner: scene.map, key: 'source', mime: 'application/zip' },
-          ...scene.map.layers.map((l) => ({
-            owner: l,
-            key: 'source',
-            mime: 'image/png',
-          })),
-        ]
-      : []),
-    ...splitReferences,
-    ...scene.materials.flatMap((m) =>
-      m.project.assets.map((a) => ({ owner: a, key: 'source', mime: a.mime })),
-    ),
-  ];
-}
-export async function createScenePackage(input) {
+const references = scene => documentMediaReferences('scene', scene);
+export async function createScenePackage(input, { provenance } = {}) {
   const scene = validateScene(input);
   const zip = new JSZip();
   const paths = new Map();
@@ -54,6 +27,7 @@ export async function createScenePackage(input) {
     ref.owner[ref.key] = paths.get(data);
   }
   zip.file('scene.json', JSON.stringify(scene));
+  if (provenance) zip.file('scene-provenance.json', JSON.stringify(provenance, null, 2));
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 export async function readScenePackage(bytes) {

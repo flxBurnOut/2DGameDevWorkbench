@@ -124,6 +124,8 @@ logs/
 !/docs/internal-imports.md
 !/docs/image-editing.md
 !/docs/地图模块局部编辑大型计划.md
+!/docs/论文方向与方法.md
+!/docs/论文-序列帧长动作生成.md
 !/docs/map-stitcher.md
 !/docs/operations-manual.md
 !/docs/prop-art.md

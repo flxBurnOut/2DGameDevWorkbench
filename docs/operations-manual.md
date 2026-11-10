@@ -95,7 +95,7 @@ MCP 是客户端调用工作台工具的接口；Skill 是告诉 Agent 怎样完
 
 ### 首次准备
 
-使用 Node.js 22.13 或更高版本。需要角色原图或序列帧时，还需要 Python 3.11 或更高版本；项目 CI 使用 Python 3.12。仅地图、交互物和场景组装不需要 Python。导出 Godot 包无需安装 Godot；实际导入和播放验收使用 Godot 4.7.x。
+使用 Node.js 22.13 或更高版本。需要角色原图或序列帧时，还需要 Python 3.11 或更高版本。仅地图、交互物和场景组装不需要 Python。导出 Godot 包无需安装 Godot；实际导入和播放验收使用 Godot 4.7.x。
 
 先把仓库放到稳定目录。Windows 可在该目录打开 PowerShell；macOS 可使用终端。以下命令都从仓库根目录执行：
 

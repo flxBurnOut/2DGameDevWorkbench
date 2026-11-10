@@ -12,7 +12,7 @@
 | 编辑器键盘 | 先处理明确支持的组合键，再屏蔽单键操作；中文输入法组合输入不触发编辑操作 |
 | 地图触控板 | 按滚动幅度归一化，横向零增量不缩放；主画布使用可取消的 wheel 监听器避免页面同时缩放 |
 | 字体 | 系统字体、PingFang SC 与 SFMono 回退，保留 Windows 字体 |
-| 双平台 CI | Windows/macOS 增加地图、HTTP、场景、壳层、凭据、lint、typecheck 和 build |
+| 双平台验证 | 在 Windows/macOS 本机分别运行地图、HTTP、场景、壳层、凭据、lint、typecheck 和 build（CI 不再运行功能测试） |
 
 macOS 地图保存通过 `/usr/bin/security -i` 的标准输入提交短的十六进制加密密钥，API 密钥不进入命令参数；其交互解析方式依据 [Apple SecurityTool 源码](https://github.com/apple-oss-distributions/Security/blob/main/SecurityTool/macOS/security.c)。SpritePipeline 通过系统 Security framework 读取与写入凭据，无额外 Python 包依赖。钥匙串锁定或拒绝访问会报错，不回退到明文。
 
@@ -26,9 +26,9 @@ macOS 地图保存通过 `/usr/bin/security -i` 的标准输入提交短的十�
 
 ## 验证方式与边界
 
-`npm run test:map-stitcher` 包含地图配置新进程恢复、macOS 密钥不进入 argv、认证密文防篡改、钥匙串失败、触控板增量和滚轮单位归一化检查。Windows 实际运行 DPAPI；macOS CI 会实际调用 Keychain。
+`npm run test:map-stitcher` 包含地图配置新进程恢复、macOS 密钥不进入 argv、认证密文防篡改、钥匙串失败、触控板增量和滚轮单位归一化检查。在 Windows 上实际运行 DPAPI，在 macOS 上实际调用 Keychain。
 
-`npm run test:platform-credentials` 使用当前系统的项目 Python 环境验证旧凭据迁移、重启恢复、替换/清除和失败保留。原生 Keychain 测试在非 macOS 平台明确跳过。桌面 CI 矩阵定义在 [ci.yml](../.github/workflows/ci.yml)。
+`npm run test:platform-credentials` 使用当前系统的项目 Python 环境验证旧凭据迁移、重启恢复、替换/清除和失败保留。原生 Keychain 测试在非 macOS 平台明确跳过。这些检查需在各平台本机运行，CI 不再包含桌面矩阵。
 
 Mac 实际操作检查项目：
 

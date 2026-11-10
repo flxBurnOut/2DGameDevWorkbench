@@ -1,5 +1,7 @@
 name: CI
 
+# Functional tests run locally (see workbench/guides/development.md).
+# CI only guards the public repository against force-added local files.
 on:
   pull_request:
   push:
@@ -13,104 +15,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  node:
+  public-repository:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22.13.0
-          cache: npm
       - run: npm run check:public
-      - run: npm ci
-      - run: npm run workbench -- doctor --json
-      - run: npm run test:game-export
-      - run: npm run test:asset-import
-      - run: npm run test:assets
-      - run: npm run test:preview-follow
-      - run: npm run test:presentation
-      - run: npm run test:mcp
-      - run: npm run test:reference-art
-      - run: npm run test:prop-art
-      - run: npm run test:task-isolation
-      - run: npm run test:adapters
-      - run: npm run test:http
-      - run: npm run test:interactable
-      - run: npm run test:interactable-http
-      - run: npm run test:scene-composer
-      - run: npm run test:scene-workflow
-      - run: npm run test:map-stitcher
-      - run: npm run test:frontend
-      - run: npm run test:dev-supervisor
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run build
-      - run: test -f THIRD_PARTY_NOTICES.md
-
-  sprite-pipeline:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: Tools/SpritePipeline
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: Tools/SpritePipeline/requirements.lock
-      - run: python -m pip install --disable-pip-version-check -r requirements.lock
-      - run: python -m pip check
-      - run: python -m pytest -q
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.13.0
-          cache: npm
-      - run: npm ci
-        working-directory: .
-      - run: npm run test:engineering
-        working-directory: .
-        env:
-          WORKBENCH_TEST_PYTHON: python
-      - run: npm run test:agent-acceptance
-        working-directory: .
-        env:
-          WORKBENCH_TEST_PYTHON: python
-      - run: npm run test:open-motion
-        working-directory: .
-        env:
-          SPRITE_TEST_PYTHON: python
-
-  desktop-services:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Enable long paths for Windows checkout
-        if: runner.os == 'Windows'
-        run: git config --global core.longpaths true
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.13.0
-          cache: npm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: npm ci
-      - run: npm run sprite-pipeline:setup
-      - run: npm run sprite-pipeline:setup
-      - run: npm run test:desktop-services
-      - run: npm run test:map-stitcher
-      - run: npm run test:http
-      - run: npm run test:scene-composer
-      - run: npm run test:workbench-shell
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run build
-      - run: npm run test:platform-credentials
-      - run: npm run test:dev-supervisor
-      - run: npm run test:frontend
-      - run: npm run test:agent-acceptance

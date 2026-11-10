@@ -1,11 +1,14 @@
 import { z } from 'zod';
-import { makeId, normalizeProject } from '../interactable-editor/contract.mjs';
+import { makeId, normalizeProject, referencedAssets, selectedProject } from '../interactable-editor/contract.mjs';
 import { sceneLinkSchema, MAX_SCENE_LINKS, validateSceneLinks, sceneLinkDiagnostics } from './links.mjs';
+import { mapSplitSchema, validateMapSplit } from './map-split.mjs';
+import { assertEditableSceneNodes } from './mutation-policy.mjs';
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const coordinate = z.number().finite().min(-1e7).max(1e7);
 const point = z.object({ x: coordinate, y: coordinate });
 const source = z.string().min(1);
+export const wholeMapSplitHint = '当前使用整体图，可在场景中使用“一键地图粗分”拆出独立物件并调整遮挡。';
 const flags = {
   locked: z.boolean(),
   hidden: z.boolean(),
@@ -32,10 +35,12 @@ export const sceneSchema = z.object({
       offset: point,
       layers: z.array(mapLayer).max(8),
       collisions: z.array(z.array(point).min(3).max(10000)).max(10000),
+      collisionOverride: z.object({ sourceCollisions: z.array(z.array(point).min(3).max(10000)).max(10000) }).optional(),
       source,
       warnings: z.array(z.string()),
     })
     .nullable(),
+  mapSplit: mapSplitSchema.optional(),
   materials: z
     .array(z.object({ id, name: z.string(), project: z.unknown() }))
     .max(1000),
@@ -54,7 +59,7 @@ export const sceneSchema = z.object({
       }),
     )
     .max(2000),
-  order: z.array(id).max(2010),
+  order: z.array(id).max(6010),
   links: z.array(sceneLinkSchema).max(MAX_SCENE_LINKS).default([]),
   view: z.object({
     x: coordinate,
@@ -94,8 +99,18 @@ export function createScene(name = '未命名场景') {
     },
   };
 }
-export function validateScene(input) {
+export function validateScene(input, { allowPackageReferences = false } = {}) {
   const scene = sceneSchema.parse(input);
+  if (scene.map) {
+    const oldHint = '当前使用整体图；烘焙在图片里的物件需要回地图工具分层后才能单独调整遮挡。';
+    scene.map.warnings = scene.map.warnings.map(message => message === oldHint ? wholeMapSplitHint : message);
+  }
+  if (scene.mapSplit) {
+    if (!scene.map) throw new Error('场景分层缺少原地图。');
+    scene.mapSplit = validateMapSplit(scene.mapSplit, { allowPackageReferences, mapCollisionCount: scene.map.collisions.length });
+    if (scene.mapSplit.elements.some(element => ['Scene', 'ActorSlot', 'MapCollisions', 'InteractionRuntime'].includes(element.id))) throw new Error('场景分层物件使用了引擎保留的节点身份。');
+    if (scene.mapSplit.elements.reduce((sum, element) => sum + element.parts.length, 0) + scene.instances.length + 1 > 8191) throw new Error('场景绘制子片过多，请拆分场景。');
+  }
   if (scene.view.aidsVersion < 1) Object.assign(scene.view, {
     aidsVersion: 1, showGrid: true, showNames: true, showShapes: true, showActor: true,
   });
@@ -114,6 +129,7 @@ export function validateScene(input) {
     'actor',
     ...(scene.map?.layers.map((l) => l.id) || []),
     ...scene.instances.map((i) => i.id),
+    ...(scene.mapSplit?.elements.map(element => element.id) || []),
   ];
   if (
     new Set(nodes).size !== nodes.length ||
@@ -127,24 +143,27 @@ export function validateScene(input) {
 export function materialFor(scene, instance) {
   return scene.materials.find((m) => m.id === instance.materialId);
 }
-export function addMaterial(scene, project, definitionId) {
-  const clean = normalizeProject(project);
-  const object = clean.objects.find((o) => o.definitionId === definitionId);
-  if (!object) throw new Error('找不到所选交互物。');
+export function sceneMaterialProject(project, definitionId) {
+  const selected = selectedProject(project, [definitionId]);
+  selected.assets = referencedAssets(selected);
+  return selected;
+}
+export function addMaterial(scene, project, definitionId, materialId = makeId('material')) {
+  const selected = sceneMaterialProject(project, definitionId);
   const material = {
-    id: makeId('material'),
-    name: object.displayName,
-    project: { ...clean, objects: [object] },
+    id: materialId,
+    name: selected.objects[0].displayName,
+    project: selected,
   };
   scene.materials.push(material);
   return material;
 }
-export function addInstance(scene, materialId, x, y) {
+export function addInstance(scene, materialId, x, y, instanceId = makeId('instance')) {
   const material = scene.materials.find((m) => m.id === materialId);
   if (!material) throw new Error('请先添加交互物素材。');
   const v = material.project.objects[0].visual;
   const instance = {
-    id: makeId('instance'),
+    id: instanceId,
     materialId,
     name: material.name,
     x: Math.round(x),
@@ -172,9 +191,12 @@ export function reorder(scene, ids, action, target) {
   const chosen = new Set(ids);
   const moving = scene.order.filter((key) => chosen.has(key));
   if (!moving.length || chosen.has(target)) return;
+  const nodes = [...scene.instances, ...(scene.map?.layers || []), ...(scene.mapSplit?.elements || [])];
+  assertEditableSceneNodes(nodes.filter(node => chosen.has(node.id)));
   const first = scene.order.indexOf(moving[0]);
   const last = scene.order.indexOf(moving.at(-1));
   const remaining = scene.order.filter((key) => !chosen.has(key));
+  const oldOrder = scene.order;
   let at;
   if (action === 'front') at = 0;
   else if (action === 'back') at = remaining.length;
@@ -190,6 +212,16 @@ export function reorder(scene, ids, action, target) {
   }
   remaining.splice(at, 0, ...moving);
   scene.order = remaining;
+  const oldActor = oldOrder.indexOf('actor'), newActor = remaining.indexOf('actor');
+  for (const element of scene.mapSplit?.elements || []) {
+    if (!chosen.has(element.id) || chosen.has('actor')) continue;
+    const inFront = remaining.indexOf(element.id) < newActor;
+    const crossedActor = inFront !== (oldOrder.indexOf(element.id) < oldActor);
+    const onePlane = element.parts.every(part => part.plane === element.parts[0].plane);
+    if (target === 'actor' || (onePlane && (crossedActor || action === 'front' || action === 'back'))) {
+      for (const part of element.parts) part.plane = inFront ? 'front' : 'back';
+    }
+  }
 }
 export function replaceInstances(scene, ids, materialId) {
   const material = scene.materials.find((m) => m.id === materialId);
@@ -226,6 +258,9 @@ export function replaceMap(scene, map) {
       else scene.order.push(layer.id);
     }
   scene.map = map;
+  // The old baseline and scene edits are retained for the next three-way merge.
+  // Stale split art must never conceal the newly selected map.
+  if (scene.mapSplit) scene.mapSplit.stale = true;
 }
 export function instanceOrigin(instance) {
   return {
@@ -252,10 +287,17 @@ export function sceneBounds(scene) {
   };
 }
 export function sceneWarnings(scene) {
-  const result = (scene.map?.warnings || []).filter(message =>
-    !scene.map.collisions.length || message !== '此背景尚未配置地图碰撞。请设置并检查碰撞后再验证游戏行为。',
-  );
+  const result = (scene.map?.warnings || []).filter(message => {
+    if (message === wholeMapSplitHint) return !scene.mapSplit || scene.mapSplit.stale;
+    return !scene.map.collisions.length || message !== '此背景尚未配置地图碰撞。请设置并检查碰撞后再验证游戏行为。';
+  });
   result.push(...sceneLinkDiagnostics(scene).map(diagnostic => diagnostic.message));
+  if (scene.mapSplit?.stale) result.push('地图已替换；旧分层和编辑已保留，等待新分层候选自动迁移。');
+  else if (scene.mapSplit) {
+    if (scene.mapSplit.review !== 'reviewed') result.push('地图分层未经核验，建议用 Agent 检查漏分、边缘和前后关系。');
+    const unresolved = scene.mapSplit.conflicts.filter(conflict => !conflict.resolution).length;
+    if (unresolved) result.push(`地图分层有 ${unresolved} 项迁移冲突等待裁决。`);
+  }
   const b = sceneBounds(scene);
   const outside = scene.instances.filter(
     (i) =>

@@ -74,6 +74,18 @@ def test_reads_never_analyze_and_creation_is_cached(setup):
     assert service.store.list_jobs()==[]
 
 
+def test_device_change_preserves_paid_identity_history_and_cached_masks(setup, monkeypatch):
+    _,structures,_,counts=setup
+    first=ready(structures)
+    runtime=structures.runtime()
+    for device in ['mps','cpu']:
+        monkeypatch.setattr(structures,'runtime',lambda: {**runtime,
+            'compute':{'available':True,'device':device,'requested_device':device}})
+        assert structures.create('test_hero','device-'+uuid.uuid4().hex,authorized=True)['id']==first['id']
+        assert structures.view(first['id'])['document']==first['document']
+    assert counts=={'semantic':1,'local':1}
+
+
 def test_correction_restore_confirmation_preserve_versions(setup):
     _,structures,fixture,counts=setup
     first=ready(structures);data=copy.deepcopy(first['document']['data'])

@@ -381,6 +381,25 @@ try {
     currentProject,
   );
   assert(!entries.some((f) => /manifest|result\.json|qa\.json/.test(f.name)));
+  const archiveManifest = JSON.parse(await zip.file('forge-assets.json').async('string'));
+  assert.equal(archiveManifest.format, 'forge-asset-archive');
+  assert.equal(archiveManifest.version, 1);
+  assert.equal(archiveManifest.entries.length, 5);
+  for (const entry of archiveManifest.entries) {
+    assert(entry.sourceIdentity.assetId);
+    assert.match(entry.sourceVersion, /^[a-f0-9]{64}$/);
+    for (const file of entry.files) {
+      const bytes = await zip.file(file.path).async('nodebuffer');
+      assert.equal(file.bytes, bytes.length);
+      assert.equal(file.sha256, createHash('sha256').update(bytes).digest('hex'));
+      assert(file.mime && file.role);
+    }
+  }
+  const exportedMap = archiveManifest.entries.find((entry) => entry.kind === 'map');
+  assert.equal(exportedMap.mapType, 'project');
+  assert.equal(exportedMap.metadata.projectRevision, 2);
+  assert.deepEqual(exportedMap.metadata.map, { format: 'forge-map-project', version: 1 });
+  assert.equal(archiveManifest.entries.find((entry) => entry.kind === 'animation').metadata.loop, null, 'missing loop stays unknown');
   assert(!entries.some((f) => f.name.includes('..') || f.name.startsWith('/')));
   assert.deepEqual((await readdir(taskDirectory)).sort(), beforeArchive.sort());
   changeNativeBytes = true;
@@ -669,10 +688,10 @@ try {
   await writeFile(trashIndex, validTrash);
   for (const kind of ['background', 'prop']) {
     const imageId = `image-assets-${kind}`;
-    await task(imageId, 'image-assets', { operation: kind === 'prop' ? 'generate-prop' : 'generate-background', name: `Image 2.5 ${kind}` }, {
+    await task(imageId, 'image-assets', { operation: kind === 'prop' ? 'generate-prop' : 'generate-background', name: `Image 2.6 ${kind}` }, {
       'image.png': png,
       'provider-response.png': png,
-      'result.json': JSON.stringify({ kind, image: 'image.png', width: 128, height: 128, sha256: createHash('sha256').update(png).digest('hex'), model: 'gpt-image-2.5-sunburst' }),
+      'result.json': JSON.stringify({ kind, image: 'image.png', width: 128, height: 128, sha256: createHash('sha256').update(png).digest('hex'), model: 'gpt-image-2.6-sunburst' }),
     });
     const imageAsset = (await agentRequest(manifest, 'asset', { assetId: `image:${imageId}` })).asset;
     assert.equal(imageAsset.kind, kind === 'prop' ? 'prop' : 'map');

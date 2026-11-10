@@ -46,8 +46,13 @@ class VisualStructures:
         profile_path = repo / 'Tools/VisualStructure/runtime-profile.json'
         profile = read_json(profile_path) if profile_path.is_file() else {}
         ready = bool(self.segmenter) or all(p.is_file() for p in (python, weights, worker)) and bool(profile.get('weightsSha256'))
-        return {'ready': ready, 'model': 'SAM 2.1 Tiny', 'automatic_download': False,
+        result = {'ready': ready, 'model': 'SAM 2.1 Tiny', 'automatic_download': False,
                 'python': str(python), 'weights': str(weights), 'worker': str(worker), 'profile': profile}
+        if ready and not self.segmenter:
+            from .structure_runtime import probe
+            result['compute'] = probe(result)
+            result['ready'] = result['compute']['available']
+        return result
 
     def describe(self):
         runtime = self.runtime()
@@ -55,8 +60,8 @@ class VisualStructures:
         return {'ready': runtime['ready'], 'model': runtime['model'], 'parser_version': PARSER_VERSION,
                 'semantic_model': profile.model_dump(mode='json'),
                 'semantic_configured': bool(self.parser or self.registry.key(profile.provider)),
-                'automatic_download': False,
-                'message': '本地分割已安装；解析一次调用语义模型，查看和纠正不调用模型。' if runtime['ready'] else '尚未安装独立分割工具；可继续使用原制作流程。'}
+                'automatic_download': False, 'compute': runtime.get('compute'),
+                'message': f"本地分割已就绪 · {runtime.get('compute', {}).get('device', 'fixture').upper()}；查看和纠正不调用外部模型。" if runtime['ready'] else runtime.get('compute', {}).get('error', '尚未安装独立分割工具；可继续使用原制作流程。')}
 
     def reference(self, character_id):
         character, preset = self.service.presets.load_character(character_id)
@@ -147,7 +152,8 @@ class VisualStructures:
                 if previous['fingerprint'] == fingerprint or equivalent(previous):
                     atomic_write_json(request, {'id':previous['id'],'fingerprint':fingerprint})
                     return self.view(previous['id'])
-            if not runtime['ready']: raise ValidationHarnessError('请先安装独立分割环境，不会调用模型')
+            if not runtime['ready']:
+                raise ValidationHarnessError(runtime.get('compute', {}).get('error') or '请先安装独立分割环境，不会调用模型')
             if not self.segmenter and sha256_file(Path(runtime['weights'])) != runtime['profile']['weightsSha256']:
                 raise ValidationHarnessError('分割权重校验失败，未调用模型')
             profile = self.registry.profile('structure',models)
@@ -185,12 +191,16 @@ class VisualStructures:
                 receipt=self.segmenter(folder/'source.png',prompts,output)
             else:
                 runtime=self.runtime()
+                if not runtime['ready']:
+                    raise ValidationHarnessError(runtime.get('compute', {}).get('error') or '本地分割工具未就绪')
                 job={'source':str(folder/'source.png'),'source_sha256':record['source']['sha256'],
                      'weights':runtime['weights'],'weights_sha256':record['runtime_profile']['weightsSha256'],
-                     'output':str(output),'parts':prompts,'semantics_origin':record['pending']['origin']}
+                     'output':str(output),'parts':prompts,'semantics_origin':record['pending']['origin'],
+                     'device':runtime.get('compute', {}).get('requested_device', 'auto')}
                 path=folder/(output.name+'-job.json');atomic_write_json(path,job)
-                run=subprocess.run([runtime['python'],runtime['worker'],'segment','--job',str(path)],
-                    capture_output=True,timeout=180,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                with self.store.global_lock('visual-structure-runtime', timeout_seconds=180):
+                    run=subprocess.run([runtime['python'],runtime['worker'],'segment','--job',str(path)],
+                        capture_output=True,timeout=180,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 if run.returncode:
                     # Local worker output contains no credentials; retain evidence.
                     (folder/(output.name+'-error.txt')).write_bytes(run.stderr[-16000:])
@@ -206,7 +216,8 @@ class VisualStructures:
                 with Image.open(path) as im:
                     if im.size != (record['source']['width'],record['source']['height']): raise ConflictError('区域尺寸不匹配')
                 masks.append({'id':mask['id'],'file':path.relative_to(folder).as_posix(), 'sha256':mask['sha256'],
-                              'prompt_hash':digest(by_id[mask['id']]),'area':mask['area'],'model_score':mask.get('model_score')})
+                              'prompt_hash':digest(by_id[mask['id']]),'area':mask['area'],'model_score':mask.get('model_score'),
+                              'compute':{k:receipt.get(k) for k in ('device','seconds','precision','mps_fallback_enabled','mps_driver_bytes','peak_gpu_bytes')}})
         for mask in masks:
             if mask['area']==0: issues.append({'id':mask['id'],'message':'未识别到可见区域，请纠正或标记未知','severity':'needs_correction'})
         return masks,issues

@@ -130,6 +130,32 @@ test('front/back and relative placement preserve selected group order', () => {
   assert.equal(scene.order[0], a.id);
   validateScene(scene);
 });
+test('material import keeps only media used by the chosen definition', () => {
+  const { project, scene } = fixture();
+  const other = createObject('inspect');
+  other.visual.assetId = 'other';
+  project.objects.push(other);
+  project.assets.push({ ...project.assets[0], id: 'other' });
+  const imported = addMaterial(scene, project, other.definitionId);
+  assert.deepEqual(imported.project.assets.map(asset => asset.id), ['other']);
+  assert.equal(project.assets.length, 2);
+});
+test('one long tick completes the same feedback and cooldown as separate ticks', () => {
+  const { scene, a, material } = fixture('inspect');
+  const object = material.project.objects[0];
+  object.content.pages = [];
+  object.feedback = [{ type: 'wait', seconds: 1 }, { type: 'wait', seconds: 1 }];
+  object.cooldownSeconds = 2;
+  const run = times => {
+    const sim = createSceneSimulation(scene);
+    const instance = sim.objects.find(item => item.id === a.id);
+    sim.request(instance);
+    for (const seconds of times) sim.tick(seconds);
+    return [instance.state.successCount, instance.cooldown, sim.waiting];
+  };
+  assert.deepEqual(run([3]), [1, 1, null]);
+  assert.deepEqual(run([3]), run([1, 1, 1]));
+});
 test('node sort never drops nodes when targeting the selected group or edges', () => {
   const { scene, a, b } = fixture();
   for (const action of ['front', 'forward', 'backward', 'back']) {
@@ -346,6 +372,8 @@ for (const [name, run] of tests) {
   console.log(`PASS ${name}`);
 }
 console.log(`Scene composer: ${passed} tests passed.`);
+
+await import('./map-split.mjs');
 
 if (process.argv.includes('--write-engine-fixture')) {
   const { scene } = fixture();

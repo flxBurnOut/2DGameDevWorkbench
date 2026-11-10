@@ -42,6 +42,9 @@ var visible_override: Variant = null
 @onready var prompt: Label = $PromptAnchor/PromptLabel
 @onready var audio: AudioStreamPlayer2D = $AudioStreamPlayer2D
 
+func _enter_tree() -> void:
+	call_deferred("_attach_runtime")
+
 func _ready() -> void:
 	if definition == null:
 		push_error("Workbench Interaction: missing definition")
@@ -56,9 +59,10 @@ func _ready() -> void:
 	animated.frame_changed.connect(_sync_frame_size)
 	prompt.hide()
 	apply_state({})
-	call_deferred("_attach_runtime")
 
 func _attach_runtime() -> void:
+	if not is_inside_tree() or config.is_empty() or is_instance_valid(runtime):
+		return
 	var ancestor := get_parent()
 	while ancestor != null:
 		for child in ancestor.get_children():
@@ -110,7 +114,10 @@ func set_focused(value: bool) -> void:
 	if value:
 		var action: String = config.activation.action
 		var bindings := InputMap.action_get_events(action)
-		prompt.text = config.content.prompt if not config.content.prompt.is_empty() else ("[" + (bindings[0].as_text() if not bindings.is_empty() else config.activation.key) + "] " + definition.display_name)
+		var key_label: String = config.activation.key
+		if not runtime.uses_fallback_key(action) and not bindings.is_empty():
+			key_label = bindings[0].as_text()
+		prompt.text = config.content.prompt if not config.content.prompt.is_empty() else ("[" + key_label + "] " + definition.display_name)
 		if _feedback_animation.is_empty():
 			_play_clip(config.visual.focusAnimation)
 	else:
@@ -392,7 +399,7 @@ func _restore_appearance(preserve_feedback: bool = false) -> void:
 	$VisualRoot/Placeholder.visible = sprite.texture == null
 	visual.visible = visible_override if visible_override != null else _appearance.get("visible", config.visual.visible)
 	visual.modulate = Color(_appearance.get("tint", config.visual.tint))
-	var solid_enabled: bool = _appearance.get("solidEnabled", config.solid.enabled)
+	var solid_enabled: bool = get_link_state().solidEnabled
 	$SolidBody/SolidShape.set_deferred("disabled", not solid_enabled)
 	if preserve_feedback and not _feedback_animation.is_empty():
 		sprite.hide()
@@ -453,3 +460,8 @@ func _exit_tree() -> void:
 		runtime.unregister_interactable(self)
 	runtime = null
 	_source = null
+	in_range = false
+	auto_pending = false
+	_focused = false
+	if is_instance_valid(prompt):
+		prompt.hide()

@@ -61,6 +61,7 @@ function useWorkbenchState() {
   const [navigationError, setNavigationError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const refreshLock = useRef(false);
   const navigating = useRef(false);
@@ -246,6 +247,8 @@ function useWorkbenchState() {
     navigate,
     guideOpen,
     setGuideOpen,
+    helpOpen,
+    setHelpOpen,
     queueOpen,
     setQueueOpen,
   };

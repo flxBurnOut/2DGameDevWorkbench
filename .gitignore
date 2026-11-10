@@ -115,6 +115,7 @@ logs/
 !/docs/agent-preview-follow.md
 !/docs/architecture.md
 !/docs/asset-catalog.md
+!/docs/asset-packages.md
 !/docs/connector-contract.md
 !/docs/desktop-compatibility.md
 !/docs/game-engineering.md
@@ -122,6 +123,10 @@ logs/
 !/docs/interactable-editor.md
 !/docs/internal-imports.md
 !/docs/image-editing.md
+!/docs/地图模块局部编辑大型计划.md
+!/docs/论文方向与方法.md
+!/docs/论文-序列帧长动作生成.md
+!/docs/论文分支执行计划.md
 !/docs/map-stitcher.md
 !/docs/operations-manual.md
 !/docs/prop-art.md

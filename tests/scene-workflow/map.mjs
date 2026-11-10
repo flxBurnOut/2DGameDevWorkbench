@@ -39,6 +39,7 @@ import {
   workflowMapTileKey,
 } from '../../lib/workbench/scene-workflow-map.mjs';
 import { mapPixels, sceneMapFixture } from './map-fixtures.mjs';
+import { applySceneCommands } from '../../lib/workbench/editor-commands.mjs';
 import { createTestViteServer } from '../helpers/vite-server.mjs';
 
 const root = repositoryRoot,
@@ -469,6 +470,8 @@ test('deterministic overlap restoration and clipping keep holes and context exac
     before = { x: 0, y: 0, width: 24, height: 16 };
   const template = await mapGenerationTemplate(scene, target),
     templateData = await raw(template);
+  scene.map.layers[0].hidden = true;
+  assert.deepEqual(await mapGenerationTemplate(scene, target), template, 'Editor visibility cannot change the generator reference');
   assert.deepEqual(
     [...templateData.subarray(0, 4)],
     await worldPixel(scene.map.layers[0], scene.map, 18, 0),
@@ -528,6 +531,10 @@ test('native extension preserves locked old pixels, collisions, offsets, source 
         await beforeZip.file(filename).async('nodebuffer'),
       );
     assert.equal((await inspectMapSource(root, map)).canExtend, true);
+    const toggled = structuredClone(map);
+    toggled.layers[0].locked = !toggled.layers[0].locked;
+    toggled.layers[0].hidden = !toggled.layers[0].hidden;
+    assert.equal((await inspectMapSource(root, toggled)).canExtend, true);
     await assertMapPolicy(root, f.source.content.map, map, f.work);
     assert.equal(
       receipt.mapOutput.sourceTaskId,
@@ -545,6 +552,26 @@ test('native extension preserves locked old pixels, collisions, offsets, source 
     packagesToImport.push({ format, scene: result.document.content });
   }
 });
+test('scene collision overrides survive chained extension without changing source geometry or the original document', async () => {
+  for (const format of ['pixelwork-v2', 'forge-map-project']) {
+    const local = await sceneMapFixture({ format });
+    const baseCollisions = structuredClone(local.scene.map.collisions);
+    const collisions = [[{ x: 0, y: 10 }, { x: 24, y: 10 }, { x: 24, y: 16 }]];
+    const scene = applySceneCommands(local.scene, [{ type: 'set-map-collisions', collisions }]).content;
+    const first = extension('override-first'), second = extension('override-second', 'right', workflowMapTileKey(first), [first.id]);
+    const f = await fixture({ scene, steps: [first, second] });
+    for (const step of [first, second]) {
+      const { result } = await execute(f, step);
+      assert.deepEqual(result.document.content.map.collisions, collisions);
+      assert.deepEqual(result.document.content.map.collisionOverride, { sourceCollisions: baseCollisions });
+      assert.equal((await inspectMapSource(root, result.document.content.map)).canExtend, true);
+      await assertMapPolicy(root, f.source.content.map, result.document.content.map, f.work);
+      assert.deepEqual((await readScenePackage(await createScenePackage(result.document.content))).map, result.document.content.map);
+    }
+    assert.deepEqual((await getDocument(root, manifest, { documentId: scene.id })).document, f.source);
+  }
+});
+
 test('left and upward extension pads old images while preserving their exact world coordinates', async () => {
   for (const direction of ['left', 'up']) {
     const step = extension(`extend-${direction}`, direction),

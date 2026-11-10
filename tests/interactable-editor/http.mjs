@@ -143,8 +143,8 @@ try {
     assert.equal((await observation.json()).images[0].mimeType, 'image/png');
     const settings = await fetch(`${api}/image-assets/settings`);
     assert.equal(settings.status, 200);
-    assert.ok((await settings.json()).providers.some(provider => provider.id === 'gpt-image-2.5'));
-    console.log('Production document proxies passed: streamed create/apply, metadata, historical read, CAS conflict, PNG observation and Image 2.5 settings.');
+    assert.ok((await settings.json()).providers.some(provider => provider.id === 'gpt-image-2.6'));
+    console.log('Production document proxies passed: streamed create/apply, metadata, historical read, CAS conflict, PNG observation and Image 2.6 settings.');
   }
   const png = await sharp({
     create: { width: 12, height: 16, channels: 4, background: '#77ffbb' },

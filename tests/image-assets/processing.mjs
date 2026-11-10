@@ -70,7 +70,7 @@ const manifest = await loadManifest(), capability = findCapability(manifest, 'im
 const data = bytes => `data:image/png;base64,${bytes.toString('base64')}`;
 const input = { operation: 'process-image', kind: 'prop', image: data(candidate), preserveFrom: data(original), mask: data(mask), alphaCleanupThreshold: 1 };
 assert.deepEqual(validateInput(capability, input), []);
-for (const changes of [{ preserveFrom: undefined }, { mask: undefined }, { provider: 'gpt-image-2.5' }, { prompt: 'never generate' }, { references: [] }, { width: 1024, height: 1024 }, { alphaCleanupThreshold: 1.5 }]) {
+for (const changes of [{ preserveFrom: undefined }, { mask: undefined }, { provider: 'gpt-image-2.6' }, { prompt: 'never generate' }, { references: [] }, { width: 1024, height: 1024 }, { alphaCleanupThreshold: 1.5 }]) {
   const invalid = Object.fromEntries(Object.entries({ ...input, ...changes }).filter(([, value]) => value !== undefined));
   assert.ok(validateInput(capability, invalid).length, JSON.stringify(changes));
 }

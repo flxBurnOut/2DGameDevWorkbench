@@ -1,5 +1,13 @@
 # 角色视觉结构
 
+## 前端历史版本预览与恢复
+
+原图“结构解析与纠正”以及动作“结构观察 → 确认或恢复结构版本”均提供“结构历史版本”。列表包含全部已保存版本与说明，可直接选择较早版本，查看当时的部件蒙版、锚点、关系和观察纠正；时序预览可独立逐帧查看。选择历史只读取不可变快照，不改当前结构、草稿、生成绑定或审批。
+
+“恢复为版本 N 的内容”始终带当前结构的 revision/token、所选历史 revision 和稳定请求标识，服务端继续核对原图、真实帧与参考结构哈希。恢复创建新版本，原版本和中间修改继续保留，且需要重新核对。未保存草稿、正在计算、只读作品或来源已变时禁止恢复；历史查询发现服务端已有新版本时先刷新当前结构。恢复应答未确认时可刷新当前版本查看结果；直接重试沿用该次请求，不以旧预览 token 写入。
+
+验证：`node tests/authoring-gaps/run.mjs` 覆盖较早版本指定恢复、当前写入基线、来源/版本冲突及外观约束隔离；`node tests/authoring-gaps/web-server.mjs` 启动完全隔离的浏览器验收，原图和时序各有三个可辨认版本，可检验非相邻恢复、迟到读取、请求重试与来源变化。该 fixture 模拟所有接口，不连接生产服务或调用模型。
+
 ## 规划稳定性与可见性核对（2026-10-28）
 
 正式新建和显式重规划使用 `generation_policy_version=5`，新工作冻结
@@ -117,8 +125,9 @@ npm run visual-structure:check
 ```
 
 首次安装会下载固定版本 PyTorch、SAM 2 官方代码及 Tiny 权重，需要网络和磁盘空间。
-默认 Windows/Linux 使用 CUDA 12.8 运行时；可显式传 `-- --cpu` 使用 CPU，
-macOS 安装走 CPU 路径，其实际性能尚未验证。可通过
+默认 Windows/Linux 安装 CUDA 12.8 运行时；macOS 安装原生 PyTorch，支持 Apple
+GPU（MPS）。`auto` 按 CUDA → MPS → CPU 选择，均以 FP32 推理。安装时可显式传
+`-- --cpu`，将本机默认设备保存为 CPU。可通过
 `FORGE_STRUCTURE_BOOTSTRAP_PYTHON` 指定 Python 3.12。安装不修改 SpritePipeline
 现有环境，也不由查看页面或 GET 请求自动触发。
 
@@ -126,6 +135,54 @@ macOS 安装走 CPU 路径，其实际性能尚未验证。可通过
 `Tools/VisualStructure/runtime-profile.json`，通用依赖在同目录
 `requirements.common.lock`。`FORGE_STRUCTURE_PYTHON` 和
 `FORGE_STRUCTURE_WEIGHTS` 是服务端可选路径配置，不接受客户端任意路径。
+
+设备策略保存在该运行目录的 `device.json`（例如 `{"device":"auto"}`）。服务进程的
+`FORGE_STRUCTURE_DEVICE=auto|mps|cpu|cuda` 优先于本机配置，私有冻结作业中的 `device`
+优先于环境变量。显式指定的设备不可用时任务报错，不静默改用 CPU、不自动重试。
+可将本机配置改为 `{"device":"cpu"}` 后重新执行检查或提交本地纠正；已保存的语义
+解析和旧结构版本仍可复用。设备不参与付费解析缓存身份，不改动模型来源与权重哈希。
+
+`visual-structure:check` 会实际分配张量并执行设备运算。页面展示最近探测到的设备，
+结果展示本次实际分割／追踪设备；旧记录缺失设备信息时不补造。单图和跨帧共用本地
+推理锁，避免同时占用 GPU。MPS 追踪帧留在 CPU，采用分块注意力和连续布局池化，
+分别控制注意力中间张量和修正固定 Torch 2.7.1 的池化布局偏差。运行结束后恢复适配。
+
+回执记录 `requested_device`、`device`、`precision`、`torch`、`seconds`、
+`attention_policy`、`pool_layout`、`mps_fallback_enabled`。耗时包括模型加载和本地推理，
+不包括进程启动与外部语义调用。`mps_allocated_bytes` 与 `mps_driver_bytes` 是结束时
+张量／Metal 驱动内存快照，不是峰值；CUDA 继续记录 `peak_gpu_bytes`。默认不打开
+`PYTORCH_ENABLE_MPS_FALLBACK`；若用户启用，页面说明“已允许部分算子使用 CPU”，
+这只表示允许回退，不表示已测得实际回退次数或比例。
+
+可在独立运行环境中执行数值回归（无需模型、网络或付费调用）：
+
+```sh
+work/visual-structure-runtime/venv/bin/python -m unittest discover -s Tools/VisualStructure
+```
+
+Apple GPU 支持不等于所有请求更快，单图启动开销可能超过收益；硬件、部件数量、
+序列长度都会影响速度和内存。跨设备蒙版仍需人工检查，不能把一致性当成分割准确率。
+
+### Apple MPS 本机验收（2026-10-29）
+
+M4 MacBook Air、10 核 GPU、16 GB 统一内存；Python 3.12、Torch 2.7.1、SAM 2.1
+Tiny 固定权重，未启用 CPU 算子回退。使用固定框／点，语义与生成付费调用均为零。
+下表为回执耗时（秒），每个请求独立启动 worker；单图为三次中位数：
+
+| 样本 | CPU | MPS | CPU/MPS 蒙版差异 |
+| --- | ---: | ---: | --- |
+| 1024×1024 单图，1 部件 | 0.73 | 0.92 | 逐像素一致 |
+| 64×64 单图，1 部件 | 0.72 | 0.93 | 逐像素一致 |
+| 16 帧，1 部件 | 21.00 | 17.17 | 逐像素一致 |
+| 32 帧压力测试 | 42.73 | 30.48 | 逐像素一致 |
+| 64 帧压力测试 | 87.11 | 62.04 | 最多单帧 4 像素，最小 IoU 0.9747 |
+| 16 帧含第 1／9 帧纠正及末帧未知标记 | 22.34 | 15.67 | 逐像素一致 |
+
+32／64 帧由原 16 帧循环展开，用于内存与连续传播压力验证，不代表真实长动作精度。
+64 帧结束时 Metal 驱动内存快照约 3.21 GB；该值不是统一内存峰值。检查了叠加预览、
+所有冻结输入哈希和回执；长序列仅覆盖一个可见部件，未证明多部件／遮挡动作的质量。
+另以隔离数据实测工作台调用 MPS、服务对象重建、切换 CPU 纠正、恢复 MPS 旧记录，
+均复用原语义结果。数值回归覆盖分块注意力、完全遮罩、连续池化与异常后的适配清理。
 
 ## 持久记录与调用边界
 

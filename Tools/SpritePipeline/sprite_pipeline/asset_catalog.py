@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -82,7 +84,48 @@ class AssetCatalog:
         metadata: dict[str, Any] = {}
         if row["kind"] == "animation":
             job = self.service.get_job(row["job_id"])
-            metadata = {"width": job.character.cell_width, "height": job.character.cell_height, "facing": job.character.facing, "fps": job.action.fps}
+            candidate = next(c for c in job.candidates if c.candidate_index == row["candidate_index"])
+            metadata = {
+                "width": job.character.cell_width, "height": job.character.cell_height,
+                "facing": job.character.facing, "fps": job.action.fps, "loop": job.action.loop,
+                "productionRevision": job.revision,
+                "anchor": [job.character.anchor.x, job.character.anchor.ground_y],
+                "animationRepresentations": [{
+                    "representation": "frames", "frameKeys": [f"frame-{frame.index}" for frame in candidate.frames],
+                    "fps": job.action.fps, "loop": job.action.loop,
+                    "anchor": [job.character.anchor.x, job.character.anchor.ground_y],
+                    "sourceFacing": job.character.facing,
+                    "jobId": job.job_id, "candidateIndex": candidate.candidate_index,
+                }],
+            }
+            # Exported playback can differ from the raw frame sequence. Preserve its
+            # own contract only when it matches this exact candidate and sheet.
+            godot = paths.get("godot")
+            sheet = paths.get("sheet")
+            if godot and godot.is_file() and sheet and sheet.is_file():
+                try:
+                    with zipfile.ZipFile(godot) as package:
+                        names = [name for name in package.namelist() if name.endswith("/export.json")]
+                        if len(names) != 1 or package.getinfo(names[0]).file_size > 1024 * 1024:
+                            raise ValueError("ambiguous export contract")
+                        contract = json.loads(package.read(names[0]))
+                    if (contract.get("format") != "sprite-pipeline-godot" or
+                            contract.get("job_id") != job.job_id or
+                            contract.get("candidate_index") != candidate.candidate_index or
+                            contract.get("sheet_sha256") != hashlib.sha256(sheet.read_bytes()).hexdigest()):
+                        raise ValueError("export representation differs from current candidate")
+                    metadata["animationRepresentations"].append({
+                        "representation": "sheet", "sheetKey": "sheet", "godotKey": "godot",
+                        "fps": contract.get("fps"), "loop": contract.get("loop"),
+                        "regions": contract.get("source_region_px"), "anchor": contract.get("anchor"),
+                        "sourceFacing": contract.get("source_facing"),
+                        "sheetSha256": contract["sheet_sha256"],
+                        "jobId": job.job_id, "candidateIndex": candidate.candidate_index,
+                    })
+                except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+                    # The file remains downloadable, but no unchecked relationship
+                    # between an old export and the current frames is asserted.
+                    pass
         elif row["kind"] == "character":
             character, _ = self.service.presets.load_character(row["character_id"])
             metadata = {"width": character.cell_width, "height": character.cell_height, "facing": character.facing}

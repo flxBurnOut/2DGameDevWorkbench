@@ -11,6 +11,10 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
+import { AssetImportPicker } from '@/components/workbench/asset-import-picker';
+import { clearImportQuery, type ImportBundle } from '@/lib/workbench/asset-import';
+import { CharacterIdentityField } from '@/components/sprite-generator/character-identity-field';
+import { referenceIdentityDescription, referenceIdentityLimit, referenceTransferInput } from '@/components/sprite-generator/character-identity';
 import type { StoredTask } from '@/lib/workbench/work-items';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -64,9 +68,12 @@ export function ReferenceArtEditor() {
   const [busy, setBusy] = useState(false);
   const [savingKey, setSavingKey] = useState(false);
   const [readyHref, setReadyHref] = useState('');
+  const [library, setLibrary] = useState<{ assetId?: string } | null>(null);
+  const [identityDrafts, setIdentityDrafts] = useState<Record<string, string>>({});
   const busyRef = useRef(false);
   const selectionEpoch = useRef(0);
   const selectedId = selected?.id;
+  const identityDescription = selectedId ? referenceIdentityDescription(tasks, selectedId, identityDrafts) : '';
 
   const checkSettings = useCallback(async () => {
     try {
@@ -102,7 +109,9 @@ export function ReferenceArtEditor() {
         setFacing(task.input.facing === 'left' ? 'left' : 'right');
         setSize(task.input.size === 64 ? 64 : 128);
       }
-      history.replaceState(null, '', `?task=${encodeURIComponent(id)}`);
+      const url = new URL(location.href);
+      url.searchParams.set('task', id);
+      history.replaceState(history.state, '', url.pathname + url.search);
     } catch (error) {
       if (epoch === selectionEpoch.current)
         setMessage((error as Error).message);
@@ -112,8 +121,10 @@ export function ReferenceArtEditor() {
   useEffect(() => {
     const timer = setTimeout(() => {
       void checkSettings();
-      const id = new URLSearchParams(location.search).get('task');
-      if (id) void selectTask(id);
+      const params = new URLSearchParams(location.search);
+      const assetId = params.get('importAsset');
+      if (assetId && params.get('importPurpose') === 'image') { setLibrary({ assetId }); clearImportQuery(); }
+      else { const id = params.get('task'); if (id) void selectTask(id); }
     }, 0);
     const onFocus = () => void checkSettings();
     window.addEventListener('focus', onFocus);
@@ -174,6 +185,33 @@ export function ReferenceArtEditor() {
     }
   };
 
+  const importReference = async (bundle: ImportBundle) => {
+    if (busyRef.current) throw new Error('请等待当前操作完成。');
+    const file = bundle.files[0]?.file;
+    if (bundle.asset.kind !== 'character' || bundle.purpose !== 'image' || bundle.files.length !== 1 || !file || file.type !== 'image/png' || file.size > 2_000_000)
+      throw new Error('请选择 2 MB 以内、64×64 或 128×128 且带透明背景的角色 PNG。原素材保留在资产库。');
+    const pixels = bundle.asset.width;
+    if ((pixels !== 64 && pixels !== 128) || bundle.asset.height !== pixels)
+      throw new Error('角色参考图仅支持 64×64 或 128×128 PNG；不会缩放或修改原素材。');
+    busyRef.current = true; setBusy(true); setMessage(''); setReadyHref('');
+    try {
+      const sourceImage = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('图片读取失败。'));
+        reader.onerror = () => reject(new Error('图片读取失败，请重新选择。'));
+        reader.readAsDataURL(file);
+      });
+      const result = await json<Result>('/api/workbench/tasks', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ capabilityId: 'reference-art', input: { operation: 'import', sourceImage, prompt: prompt.trim() || bundle.asset.title, name: (name.trim() || bundle.asset.title).slice(0, 80), size: pixels, facing: bundle.asset.facing || facing } }),
+      });
+      if (result.status !== 'completed') throw new Error('角色参考图尚未保存，请查看制作记录。');
+      await selectTask(result.taskId);
+      setMessage('角色参考图已保存，未调用生成服务。检查外观后可用于角色动画。');
+      void refresh();
+    } finally { busyRef.current = false; setBusy(false); }
+  };
+
   const run = async (operation: 'generate' | 'transfer') => {
     if (busyRef.current) return;
     if (operation === 'generate' && !prompt.trim()) {
@@ -200,7 +238,7 @@ export function ReferenceArtEditor() {
                   size,
                   ...(name.trim() ? { name: name.trim() } : {}),
                 }
-              : { operation, sourceTaskId: selected!.id },
+              : referenceTransferInput(selected!.id, identityDescription),
         }),
       });
       if (operation === 'generate') {
@@ -248,6 +286,7 @@ export function ReferenceArtEditor() {
   );
   return (
     <main className="ra-workspace">
+      <AssetImportPicker open={Boolean(library)} onClose={() => setLibrary(null)} purposes={['image']} kind="character" initialAsset={library?.assetId} onImport={importReference} />
       <header className="ra-header">
         <div>
           <span className="ra-kicker">PIXELLAB / CHARACTER ART</span>
@@ -331,6 +370,7 @@ export function ReferenceArtEditor() {
           <p className="ra-note">
             每次生成使用 PixelLab 账户额度。移送参考图不生成动画。
           </p>
+          <button className="wb-button" disabled={busy || selected?.status === 'running'} onClick={() => setLibrary({})}>从资产库选用角色原图</button>
           <details className="ra-settings">
             <summary>
               <KeyRound size={16} /> PixelLab 设置{' '}
@@ -414,7 +454,7 @@ export function ReferenceArtEditor() {
                 <p>
                   {selected?.status === 'running'
                     ? '可以离开页面，稍后从制作记录继续查看。'
-                    : '透明背景方便直接用于动画参考。'}
+                    : '在左侧填写角色描述并生成原图；已有原图可从角色动画直接开始。'}
                 </p>
               </div>
             )}
@@ -422,6 +462,10 @@ export function ReferenceArtEditor() {
           <p className="ra-note">
             移送前请确认角色与武器完整、朝向正确。此处按整数倍放大显示。
           </p>
+          {png && selectedId && <>
+            <CharacterIdentityField value={identityDescription} onChange={(value) => setIdentityDrafts((previous) => ({ ...previous, [selectedId]: value }))} maxLength={referenceIdentityLimit} disabled={busy} />
+            <p className="ra-note">此说明只用于移送角色。已移送的同一原图会复用角色身份；修改这里的说明不会覆盖已保存角色的外观约束。</p>
+          </>}
           <div className="ra-actions">
             {png && (
               <a className="wb-button" href={artifactUrl(png)} download>

@@ -4,10 +4,10 @@
     {
       "id": "scene-composer",
       "name": "场景组装",
-      "shortName": "组装",
+      "shortName": "场景组装",
       "description": "将地图与交互物组装成完整的 2D 平台跳跃场景。",
       "ui": {
-        "icon": "scene", "productionLine": "scene", "entryTitle": "组装完整场景",
+        "icon": "scene", "productionLine": "scene", "entryTitle": "场景组装",
         "starterHint": "选择地图，拖入交互物，调整遮挡后导出 Godot 场景。",
         "stages": ["导入素材", "摆放与遮挡", "保存与导出"],
         "accent": "cyan", "status": "ready", "route": "/tools/scene-composer", "surface": "editor",
@@ -19,6 +19,8 @@
     "name": "Forge — 2D game dev workbench",
     "brand": { "name": "Forge", "tagline": "2D game dev workbench", "icon": "/favicon.svg?v=forge-play" },
     "assetTrashDirectory": "work/asset-trash",
+    "importedAssetDirectory": "work/imported-assets",
+    "packageImportDirectory": "work/asset-package-imports",
     "taskDirectory": "work/tasks",
     "sceneExportDirectory": "work/scene-exports",
     "gameExportDirectory": "work/game-exports",
@@ -40,12 +42,12 @@
     { "id": "animation", "label": "动画帧", "kinds": ["animation"], "targets": ["interactable-editor"] }
   ],
   "productionLines": [
-    { "id": "player", "name": "角色美术", "eyebrow": "CHARACTER / MOTION", "description": "让角色动起来。", "accent": "violet", "href": "/player", "summary": ["角色原图", "动作序列帧", "导出"] },
-    { "id": "scene", "name": "场景", "eyebrow": "SCENE / INTERACTION", "description": "制作地图和交互物，组装成完整场景。", "accent": "cyan", "href": "/scene", "summary": ["地图拼接", "交互物制作", "场景组装"] }
+    { "id": "player", "name": "角色制作总览", "eyebrow": "CHARACTER / MOTION", "description": "让角色动起来。", "accent": "violet", "href": "/player", "summary": ["角色原图", "动作序列帧", "导出"] },
+    { "id": "scene", "name": "场景制作总览", "eyebrow": "SCENE / INTERACTION", "description": "制作地图和交互物，组装成完整场景。", "accent": "cyan", "href": "/scene", "summary": ["地图拼接", "交互物制作", "场景组装"] }
   ],
   "agentAssets": {
     "role": "external-client",
-    "assetCatalog": { "schemaVersion": 1, "route": "/assets", "guide": "docs/asset-catalog.md", "sources": ["runtime-tasks", "sprite-pipeline", "map-projects", "scene-exports"], "recycleBin": { "defaultScope": "active", "trashScope": "trashed", "preservesSourceFiles": true }, "browserDrafts": "not-indexed" },
+    "assetCatalog": { "schemaVersion": 1, "route": "/assets", "guide": "docs/asset-catalog.md", "sources": ["runtime-tasks", "sprite-pipeline", "map-projects", "scene-exports", "imported-packages"], "recycleBin": { "defaultScope": "active", "trashScope": "trashed", "preservesSourceFiles": true }, "browserDrafts": "not-indexed" },
     "conversationGuide": "workbench/conversation-guide.md",
     "guidanceTopics": [
       { "id": "production", "title": "Asset workflow routing", "source": ".agents/skills/2d-game-workbench/SKILL.md" },
@@ -87,7 +89,7 @@
           "endpointEnv": "SCENE_EXPERT_OPENAI_URL",
           "keyEnv": "OPENAI_API_KEY",
           "credentialAliases": [
-            "gpt-image-2.5",
+            "gpt-image-2.6",
             "gpt-image-2"
           ]
         },
@@ -103,7 +105,8 @@
         }
       ]
     },
-    "imageEditing": { "schemaVersion": 1, "contract": "lib/workbench/image-edit-contract.mjs", "guide": "docs/image-editing.md", "mode": "existing-image-edit", "targetKinds": ["map-layer", "interactable", "image-task", "scene-layer", "scene-instance"], "sceneTargets": "verified-source-snapshot-or-single-instance", "aiEditing": true, "localRequiresPython": false, "localRequiresKey": false, "manualMapProductionBoundary": "unchanged" },
+    "sceneMapSplit": {"schemaVersion":1,"guide":"docs/scene-composer.md#场景地图整图分层","contract":"lib/workbench/scene-split-contract.mjs","modes":["auto","local","vision","sam"],"webDefault":"auto","candidateReview":"unverified-until-explicit-check","adoption":"exact-scene-and-candidate-revision","sourceScope":"scene-owned","samMaxWindowEdge":1024,"engine":"Godot 4.7.x"},
+    "imageEditing": { "schemaVersion": 1, "contract": "lib/workbench/image-edit-contract.mjs", "guide": "docs/image-editing.md", "mode": "existing-image-edit", "targetKinds": ["map-layer", "interactable", "image-task", "scene-layer", "scene-instance", "scene-split-part"], "sceneTargets": "verified-source-snapshot-or-single-instance", "intentPreview": true, "paletteMapMaxPairs": 64, "metalPanelTrial": {"maxSelectionEdge": 1024, "optionalSegmenter": "SAM 2.1 Tiny"}, "attributePlans": true, "softReferences": {"kinds":["rgb","shading"],"requiresCleanCrop":true,"reservedReferenceSlots":2,"qualityValidated":false}, "visualReviewer": {"provider":"openai","model":"gpt-5.4-2026-03-05","maxOutputTokens":2048,"timeoutSeconds":90,"reasoningEffort":"low"}, "partPlanner": {"provider":"openai","model":"gpt-5.4-2026-03-05","maxOutputTokens":2048,"timeoutSeconds":90,"reasoningEffort":"low"}, "intrinsicRecolorTrial": {"optionalLocalPython": true, "model": "prs-eth/marigold-iid-lighting-v1-1", "maxEdge": 1536, "automaticDownload": false, "qualityCalibrated": false, "simpleMappings":["rgb","luminance"], "partAssessmentAtPlanTime":true, "cacheScope":"same-session-base-and-profile"}, "placementComparison": true, "aiEditing": true, "localRequiresPython": false, "localRequiresKey": false, "manualMapProductionBoundary": "unchanged" },
     "presentationGuide": "docs/agent-preview-follow.md",
     "skill": ".agents/skills/2d-game-workbench/SKILL.md",
     "engineering": { "skill": ".agents/skills/forge-game-engineering/SKILL.md", "guide": "docs/game-engineering.md", "deliveryGuide": "docs/godot-delivery.md", "mode": "external-agent", "engine": "Godot 4.7.x", "source": "https://github.com/flxBurnOut/copyWorms", "createsTask": false },
@@ -158,7 +161,25 @@
         "workbench_adopt_scene_workflow",
         "workbench_get_scene_workflow_settings",
         "workbench_inspect_image_target",
+        "workbench_prepare_map_split",
+        "workbench_get_map_split",
+        "workbench_inspect_map_split",
+        "workbench_revise_map_split",
+        "workbench_adopt_map_split",
+        "workbench_edit_map_split_element",
         "workbench_resolve_image_region",
+        "workbench_suggest_panel_region",
+        "workbench_prepare_part_context",
+        "workbench_request_part_suggestion",
+        "workbench_get_part_suggestion",
+        "workbench_prepare_image_plan",
+        "workbench_get_image_plan",
+        "workbench_analyze_image_attributes",
+        "workbench_get_image_analysis",
+        "workbench_record_image_review",
+        "workbench_prepare_candidate_check",
+        "workbench_get_candidate_check",
+        "workbench_request_candidate_check",
         "workbench_edit_image_region",
         "workbench_apply_image_candidate",
         "workbench_get_image_edit",
@@ -182,7 +203,7 @@
       "id": "image-assets",
       "name": "场景图片生成",
       "shortName": "图片素材",
-      "description": "使用 GPT Image 2.5 生成或编辑图片；蒙版外像素由本地合成保留。process-image 使用现有素材做无费用局部合成与透明噪点清理。原图、派生图和来源分别保存，预览后单独采用。",
+      "description": "使用 GPT Image 2.6 生成或编辑图片；蒙版外像素由本地合成保留。process-image 使用现有素材做无费用局部合成与透明噪点清理。原图、派生图和来源分别保存，预览后单独采用。",
       "category": "production",
       "workflow": "workbench/workflows/image-assets-production.json",
       "ui": {
@@ -190,11 +211,11 @@
         "starterHint": "生成完整背景或透明物件，检查图片后采用到编辑器。",
         "stages": ["描述与参考图", "生成并检查", "采用到场景"],
         "accent": "cyan", "status": "ready", "route": "/tools/map-stitcher", "surface": "editor", "embedded": true,
-        "capabilities": ["GPT Image 2.5", "透明 PNG 物件", "多参考图与蒙版编辑", "原图与来源记录"]
+        "capabilities": ["GPT Image 2.6", "透明 PNG 物件", "多参考图与蒙版编辑", "原图与来源记录"]
       },
       "connector": {
         "type": "local-adapter", "adapter": "image-assets", "providerSource": "map-stitcher",
-        "providerIds": ["gpt-image-2.5"], "defaultProvider": "gpt-image-2.5", "providerEnv": "IMAGE_ASSETS_PROVIDER"
+        "providerIds": ["gpt-image-2.6"], "defaultProvider": "gpt-image-2.6", "providerEnv": "IMAGE_ASSETS_PROVIDER"
       },
       "inputSchema": {
         "type": "object", "required": ["operation"], "additionalProperties": false,
@@ -207,7 +228,7 @@
           "operation": { "type": "string", "enum": ["generate-background", "generate-prop", "edit-image", "process-image"] },
           "prompt": { "type": "string", "minLength": 1, "maxLength": 12000, "description": "生成/编辑操作必填；process-image 不接受此字段且不调用模型。" },
           "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-          "provider": { "type": "string", "enum": ["gpt-image-2.5"] },
+          "provider": { "type": "string", "enum": ["gpt-image-2.6"] },
           "kind": { "type": "string", "enum": ["background", "prop"], "description": "edit-image / process-image 的素材类型，默认 background；prop 校验透明 PNG，并默认清理 Alpha=1 的像素。" },
           "width": { "type": "integer", "minimum": 16, "maximum": 3840, "description": "与 height 同时提供，16 的倍数，合计 655360–8294400 像素，比例 1:3–3:1。" },
           "height": { "type": "integer", "minimum": 16, "maximum": 3840 },
@@ -223,15 +244,15 @@
     },
     {
       "id": "reference-art",
-      "name": "角色与物品原图生成",
-      "shortName": "原图",
+      "name": "角色原图",
+      "shortName": "角色原图",
       "description": "使用 PixelLab 生成透明背景像素角色或交互物品原图。角色可移送序列帧；物品在交互物编辑器预览并采用。",
       "category": "production",
       "workflow": "workbench/workflows/reference-art-production.json",
       "ui": {
         "icon": "reference",
         "productionLine": "player",
-        "entryTitle": "制作角色原图",
+        "entryTitle": "角色原图",
         "starterHint": "描述角色外观，生成透明像素原图后直接用于制作动作。",
         "stages": [
           "描述角色",
@@ -330,6 +351,12 @@
             "minLength": 1,
             "maxLength": 1000,
             "description": "仅 import：仓库内已有 64/128 像素透明 PNG 的路径。本地复制并记录导入来源，不调用生成 API；prompt 为导入时补充的展示描述。"
+          },
+          "sourceImage": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2666690,
+            "description": "仅 import：data:image/png;base64 格式的浏览器图片，与 sourceImagePath 二选一。原字节最多 2000000 字节，须为选定 64/128 像素规格且含可见内容和透明背景的 PNG；不调用生成 API。"
           }
         }
       },
@@ -341,15 +368,15 @@
     },
     {
       "id": "sprite-generator",
-      "name": "2D 序列帧生成",
-      "shortName": "序列帧",
+      "name": "角色动画",
+      "shortName": "角色动画",
       "description": "按自由动作要求制作角色动画。专家制定通用分段与末姿势检查点；每段生成后须读取实际帧并明确确认，锁定末帧锚点后才继续。新任务可使用独立外观/运动专家与有界争议复核，每次检查最多五次视觉调用；模型意见不自动放行。规划、绘制与视觉调用分别受授权预算约束；旧方案保持原语义。",
       "category": "production",
       "workflow": "workbench/workflows/sprite-production.json",
       "ui": {
         "icon": "frames",
         "productionLine": "player",
-        "entryTitle": "制作玩家",
+        "entryTitle": "角色动画",
         "starterHint": "选择角色，描述动作和结束姿势，查看方案后开始制作。",
         "stages": [
           "准备与描述",
@@ -578,15 +605,15 @@
     {
       "id": "map-stitcher",
       "agent": { "mode": "manual", "reason": "地图制作通过前端编辑器执行；当前仓库 MCP / Agent CLI 未开放该能力。用户明确要求网页操作时可使用宿主浏览器工具。" },
-      "name": "地图拼接",
-      "shortName": "地图拼接",
+      "name": "地图编辑",
+      "shortName": "地图编辑",
       "description": "以 FrameRonin / Pixelwork v2 模型组合地图切片，编辑独立图片图层和矢量区域，并输出可恢复状态与引擎资源。",
       "category": "production",
       "workflow": "workbench/workflows/map-production.json",
       "ui": {
         "icon": "map",
         "productionLine": "scene",
-        "entryTitle": "搭建地图",
+        "entryTitle": "地图编辑",
         "starterHint": "上传地图图片，或先生成中心原图，确认采用后向外扩图。",
         "entryActions": [
           { "label": "打开地图编辑器", "href": "/tools/map-stitcher" }
@@ -613,16 +640,16 @@
             "apiKeyEnv": "GEMINI_API_KEY"
           },
           {
-            "id": "gpt-image-2.5",
-            "name": "GPT Image 2.5",
-            "model": "gpt-image-2.5-sunburst",
+            "id": "gpt-image-2.6",
+            "name": "GPT Image 2.6",
+            "model": "gpt-image-2.6-sunburst",
             "protocol": "openai-images-edits",
             "endpoint": "https://api.openai.com/v1/images/edits",
             "generationEndpoint": "https://api.openai.com/v1/images/generations",
             "generationEndpointEnv": "MAP_STITCHER_OPENAI_GENERATION_API_URL",
             "endpointEnv": "MAP_STITCHER_OPENAI_API_URL",
             "apiKeyEnv": "OPENAI_API_KEY",
-            "credentialAliases": ["gpt-image-2"]
+            "credentialAliases": ["gpt-image-2.5", "gpt-image-2"]
           },
           {
             "id": "gpt-image-2",
@@ -634,7 +661,7 @@
             "generationEndpointEnv": "MAP_STITCHER_OPENAI_GENERATION_API_URL",
             "endpointEnv": "MAP_STITCHER_OPENAI_API_URL",
             "apiKeyEnv": "OPENAI_API_KEY",
-            "credentialAliases": ["gpt-image-2.5"]
+            "credentialAliases": ["gpt-image-2.6", "gpt-image-2.5"]
           },
           {
             "id": "hunyuan-image-3",
@@ -668,7 +695,7 @@
           "aspectRatio": { "type": "string", "enum": ["1:1", "3:2", "2:3"], "description": "generate-origin 的画幅比例，默认 1:1；保留模型返回的原始像素尺寸。" },
           "provider": {
             "type": "string",
-            "enum": ["nano-banana", "gpt-image-2.5", "gpt-image-2", "hunyuan-image-3"],
+            "enum": ["nano-banana", "gpt-image-2.6", "gpt-image-2", "hunyuan-image-3"],
             "description": "整体层扩图使用的官方图片模型。省略时使用已激活的 API 设置。"
           },
           "images": {
@@ -743,15 +770,15 @@
     },
     {
       "id": "interactable-editor",
-      "name": "交互物编辑器",
-      "shortName": "交互物",
+      "name": "交互物编辑",
+      "shortName": "交互物编辑",
       "description": "使用行为模板制作查看、切换、拾取和序列物件，保存源项目并在前端继续编辑，按需导出 Godot 资源包。",
       "category": "production",
       "workflow": "workbench/workflows/interactable-production.json",
       "ui": {
         "icon": "interactable",
         "productionLine": "scene",
-        "entryTitle": "制作交互物",
+        "entryTitle": "交互物编辑",
         "starterHint": "准备物件外观素材，在交互物工具中新建查看、切换、拾取或序列物件。",
         "stages": ["配置物件", "预览并导出"],
         "accent": "cyan",

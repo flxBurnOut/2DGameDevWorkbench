@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useWorkbench } from './workbench-provider';
 import { ModuleIcon } from './module-icon';
+import { WorkbenchBreadcrumb } from './shared-navigation';
 
 export function WorkbenchShell() {
   const { lines, setQueueOpen } = useWorkbench();
@@ -16,7 +17,7 @@ export function WorkbenchShell() {
     <main className="wb-page wb-home">
       <div className="wb-eyebrow">ASSET PRODUCTION</div>
       <h1>开始制作游戏资产</h1>
-      <p className="wb-intro">选择序列帧或场景，进入对应的制作流程。</p>
+      <p className="wb-intro">选择角色制作或场景制作，也可从资产库选用已有素材。</p>
       <div className="wb-production-lines">
         {lines.map((line) => (
           <a
@@ -89,13 +90,9 @@ export function SceneWorkflow() {
   const line = lines.find((l) => l.id === 'scene');
   return (
     <main className="wb-page wb-scene" data-accent={line?.accent}>
-      <div className="wb-breadcrumb">
-        <a href="/">开始</a>
-        <span>/</span>
-        <span>场景</span>
-      </div>
+      <WorkbenchBreadcrumb />
       <div className="wb-eyebrow">BUILD YOUR WORLD</div>
-      <h1>制作素材，组装场景。</h1>
+      <h1>{line?.name}</h1>
       <p className="wb-intro">从生成地图原图开始，也可导入已有地图；制作交互物后再组装场景。</p>
       <div className="wb-scene-stages">
         {modules
@@ -108,7 +105,7 @@ export function SceneWorkflow() {
               <h2>{m.entryTitle}</h2>
               <p>{m.starterHint}</p>
               <div className="wb-scene-entry-actions">
-                {(m.entryActions ?? [{ label: `进入${m.shortName}工具`, href: m.href }]).map((action, index) => (
+                {(m.entryActions ?? [{ label: `进入${m.name}`, href: m.href }]).map((action, index) => (
                   <a className={`wb-button${index === 0 ? ' wb-primary' : ''}`} href={action.href} key={action.href}>
                     {action.label}<ArrowRight size={16} />
                   </a>

@@ -45,7 +45,9 @@ Server 还提供只读资源 `workbench://manifest`。工具数量和版本以�
 | `workbench_observe_document` | 返回保存场景版本的 PNG、几何标注与资源证据 |
 | `workbench_inspect_image_target` | 发现或读取既有图片目标、源版本和候选 |
 | `workbench_resolve_image_region` | 按确切源版本解析区域；可显式保存命名区域 |
-| `workbench_edit_image_region` | 执行本地配方或显式 ai-edit，保存独立候选；采用是单独操作 |
+| `workbench_prepare_part_context` / `workbench_request_part_suggestion` / `workbench_get_part_suggestion` | 准备并查看三张规划视图，明确请求一次视觉定位，或查询已有部件建议 |
+| `workbench_prepare_candidate_check` / `workbench_request_candidate_check` / `workbench_get_candidate_check` | 冻结候选和原图的独立复核视图，明确请求一次模型判断，或查询原记录。需查缺陷来源时，用首轮 reviewRef 另备原始返回和范围诊断 |
+| `workbench_edit_image_region` | 执行本地配方或显式 ai-edit，保存独立候选。recompose-ai 可在原授权范围内复用已保存的生成响应 |
 | `workbench_apply_image_candidate` | 按目标版本、源哈希和锁采用确切候选 |
 | `workbench_get_image_edit` | 读取持久会话、候选及原任务身份 |
 | `workbench_get_scene_workflow_settings` | 读取场景专家模型与凭据是否可用，不返回 Key |
@@ -65,6 +67,23 @@ Server 还提供只读资源 `workbench://manifest`。工具数量和版本以�
 
 跨步骤的场景规划可使用[场景专家协作](scene-collaboration.md)。协作任务有独立的工作流版本、制作依赖图和候选工作区，`get/list/observe` 不调度模型；创建、执行和修订必须在用户已授权范围与额度内。最终采用另外核对来源场景版本和确切候选哈希。
 
+## 场景地图分层
+
+| MCP 工具 | CLI / HTTP 操作 | 使用范围 |
+| --- | --- | --- |
+| `workbench_prepare_map_split` | `scene-split-prepare` | 从确切的场景版本建立候选。`auto` 与网页一键粗分相同，优先运行本机 SAM 自动蒙版，缺少环境时返回纯像素结果及原因。`local` 使用显式选区或纯像素粗分。`sam` 接受原比例窗口、框及提示点。`vision` 显式请求一次视觉服务定位，传 `useSam: true` 可在本机取轮廓。同一请求恢复时保留 commandId。 |
+| `workbench_get_map_split` | `scene-split-get` | 按 documentId 列出候选，或按 candidateId / candidateRevision 读取冻结版本、核验状态、对象、迁移匹配依据及冲突。includeSpecs 返回可修订的选区和显式匹配表。 |
+| `workbench_inspect_map_split` | `scene-split-inspect` | 读取地图基准、合成候选、物件、子片、归属蒙版或指定冲突侧。MCP 返回原生 PNG，支持地图原像素裁片及黑、白、彩色底。 |
+| `workbench_revise_map_split` | `scene-split-revise` | 对同一候选按版本替换 specs，或只 upsert/remove 指定对象。可传一对一 matches、逐项 resolutions，或单独记录核验过的 elementIds 及意见。改图与记录核验分开提交。 |
+| `workbench_adopt_map_split` | `scene-split-adopt` | 采用指定候选版本到原场景，传 expectedRevision、candidateRevision 和稳定 commandId。返回确切保存版本。 |
+| `workbench_edit_map_split_element` | `scene-split-patch` | 按 ID 修改已采用的物件位置、锁、显隐、可选碰撞及前后/效果片。贴图编辑使用已有图像会话的 `scene-split-part` 目标。 |
+
+选区声明、尺寸及字段限额见[分层规范](../lib/workbench/map-split-spec.mjs)。定位坐标使用地图画布左上角的原图像素，元素位置相对地图，子片位置相对元素。例如声明一个独立灯可使用 `{"id":"lamp","name":"上栈桥油灯","kind":"object","parts":[{"id":"art","plane":"back","selection":{"type":"polygon","points":[{"x":42,"y":10},{"x":58,"y":10},{"x":58,"y":40},{"x":42,"y":40}]}}]}`。可将 spec 放入 prepare 的 specs，或放入 revise 的 upsert；余图作为地表或背景保存。实际操作见[场景使用说明](scene-composer.md#场景地图整图分层)。
+
+包含 SAM 提示的修订先返回 `status: running` 和 `execution`（执行 ID、原 commandId、操作及基准候选版本），使用 `scene-split-get` 查询同一个 candidateId。完成后将 `candidate.revision` 作为下一次请求的 candidateRevision；运行中返回的 revision 仍是上一个已发布版本。同一候选运行期间不接受另一条修订命令。读取不会触发推理，临时查询失败可以重试。失败或进程中断后，沿用原 commandId 和原参数恢复本地修订；`includeSpecs` 会在可恢复时附上 `recoveryRequest`。视觉定位声明在本地分割前落盘，本地阶段失败后恢复只重做本地步骤；上游结果未知且没有定位记录时不重发付费请求。
+
+单个物件最多 128 个子片，跨多条同 ID 声明合并后也须符合此限额；完整候选通过场景校验后才发布 ready。碰撞归属增减保留已接管区域的物件局部轮廓，仅新增区域从地图坐标转换。同源修订保留删除瞬间的碰撞归属。换图冲突选择“当前”时保留本地轮廓、解除旧图索引，不接管新版中的同号区域；接管新版区域需明确提交新版归属。
+
 ## 状态与异步任务
 
 - `prepared`：只完成校验和记录。
@@ -76,7 +95,7 @@ Server 还提供只读资源 `workbench://manifest`。工具数量和版本以�
 
 序列帧生成可能异步返回。此时调用 `workbench_get_task` 刷新原来的上游 job；不要再次调用 `workbench_run_task`。查询是幂等刷新，短暂轮询错误不会改写已有任务为虚假成功，也不会提交第二次生成。
 
-Image 2.5 同样先返回已持久化的 running taskId，再由后台进程提交和保存图片。使用同一 get_task/status 查询；进程退出或租约失效时提示 attention_required，不自动重试可能已计费的提交。任务完成后先检查图片，再明确采用；requiresAdoption=true 不代表已经修改地图、交互物或场景。
+Image 2.6 同样先返回已持久化的 running taskId，再由后台进程提交和保存图片。使用同一 get_task/status 查询；进程退出或租约失效时提示 attention_required，不自动重试可能已计费的提交。任务完成后先检查图片，再明确采用；requiresAdoption=true 不代表已经修改地图、交互物或场景。
 
 普通回复先说结果、准确作品链接与下一步；技术详情保留能力、操作、任务 ID、状态、错误或缺失配置及实际输出路径，需要排错时提供。不能把 `prepared`、`running` 或 `awaiting_configuration` 描述为完成。
 

@@ -81,6 +81,30 @@ export async function readWorkspaceDraft<T>(
   }
 }
 
+/** Compare and replace durable request records atomically across tabs. */
+export async function updateWorkspaceDraft<T>(key: string, modify: (previous: T | undefined) => T): Promise<T> {
+  if (historyGeneration() !== generation) throw new Error('本机历史已在其他页面清空，请刷新页面后恢复。');
+  const db = await database();
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      const tx = db.transaction('drafts', 'readwrite');
+      const store = tx.objectStore('drafts');
+      const request = store.get(key);
+      let next: T, failure: unknown;
+      request.onsuccess = () => {
+        try {
+          if (historyGeneration() !== generation) throw new Error('本机历史已清空，请刷新页面。');
+          next = modify(request.result as T | undefined);
+          store.put(next, key);
+        } catch (error) { failure = error; tx.abort(); }
+      };
+      tx.oncomplete = () => resolve(next);
+      tx.onerror = () => reject(failure || tx.error);
+      tx.onabort = () => reject(failure || tx.error || new Error('原请求记录未保存，请保留页面后重试。'));
+    });
+  } finally { db.close(); }
+}
+
 /** Draft bytes and their resumable entries commit atomically, including removed objects. */
 export async function saveWorkspaceDraft(
   key: string,

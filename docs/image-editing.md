@@ -4,6 +4,8 @@
 
 ## 共用本地工作区（7B）
 
+新增「部件与属性计划 · 试验」：支持可修正的属性策略、授权／目标／影响／保护区、干净局部参考，以及可选的本地分层换色。操作、安装与保证边界见 [属性计划与换色试验](../workbench/guides/image-attribute-editing.md)。这是实验入口，尚未完成正式画质评测。
+
 | 从哪里进入 | 修改范围 |
 | --- | --- |
 | 地图编辑器选中有真实源图的卡片和图片视图，点“局部调整本层” | 当前图块的 overall / surface / object / black / white；Mask 只读 |
@@ -25,7 +27,7 @@
 
 在同一工作区切换到“AI 局部修改”。工作区默认打开 AI 局部修改，初始为空选区和矩形工具。矩形和涂选共用“新建／添加／减去”，Shift 临时添加，Alt 临时减去；只修改可编辑蒙版，不改变图片像素。矩形可拖动内部移动、拖动角点缩放；空格或中键平移画布。画笔、橡皮、取色、矩形、涂选、连通和平移工具在两种模式下始终可见。点击画笔、橡皮或取色会打开本地精修参数；切换模式保留选区、未保存笔划和 AI 描述。左侧始终提供颜色、笔宽及像素历史和保存入口，本地操作无需展开高级工具；命名区域单独管理。选区使用淡蓝色和边界显示，原图不再被黑色保护遮罩覆盖；生成完成默认隐藏修改范围，便于检查画面。空范围不能提交；整图范围会明确显示。增减笔刷通过 `mask-runs` 的有序、不重叠 `{startPixel,length}` spans 保存硬边界，最多 65,536 段，不是软边蒙版或自动语义分割。
 
-填写最多 12,000 字修改描述，可选最多 8 张 PNG/JPEG/WebP 参考图；网页单张上限 30 MiB、参考合计上限 32 MiB，服务端仍检查源图、蒙版与参考总计 80 MiB。只上传明确选择的参考，地图上下文不会自动发送。先保存或舍弃未保存像素笔划，再点“生成 AI 候选（调用模型）”。本地模式不需要 Key；AI 使用既有 GPT Image 2.5 设置并可能消耗外部额度，不会因本地操作失败自动启动。
+填写最多 12,000 字修改描述，可选最多 8 张 PNG/JPEG/WebP 参考图；网页单张上限 30 MiB、参考合计上限 32 MiB，服务端仍检查源图、蒙版与参考总计 80 MiB。只上传明确选择的参考，地图上下文不会自动发送。先保存或舍弃未保存像素笔划，再点“生成 AI 候选（调用模型）”。本地模式不需要 Key；AI 使用既有 GPT Image 2.6 设置并可能消耗外部额度，不会因本地操作失败自动启动。
 
 请求固定所选 `baseCandidateVersion`、描述、参考真实字节、源版本与区域；参考与配方写入不可变快照，原文件之后修改不改变在途请求。任务身份在 adapter 发出请求前持久保存。返回 running 后只查询原 task / editId；断连、Bridge 重启、超时或未知提交都不会自动重发模型。重试同一动作须保留 commandId 和原载荷；配置补齐也不会续发旧任务。关闭窗口不保证撤销已送出的请求。尚未提交的 AI 描述、参考选择与未保存选区仅属当前页面，关闭前提示不等于已经持久保存。
 
@@ -37,7 +39,7 @@ AI 不改变源尺寸：当前要求宽高均为 16 的倍数、655,360–8,294,
 
 ## 精确选择与主流程
 
-默认使用四个高层工具，另有一个会话读取工具。完整字段由 [共享契约](../lib/workbench/image-edit-contract.mjs) 定义；[manifest](../workbench/manifest.json) 登记工具、目录和阶段范围。
+默认使用四个高层工具，另有会话读取工具和试验性的板面建议工具。完整字段由 [共享契约](../lib/workbench/image-edit-contract.mjs) 定义；[manifest](../workbench/manifest.json) 登记工具、目录和阶段范围。
 
 | 工具 | 用途 |
 | --- | --- |
@@ -61,7 +63,7 @@ npm run workbench -- agent image-apply --input work/apply-image.json --json
 npm run workbench -- agent image-session-get --input work/read-edit.json --json
 ```
 
-Bridge 接口为 `POST /v1/agent/image-inspect|image-resolve|image-edit|image-apply|image-session-create|image-session-get`；网页代理使用 `/api/workbench/image-edit/<后缀>`。MCP、CLI、网页连到同一个 canonical Bridge。会刷新候选的读取也在 Bridge 中执行；不可用时不退回客户端文件直写。和共享文档一样，不支持多个独立 Bridge 同时写同一数据目录。
+Bridge 接口为 `POST /v1/agent/image-inspect|image-resolve|image-panel-suggest|image-edit|image-apply|image-session-create|image-session-get`；网页代理使用 `/api/workbench/image-edit/<后缀>`。MCP、CLI、网页连到同一个 canonical Bridge。会刷新候选的读取也在 Bridge 中执行；不可用时不退回客户端文件直写。和共享文档一样，不支持多个独立 Bridge 同时写同一数据目录。
 
 ## 像素、区域与操作
 
@@ -97,6 +99,8 @@ Bridge 接口为 `POST /v1/agent/image-inspect|image-resolve|image-edit|image-ap
 
 ## 状态与场景引用（7D）
 
+已采用整图分层的场景另支持 `scene-split-part`。按场景、元素和绘制片的稳定 ID 读取目标，局部编辑只改变该片的纹理。可传绘制片内部的原像素矩形 `window` 分区编辑大图，采用前复核完整绘制片绑定与当前场景版本。归属调整、跨物件补拆及换底图迁移使用[场景分层候选](scene-composer.md#场景地图整图分层)。
+
 交互物状态和序列入口传入完整 `documentId + definitionId + slot + index`。状态继承默认图时，采用只创建该状态自己的图片绑定；默认图和其他条目保留。序列重排、槽位变动、锁变化或版本冲突会拒绝旧写入，候选和未保存笔划留在原会话。
 
 `scene-instance` 目标使用 `{documentId,instanceId,slot,index?}`，默认 `slot=visual` 不带 index，状态 / 序列必须明确 index。返回 `scope=single-instance`、`affectedInstanceIds` 和 `sharedInstanceCount`。采用创建独立素材并仅重绑所选实例，原素材、同素材的其他实例、位置、锚点、缩放、排序、联动、碰撞与行为保持。场景动画外观只读；不能以当前播放帧代替静态源。
@@ -125,3 +129,25 @@ Bridge 接口为 `POST /v1/agent/image-inspect|image-resolve|image-edit|image-ap
 候选“已生成 · 待确认效果”仅表示任务完成，保护检查不代表视觉效果合格。前端对比本步基准提示大面积新增近黑像素；此提示不阻止用户有意改黑、不改变像素、不自动重试。请求仍发送独立 Alpha 蒙版和未绘入遮罩的基准图，并附加从蒙版解析出的像素边界与蒙版语义说明；模型品质需真实验证，不能仅以保护区变化为零判断成功。历史错误候选完整保留，不会在浏览时自动修复或重新计费。
 
 浏览器回归另运行同一隔离服务器下的 `/tests/image-edit/workspace-interaction.html`：使用 1024×1024 图片检查连续切换、延迟响应、取消等待、矩形移动缩放、加减选区、快捷撤销、未保存笔划和纯净结果对比；请求全部由本地 fixture 拦截，不调用真实服务。
+
+## 批量配色与摆放尺寸对照
+
+局部修改描述可以逐行写明确的 `#RRGGBB → #RRGGBB` 配色，支持“将 #112233 替换为 #445566”。另支持明确的“擦除选区像素”和“移动选区(2,0)”；移动仍需完整矩形和合法目的地。整段为配色表且没有参考图时，提交按钮显示本地候选。其他外观描述保留为明确的 AI 提交。可在本地精修中添加颜色对；单色复用 replace-color，多色使用 palette-map 的 pairs 数组（1–64 个 {from,to}，原色不分大小写且不能重复）。每次从本步基准一次映射，保留每个 Alpha 字节。Agent 可在单目标 image-inspect 的 metadata 请求中传 intent 预览建议操作，再显式提交。已明确指定的 ai-edit 沿用其原有调用语义。
+
+完成候选可打开“按摆放尺寸比较”。会话在源版本固定场景实例的摆放矩形、缩放和翻转，或地图层的世界位置与尺寸；面板以一世界像素对应一预览像素比较单图原色。没有摆放记录时明确标出所选预览宽度，旧会话不借用新场景的位置。单幅超过 320 像素的部分取编辑区附近的同位置窗口，不缩小比例。遮挡、场景着色及相机效果另外查看场景上下文或实际游戏。
+
+workbench_get_image_edit 传 editId、确切的已完成 candidateVersion 和 comparison:{}；独立素材可传 comparison:{previewWidth:128}。MCP 返回本步基准、所选候选两张 PNG，HTTP/CLI 的 edit.comparison 含 beforePng/afterPng、同一采样窗口、目标版本和两张输入的哈希。普通历史读取不生成对照图。小目标裁图参考仅作为独立实验输入，没有默认启用。
+
+场景协作的私有图片会话通过 workbench_observe_scene_workflow 的 workId + imageStepId 读取该步骤的摆放对照，按步骤回执核对候选哈希。
+
+## 试验：规则拼板换金属
+
+在通用素材的「局部调整」中框选板面，点击「拼板换金属 · 试验」。范围取自本步基准，最长边 1024 源像素。大图可以分区处理。先用「标板缝」在水平暗缝附近给点。查找范围是上下四个美术像素，放大过的像素图可调「美术像素步长」。算法寻找在多数可见采样列中都比两侧暗的连续行；有歧义时撤回提示重选，或用减去工具保护。黄色表示整行与选区相交的保护带，曲线缝、斜缝和遮挡需要手工修正。
+
+「辅助分板（SAM）」使用已安装的本机视觉结构环境。各条板缝分隔 SAM 的提示框，板面点为正提示，排除点为负提示。推理从本步基准取最多 1024 像素一边的同尺度上下文，返回范围始终裁回原选区。美术像素步长大于 1 时，建议按原图网格多数票对齐，平票保护，手工修选可进一步调整。绿色区域可改，可在原选区内补选和减去，缝线始终优先保护。SAM 可选，未配置时可继续手工修选。金属预览按底色、像素步长及亮带位置、角度、宽度（源像素）、强度绘制同平面反光。切换到基准、选区、效果分别检查范围和画面。
+
+「保存本地金属候选」走现有 process-image 候选与采用流程，精确蒙版、参考框和反光参数随候选配方固定。选区外 RGBA 和 Alpha 通过原有校验。「用选区和反光图准备 AI 草稿」把已确认范围和干净的反光预览带回 AI 编辑，保留已有描述与参考，沿用该入口的引用数量、大小和源图尺寸限制。显式生成时才发送，反光参考对图片模型是视觉引导。确认效果后单独采用；场景实例仍只更新所选实例。
+
+本地操作名为 `metal-panel`。在原图坐标中传入 `frame: {x,y,width,height}`（涵盖整个最终 region），`color` 为 #RRGGBB，`position` 为 0–100%，`angle` 为 −90–90 度（0 度对应垂直亮带），`bandWidth` 为 1–2048 源像素，`strength` 为 0–100%，`cellSize` 为 1–16 源像素。显式选择该操作，设置 `constraints.preserveAlpha=true`。可选 `workbench_suggest_panel_region` / `image-panel-suggest` 接受精确目标与源 guard、editId、expectedEditRevision、baseCandidateVersion、regionRef。splitRows（最多 15 行）及 points（最多 32 个 {x,y,include}）相对原选区包围框；返回的 region 使用整张源图坐标。建议与原范围及可见 Alpha 取交集，调用者核对、修正后再 resolve/edit。该分析不产生候选。
+
+回归：`node tests/image-edit/metal-panel.mjs` 检查缝与木纹、精确区域合成、含偏移的预览一致性、命令重放、单独采用和未安装分割器的路径。已安装模型时可用 `node tests/image-edit/metal-panel.mjs --sam` 实测本地分割。对复杂材质的生成质量需另做素材对照。

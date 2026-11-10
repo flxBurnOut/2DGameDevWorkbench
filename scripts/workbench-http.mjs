@@ -39,7 +39,8 @@ import { exportSceneRequest } from '../lib/workbench/scene-export.mjs';
 import { frontendHeartbeat } from '../lib/workbench/preview-follow.mjs';
 
 import {randomUUID} from 'node:crypto';
-import {selectedGameProject,selectGameProject,deliverGodotPackage,listGameExports,readGamePackageRequest} from '../lib/workbench/game-export.mjs';
+import {selectedGameProject,selectGameProject,deliverGodotPackage,listGameExports,readGameExportSummary,readGamePackageRequest} from '../lib/workbench/game-export.mjs';
+import {gameExportInputs} from '../lib/workbench/game-export-contract.mjs';
 import {browseGameProjects} from '../lib/workbench/game-project-browser.mjs';
 import {prepareGodotPackage} from '../features/godot-export/package.mjs';
 import {requestBinary, endpointUrl, bearerHeaders} from '../lib/workbench/adapters/http.mjs';
@@ -47,7 +48,10 @@ const gameExportToken=randomUUID();
 const requireGameToken=request=>{if(request.headers['x-forge-game-token']!==gameExportToken)throw new Error('项目导出会话已失效，请关闭导出窗口后重试。');};
 
 import { readMapProject, saveMapProjectRequest } from '../lib/workbench/map-projects.mjs';
-import { documentRequest } from '../lib/workbench/editor-documents.mjs';
+import { documentRequest, readDocumentMedia, uploadDocumentMedia } from '../lib/workbench/editor-documents.mjs';
+import { MAX_DOCUMENT_MEDIA_BYTES } from '../lib/workbench/document-media.mjs';
+import { inspectAssetPackage, commitAssetPackages, readAssetPackageCommit, readAssetPackagePreview } from '../lib/workbench/asset-packages.mjs';
+import { ASSET_PACKAGE_LIMITS } from '../lib/workbench/asset-package-contract.mjs';
 
 const host = process.env.WORKBENCH_RUNTIME_HOST || '127.0.0.1';
 const port = readPort(process.env.WORKBENCH_RUNTIME_PORT, 8790);
@@ -65,6 +69,27 @@ const server = http.createServer(async (request, response) => {
         version: 1,
         service: '2d-game-workbench-runtime',
       });
+      return;
+    }
+    if (url.pathname.startsWith('/v1/document-media/')) {
+      try {
+        const manifest = await loadManifest(), key = url.pathname.slice('/v1/document-media/'.length);
+        if (request.method === 'PUT') {
+          const chunks = []; let total = 0;
+          for await (const chunk of request) {
+            total += chunk.length;
+            if (total > MAX_DOCUMENT_MEDIA_BYTES) throw Object.assign(new Error('媒体超过 256 MB。'), { status: 413 });
+            chunks.push(chunk);
+          }
+          const mime = (request.headers['content-type'] || '').split(';')[0];
+          sendJson(response, 200, { media: await uploadDocumentMedia(repositoryRoot, manifest, key, mime, Buffer.concat(chunks)) });
+        } else if (['GET', 'HEAD'].includes(request.method)) {
+          const result = await readDocumentMedia(repositoryRoot, manifest, key, { metadataOnly: request.method === 'HEAD' });
+          response.writeHead(200, { 'content-type': result.metadata.mime, 'content-length': String(result.metadata.bytes),
+            'cache-control': 'private, max-age=31536000, immutable', etag: `"${result.metadata.sha256}"`, 'x-content-type-options': 'nosniff' });
+          response.end(result.bytes);
+        } else sendJson(response, 405, { error: 'Unsupported media method.' });
+      } catch (error) { sendJson(response, error.status || 400, documentFailure(error)); }
       return;
     }
     if (url.pathname === '/v1/documents' || url.pathname.startsWith('/v1/documents/')) {
@@ -86,7 +111,7 @@ const server = http.createServer(async (request, response) => {
           }
         }
         if (!operation) { sendJson(response, 405, { error: 'Unsupported document route or method.' }); return; }
-        sendJson(response, 200, await documentRequest(repositoryRoot, manifest, operation, input));
+        sendJson(response, 200, await documentRequest(repositoryRoot, manifest, operation, input, { media: url.searchParams.get('media') === 'references' ? 'references' : 'embedded' }));
       } catch (error) { sendJson(response, error.status || 400, documentFailure(error)); }
       return;
     }
@@ -103,6 +128,20 @@ const server = http.createServer(async (request, response) => {
         const manifest=await loadManifest();
         const action=url.pathname.slice('/v1/game-export/'.length);
         if(request.method==='GET' && action==='settings') {sendJson(response,200,{token:gameExportToken,project:await selectedGameProject(repositoryRoot,manifest),...(await listGameExports(repositoryRoot,manifest,{pendingOnly:false,limit:10}))});return;}
+        if(request.method==='GET' && action==='history') {
+          const query = Object.fromEntries(url.searchParams);
+          if(query.pendingOnly !== undefined && !['true','false'].includes(query.pendingOnly)) throw new Error('无效的交付记录筛选。');
+          const input = gameExportInputs['game-exports'].parse({ ...query,
+            pendingOnly: query.pendingOnly === 'true',
+            ...(query.offset !== undefined ? { offset: Number(query.offset) } : {}),
+            ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
+          });
+          sendJson(response,200,await listGameExports(repositoryRoot,manifest,input));return;
+        }
+        if(request.method==='GET' && action==='record') {
+          const input = gameExportInputs['game-export'].parse(Object.fromEntries(url.searchParams));
+          sendJson(response,200,await readGameExportSummary(repositoryRoot,manifest,input));return;
+        }
         if(request.method!=='POST')throw new Error('Unsupported method.');
         requireGameToken(request);
         if(action==='browse') {sendJson(response,200,await browseGameProjects(repositoryRoot,await readJsonBody(request)));return;}
@@ -131,7 +170,36 @@ const server = http.createServer(async (request, response) => {
           response.writeHead(200,{'content-type':'application/zip','cache-control':'no-store','content-length':prepared.bytes.length});response.end(prepared.bytes);return;
         }
         throw new Error('Unknown game export action.');
-      } catch(error) {sendJson(response,400,{error:error.message});}
+      } catch(error) {sendJson(response,error.status || (error.code==='ENOENT' ? 404 : 400),{error:error.message});}
+      return;
+    }
+    if (url.pathname.startsWith('/v1/assets/packages/')) {
+      try {
+        const manifest = await loadManifest();
+        if (request.method === 'POST' && url.pathname === '/v1/assets/packages/inspect') {
+          const length = Number(request.headers['content-length']);
+          if (Number.isFinite(length) && length > ASSET_PACKAGE_LIMITS.uploadBytes) throw Object.assign(new Error('素材包超过 768 MiB 上传上限。'), { status: 413 });
+          const chunks = []; let total = 0;
+          for await (const chunk of request) {
+            total += chunk.length;
+            if (total > ASSET_PACKAGE_LIMITS.uploadBytes) throw Object.assign(new Error('素材包超过 768 MiB 上传上限。'), { status: 413 });
+            chunks.push(chunk);
+          }
+          const filename = decodeURIComponent(String(request.headers['x-forge-filename'] || 'forge-assets.zip'));
+          const bytes = Buffer.concat(chunks);
+          chunks.length = 0;
+          sendJson(response, 200, await inspectAssetPackage(repositoryRoot, manifest, { bytes, filename }));
+        } else if (request.method === 'POST' && url.pathname === '/v1/assets/packages/commit') {
+          sendJson(response, 200, await commitAssetPackages(repositoryRoot, manifest, await readJsonBody(request, 1024 * 1024)));
+        } else if (request.method === 'GET' && url.pathname === '/v1/assets/packages/commit') {
+          const commit = await readAssetPackageCommit(repositoryRoot, manifest, url.searchParams.get('commandId'));
+          sendJson(response, commit ? 200 : 404, commit?.result || { error: '没有找到此导入命令。' });
+        } else if (request.method === 'GET' && url.pathname === '/v1/assets/packages/preview') {
+          const preview = await readAssetPackagePreview(repositoryRoot, manifest, { inspectionId: url.searchParams.get('inspectionId'), candidateId: url.searchParams.get('candidateId'), frame: Number(url.searchParams.get('frame') || 0) });
+          response.writeHead(200, { 'content-type': preview.mime, 'content-length': preview.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+          response.end(preview.bytes);
+        } else sendJson(response, 405, { error: 'Unsupported package route or method.' });
+      } catch (error) { sendJson(response, error.status || 400, { error: error.message }); }
       return;
     }
     if (request.method === 'POST' && url.pathname === '/v1/assets/import') {

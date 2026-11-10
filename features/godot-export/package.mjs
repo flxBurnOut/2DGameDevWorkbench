@@ -100,14 +100,17 @@ export async function prepareGodotPackage(bytes) {
       throw new Error('场景包清单无效。');
     kind = 'scene';
     entryScenes = [m.scene];
-    runtime =
-      'res://addons/workbench_interaction/runtime/v1/interaction_runtime_2d.tscn';
+    // Earlier scene manifests did not declare the runtime. Split scenery can
+    // be delivered on its own; ordinary map-only exports include the runtime.
+    const legacyRuntime = 'res://addons/workbench_interaction/runtime/v1/interaction_runtime_2d.tscn';
+    runtime = Object.hasOwn(m, 'runtime') ? m.runtime
+      : (m.mapSplit && m.instances?.length === 0 && !files.has(legacyRuntime.slice(6)) ? null : legacyRuntime);
     details = {
       sceneId: m.sceneId,
       instances: m.instances,
       actorSlot: 'ActorSlot',
       actorZIndex: m.actorZIndex,
-      runtimeIncludedInScene: true,
+      runtimeIncludedInScene: Boolean(runtime),
     };
   } else if (objectManifest) {
     const m = json(objectManifest);

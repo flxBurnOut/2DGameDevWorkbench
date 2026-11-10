@@ -111,7 +111,7 @@ Key 保存于当前数据目录的 `config/credentials.json`，Windows 使用当
 
 ## 本地启动
 
-环境要求：Node.js 22.13+、Python 3.11+；CI 使用 Python 3.12。
+环境要求：Node.js 22.13+、Python 3.11+。
 
 首次使用安装 Python 依赖：
 

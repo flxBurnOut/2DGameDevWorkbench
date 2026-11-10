@@ -1,4 +1,6 @@
 // Thin, DOM-free adapter over the independently distributed SpritePipeline core.
+import { MAX_PALETTE_PAIRS } from './edit-intent.mjs';
+import { metalPanelOperationSchema, paintMetalPanel } from './metal-panel.mjs';
 import {
   diffRgbaSummary,
   floodFillRgba,
@@ -14,7 +16,7 @@ export {
 } from '../../Tools/SpritePipeline/sprite_pipeline/static/pixel_editor_core.js';
 
 export const LOCAL_EDIT_LIMITS = Object.freeze({ maxEdge: 3840, maxPixels: 8_294_400, maxPolygonPoints: 1024, maxMaskRuns: 65_536, sharedChangeListPixels: 65_536, maxPatchBytes: 512 * 1024 });
-const operations = new Set(['clean-alpha', 'replace-color', 'fill', 'erase', 'translate', 'restore-region', 'pixel-patch']);
+const operations = new Set(['metal-panel', 'palette-map', 'clean-alpha', 'replace-color', 'fill', 'erase', 'translate', 'restore-region', 'pixel-patch']);
 const fail = message => { throw Object.assign(new Error(message), { code: 'INVALID_IMAGE_EDIT' }); };
 
 function dimensions(pixels, width, height) {
@@ -41,7 +43,7 @@ function rectangle(value, width, height) {
   if (value.x + value.width > width || value.y + value.height > height) fail('矩形超出原图范围；不会自动裁切。');
   return normalizeSelection(value, { x: value.x + value.width - 1, y: value.y + value.height - 1 }, width, height);
 }
-function maskSummary(mask, width, height) {
+export function maskSummary(mask, width, height) {
   if (!(mask instanceof Uint8Array) || mask.length !== width * height) fail('选区须为尺寸匹配的Uint8Array，1可改、0保护。');
   let count = 0, left = width, top = height, right = -1, bottom = -1;
   for (let index = 0; index < mask.length; index++) {
@@ -170,10 +172,35 @@ export function applyLocalOperation({ pixels, width, height, mask, operation, re
   const output = new Uint8ClampedArray(pixels);
   const effectiveMask = new Uint8Array(mask);
   const type = operation.type;
-  if (type === 'clean-alpha') {
+  if (type === 'metal-panel') {
+    const parsed = metalPanelOperationSchema.safeParse(operation);
+    if (!parsed.success) fail('金属板反光参数无效。');
+    const frame = rectangle(operation.frame, width, height), selected = selection.bounds;
+    if (selected.x < frame.x || selected.y < frame.y || selected.x + selected.width > frame.x + frame.width || selected.y + selected.height > frame.y + frame.height)
+      fail('板面选区超出反光参考框。');
+    paintMetalPanel(output, width, mask, operation);
+  } else if (type === 'clean-alpha') {
     fields(operation, ['type', 'threshold']);
     const threshold = integer(operation.threshold ?? 1, 0, 16, 'threshold');
     for (let index = 0; index < count; index++) if (mask[index] && pixels[index * 4 + 3] > 0 && pixels[index * 4 + 3] <= threshold) output.fill(0, index * 4, index * 4 + 4);
+  } else if (type === 'palette-map') {
+    fields(operation, ['type', 'pairs']);
+    if (!Array.isArray(operation.pairs) || !operation.pairs.length || operation.pairs.length > MAX_PALETTE_PAIRS)
+      fail('调色板需要 1–64 对颜色。');
+    const replacements = new Map();
+    for (const pair of operation.pairs) {
+      fields(pair, ['from', 'to']);
+      const [r, g, b] = color(pair.from);
+      const key = (r << 16) | (g << 8) | b;
+      if (replacements.has(key)) fail('调色板原色重复。');
+      replacements.set(key, color(pair.to));
+    }
+    for (let index = 0; index < count; index++) {
+      if (!mask[index]) continue;
+      const offset = index * 4;
+      const rgb = replacements.get((pixels[offset] << 16) | (pixels[offset + 1] << 8) | pixels[offset + 2]);
+      if (rgb) output.set(rgb, offset);
+    }
   } else if (type === 'replace-color') {
     fields(operation, ['type', 'from', 'to', 'match']);
     if (operation.match !== undefined && operation.match !== 'exact-rgb') fail('替色仅支持exact-rgb。');
@@ -246,5 +273,5 @@ export function applyLocalOperation({ pixels, width, height, mask, operation, re
   let alphaPreserved = true;
   for (let index = 0; index < count; index++) if (pixels[index * 4 + 3] !== output[index * 4 + 3]) { alphaPreserved = false; break; }
   return { pixels: output, effectiveMask, changedPixelCount: summary.count, bounds: summary.bbox, alphaPreserved,
-    supportedConstraints: { preserveDimensions: true, preserveOutsideEffectiveMask: true, preserveAlpha: type === 'replace-color' || (type === 'clean-alpha' && (operation.threshold ?? 1) === 0) || (type === 'pixel-patch' && alphaPreserved), regionScope: type === 'translate' ? 'source-and-destination' : 'selected-region' } };
+    supportedConstraints: { preserveDimensions: true, preserveOutsideEffectiveMask: true, preserveAlpha: type === 'metal-panel' || type === 'palette-map' || type === 'replace-color' || (type === 'clean-alpha' && (operation.threshold ?? 1) === 0) || (type === 'pixel-patch' && alphaPreserved), regionScope: type === 'translate' ? 'source-and-destination' : 'selected-region' } };
 }

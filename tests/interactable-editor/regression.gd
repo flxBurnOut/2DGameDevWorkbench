@@ -72,6 +72,9 @@ func run() -> void:
 	check(pickup.request_interaction() and pickup.completed, "pickup completes")
 	check(not pickup.request_interaction(), "pickup idempotent")
 	check(signals_seen.size() == 1 and not pickup.visible, "pickup emits once and hides")
+	pickup.set_link_value("set_visible", true)
+	await frames()
+	check(not pickup.get_link_state().solidEnabled and pickup.get_node("SolidBody/SolidShape").disabled, "Visibility link cannot revive a collected solid")
 	check(not other_pickup.completed, "shared resource independent instances")
 	check(sequence.request_interaction() and sequence.sequence_index == 1, "sequence advances")
 	check(sequence.request_interaction() and sequence.completed, "sequence completes")
@@ -114,7 +117,7 @@ func run() -> void:
 	player.add_to_group("interaction_actor")
 	level.add_child(player)
 	var near = object("inspect", {"activation": {"mode": "proximity_press"}})
-	var far = object("inspect", {"activation": {"mode": "proximity_press"}})
+	var far = object("inspect", {"activation": {"mode": "proximity_press", "key": "F"}})
 	near.position.x = 15
 	far.position.x = 35
 	await frames(5)
@@ -124,6 +127,18 @@ func run() -> void:
 	near.set_enabled(false)
 	await frames()
 	check(runtime.focused == far, "disabled excluded")
+	for keycode in [KEY_E, KEY_F]:
+		var key := InputEventKey.new()
+		key.physical_keycode = keycode
+		key.pressed = true
+		runtime._unhandled_input(key)
+		check(far.success_count == (1 if keycode == KEY_F else 0), "Each object responds to its own fallback key")
+	var remapped := InputEventKey.new()
+	remapped.physical_keycode = KEY_G
+	InputMap.action_add_event("workbench_interact", remapped)
+	remapped.pressed = true
+	check(runtime.accepts_activation(remapped, far.config.activation), "Game remapping takes precedence over generated fallback keys")
+	InputMap.action_erase_event("workbench_interact", remapped)
 	far.set_enabled(false)
 	var masked = object("inspect", {"activation": {"mode": "proximity_press"}, "detection": {"mask": 2}})
 	masked.collision_mask = 2

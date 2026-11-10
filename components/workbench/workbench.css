@@ -101,9 +101,93 @@
   flex-shrink: 0;
   z-index: 10;
 }
+.wb-shared-navigation {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+.wb-shared-navigation .wb-home-link,
+.motion-studio .wb-shared-navigation .wb-home-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--theme-text);
+  border-radius: 4px;
+}
+.wb-navigation-compact { flex: none; gap: 6px; }
+.wb-compact-brandmark { display: block; width: 25px; height: 25px; }
+.wb-workspace-trigger { white-space: nowrap; }
+.wb-workspace-menu {
+  width: 260px;
+  max-width: calc(100vw - 24px);
+  color: var(--theme-text);
+  background: var(--theme-panel);
+  border: 1px solid var(--theme-border);
+}
+.wb-workspace-menu [role^='menuitem'] { min-height: 34px; padding: 6px 12px; }
+.wb-workspace-menu [aria-current='page'],
+.wb-workspace-menu [data-active='true'] { color: var(--theme-accent); background: var(--theme-accent-soft); }
+.wb-nav button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--wb-muted);
+  background: transparent;
+  font: inherit;
+  white-space: nowrap;
+}
+.wb-nav button:hover,
+.wb-nav button[aria-current='page'] { background: var(--wb-soft); color: var(--wb-accent); }
+.wb-breadcrumb button,
+.motion-studio .wb-breadcrumb button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--theme-muted);
+  font: inherit;
+  white-space: nowrap;
+}
+.wb-breadcrumb button:hover { color: var(--theme-accent); }
+.wb-breadcrumb-parent { display: inline-flex; align-items: center; gap: 9px; }
+.wb-breadcrumb.wb-editor-breadcrumb { min-width: 0; max-width: min(40vw, 500px); flex-wrap: nowrap; gap: 6px; }
+.wb-editor-breadcrumb > span { flex-shrink: 0; }
+.wb-editor-breadcrumb h1 { font: inherit; font-weight: 600; min-width: 35px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--theme-text); }
+.wb-editor-breadcrumb > svg { flex-shrink: 0; }
+.wb-source-link { color: var(--theme-accent) !important; margin-left: 6px; }
+.wb-goal-group h2 { margin-bottom: 8px; font-size: 13px; color: var(--wb-muted); }
+.wb-goal-group .wb-guide-choice { padding: 14px; gap: 6px; }
+.wb-goal-group .wb-guide-choice > strong { font-size: 18px; }
+.wb-package-goal { justify-content: flex-start; text-align: left; padding: 12px; }
+.wb-package-goal > span { flex: 1; }
+.wb-package-goal strong, .wb-package-goal small { display: block; }
+.wb-package-goal small { color: var(--wb-muted); margin-top: 3px; }
+.wb-save-locations { display: grid; grid-template-columns: 90px 1fr; gap: 10px 16px; font-size: 13px; }
+.wb-save-locations dt { font-weight: 600; }
+.wb-save-locations dd { color: var(--wb-muted); }
+.wb-help-next p { margin-block: 5px; }
+@media (max-width: 1100px) {
+  .wb-shared-navigation { flex-wrap: wrap; gap: 8px; }
+  .wb-navigation-compact { flex-wrap: nowrap; gap: 4px; }
+  .wb-shared-navigation > .wb-nav { flex: 1; }
+  .wb-breadcrumb.wb-editor-breadcrumb { max-width: 30vw; }
+}
+@media (max-width: 700px) {
+  .wb-navigation-compact .wb-theme-toggle { display: none; }
+  .wb-editor-breadcrumb > .wb-breadcrumb-parent { display: none; }
+  .wb-breadcrumb.wb-editor-breadcrumb { max-width: 36vw; }
+  .wb-editor-breadcrumb .wb-source-link { font-size: 0; }
+  .wb-editor-breadcrumb .wb-source-link svg { width: 16px; height: 16px; }
+}
 .wb-brand {
   display: flex;
   align-items: center;
+  text-align: left;
   gap: 10px;
   color: var(--wb-text);
   flex-shrink: 0;
@@ -1167,3 +1251,12 @@
 .wb-import-grid article { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--theme-border); border-radius: 10px; }
 .wb-import-grid img { width: 100%; height: 112px; object-fit: contain; image-rendering: pixelated; background: var(--theme-panel); }
 .wb-import-grid strong { overflow-wrap: anywhere; }
+
+.wb-delivery-history .wb-page-heading h2 { font-size: 20px; font-weight: 600; }
+.wb-delivery-history .wb-task-detail > p { margin: 12px 0; line-height: 1.7; }
+.wb-delivery-history .wb-task-detail h4 { margin-top: 20px; font-weight: 600; }
+.wb-delivery-history details { margin-top: 18px; }
+.wb-delivery-history summary { cursor: pointer; }
+.wb-delivery-history textarea { width: 100%; margin-top: 12px; padding: 12px; border: 1px solid var(--wb-line); border-radius: 8px; background: var(--wb-panel); resize: vertical; }
+.wb-delivery-path { overflow-wrap: anywhere; }
+.wb-delivery-text { white-space: pre-wrap; overflow-wrap: anywhere; }

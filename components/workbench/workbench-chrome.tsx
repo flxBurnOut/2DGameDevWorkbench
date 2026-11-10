@@ -1,16 +1,13 @@
 'use client';
 /* oxlint-disable next/no-html-link-for-pages -- Native navigation is saved and guarded by WorkbenchProvider. */
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   ArrowRight,
   Box,
-  ChevronRight,
-  CircleHelp,
   ExternalLink,
   Layers3,
   LoaderCircle,
   Save,
-  Settings2,
 } from 'lucide-react';
 import {
   Dialog,
@@ -22,43 +19,13 @@ import {
 import { useWorkbench } from './workbench-provider';
 import { workStateLabels, type WorkItem } from '@/lib/workbench/work-items';
 import { ModuleIcon } from './module-icon';
-import manifest from '@/workbench/manifest.json';
-import { WorkbenchBrand } from './workbench-brand';
-import { ThemeToggle } from './theme-toggle';
-
-const GUIDE_KEY = 'workbench.onboarding.v1';
-type Guide = { step: number; line: string; dismissed: boolean };
-const initialGuide: Guide = { step: 0, line: 'player', dismissed: false };
-function loadGuide(): Guide {
-  try {
-    const value = JSON.parse(localStorage.getItem(GUIDE_KEY) || 'null');
-    return value &&
-      Number.isInteger(value.step) &&
-      value.step >= 0 &&
-      value.step <= 2 &&
-      typeof value.line === 'string'
-      ? value
-      : initialGuide;
-  } catch {
-    return initialGuide;
-  }
-}
-function saveGuide(guide: Guide) {
-  try {
-    localStorage.setItem(GUIDE_KEY, JSON.stringify(guide));
-  } catch {
-    /* Optional device preference. */
-  }
-}
-function reopenGuide(open: (value: boolean) => void) {
-  window.dispatchEvent(new Event('workbench:restart-guide'));
-  open(true);
-}
+import { SharedWorkbenchNavigation, WorkbenchBreadcrumb } from './shared-navigation';
+import { currentWorkbenchPage } from '@/lib/workbench/navigation';
+import { ContextHelp, Onboarding } from './workbench-help';
 
 export function WorkbenchChrome({ children }: { children: ReactNode }) {
   const wb = useWorkbench();
-  const capabilityModule = wb.modules.find((m) => wb.pathname === m.href);
-  const line = wb.lines.find((l) => l.id === capabilityModule?.productionLine);
+  const capabilityModule = currentWorkbenchPage(wb.pathname).tool;
   const session = wb.sessions.find(
     (s) => s.capabilityId === capabilityModule?.id,
   );
@@ -81,55 +48,7 @@ export function WorkbenchChrome({ children }: { children: ReactNode }) {
   return (
     <div className="wb-app">
       <header className="wb-header">
-        <a className="wb-brand" href="/" aria-label="Forge · 返回开始页">
-          <WorkbenchBrand />
-        </a>
-        <nav className="wb-nav" aria-label="工作台导航">
-          <a href="/" aria-current={wb.pathname === '/' ? 'page' : undefined}>
-            开始
-          </a>
-          {wb.lines.map((l) => (
-            <a
-              key={l.id}
-              href={l.href}
-              data-accent={l.accent}
-              aria-current={
-                line?.id === l.id || wb.pathname === l.href ? 'page' : undefined
-              }
-            >
-              {l.name}
-            </a>
-          ))}
-          <a
-            href={manifest.agentAssets.assetCatalog.route}
-            aria-current={
-              wb.pathname === manifest.agentAssets.assetCatalog.route
-                ? 'page'
-                : undefined
-            }
-          >
-            资产库
-          </a>
-        </nav>
-        <div className="wb-header-actions">
-          <ThemeToggle />
-          <button
-            className="wb-button wb-ghost"
-            aria-label="新手引导"
-            onClick={() => reopenGuide(wb.setGuideOpen)}
-          >
-            <CircleHelp size={16} />
-            <span>新手引导</span>
-          </button>
-          <a
-            className="wb-button wb-ghost"
-            href="/advanced"
-            aria-label="工作台管理"
-          >
-            <Settings2 size={17} />
-            <span>工作台管理</span>
-          </a>
-        </div>
+        <SharedWorkbenchNavigation />
       </header>
       {capabilityModule && (
         <section
@@ -138,13 +57,7 @@ export function WorkbenchChrome({ children }: { children: ReactNode }) {
           aria-label="当前作品与制作记录"
         >
           <div className="wb-context-title">
-            <div className="wb-breadcrumb">
-              <a href="/">开始</a>
-              <ChevronRight size={12} />
-              <a href={line?.href || '/'}>{line?.name}</a>
-              <ChevronRight size={12} />
-              <span>{capabilityModule.entryTitle}</span>
-            </div>
+            <WorkbenchBreadcrumb />
             {active && (
               <div className="wb-current-work">
                 <span className="wb-muted">当前任务</span>
@@ -219,6 +132,7 @@ export function WorkbenchChrome({ children }: { children: ReactNode }) {
       </div>
       <ProductionStatus />
       <Onboarding />
+      <ContextHelp />
     </div>
   );
 }
@@ -317,7 +231,7 @@ function ProductionStatus() {
             <span className="wb-muted">
               {wb.refreshing && wb.runtimeOnline === null
                 ? '正在读取制作记录…'
-                : '选择角色美术或场景，开始第一件作品。'}
+                : '从工作区选择制作工具，开始第一件作品。'}
             </span>
           )}
         </div>
@@ -337,7 +251,7 @@ function ProductionStatus() {
       <Dialog open={wb.queueOpen} onOpenChange={wb.setQueueOpen}>
         <DialogContent className="wb-dialog wb-records-dialog">
           <DialogHeader>
-            <DialogTitle>你的制作记录</DialogTitle>
+            <DialogTitle>制作记录</DialogTitle>
             <DialogDescription>
               返回具体作品，继续编辑、处理问题或查看产物。
             </DialogDescription>
@@ -389,169 +303,6 @@ function ProductionStatus() {
         </DialogContent>
       </Dialog>
     </>
-  );
-}
-
-function Onboarding() {
-  const wb = useWorkbench();
-  const { setGuideOpen } = wb;
-  const [guide, setGuide] = useState<Guide>(initialGuide);
-  useEffect(() => {
-    const stored = loadGuide();
-    // oxlint-disable-next-line react/react-compiler -- Hydrate the device-local guide preference after SSR.
-    setGuide(stored);
-    if (location.pathname === '/' && !stored.dismissed) setGuideOpen(true);
-    const restart = () => {
-      setGuide(initialGuide);
-      saveGuide(initialGuide);
-    };
-    window.addEventListener('workbench:restart-guide', restart);
-    return () => window.removeEventListener('workbench:restart-guide', restart);
-  }, [setGuideOpen]);
-  const update = (next: Guide) => {
-    setGuide(next);
-    saveGuide(next);
-  };
-  const close = () => {
-    update({ ...guide, dismissed: true });
-    wb.setGuideOpen(false);
-  };
-  const line = wb.lines.find((l) => l.id === guide.line) || wb.lines[0];
-  const modules = wb.modules.filter((m) => m.productionLine === line.id);
-  return (
-    <Dialog
-      open={wb.guideOpen}
-      onOpenChange={(open) => {
-        if (!open) close();
-        else wb.setGuideOpen(true);
-      }}
-    >
-      <DialogContent className="wb-dialog wb-guide-dialog">
-        <DialogHeader>
-          <div className="wb-eyebrow">
-            FIRST PRODUCTION / {guide.step + 1} OF 3
-          </div>
-          <DialogTitle>
-            {
-              [
-                '先做一件小作品',
-                line.id === 'player'
-                  ? '先完成一个待机动作'
-                  : '先完成一张地图或一个物件',
-                '下次，从状态栏继续',
-              ][guide.step]
-            }
-          </DialogTitle>
-          <DialogDescription>
-            {
-              [
-                '选一个方向，之后随时可以切换。',
-                '准备素材，然后使用工具原有的流程制作。',
-                '本机草稿保存成功后，就能从制作记录恢复。',
-              ][guide.step]
-            }
-          </DialogDescription>
-        </DialogHeader>
-        <div
-          className="wb-guide-progress"
-          aria-label={`新手引导第 ${guide.step + 1} 步，共 3 步`}
-        >
-          {[0, 1, 2].map((step) => (
-            <span key={step} data-done={step <= guide.step} />
-          ))}
-        </div>
-        {guide.step === 0 && (
-          <div className="wb-guide-choices">
-            {wb.lines.map((l) => (
-              <button
-                key={l.id}
-                className="wb-guide-choice"
-                data-accent={l.accent}
-                onClick={() => update({ ...guide, line: l.id, step: 1 })}
-              >
-                <span className="wb-eyebrow">{l.eyebrow}</span>
-                <strong>{l.name}</strong>
-                <span>{l.description}</span>
-                <ArrowRight size={18} />
-              </button>
-            ))}
-          </div>
-        )}
-        {guide.step === 1 && (
-          <div className="wb-guide-materials">
-            {modules.map((capabilityModule) => (
-              <div key={capabilityModule.id}>
-                <ModuleIcon icon={capabilityModule.icon} className="size-5" />
-                <div>
-                  <strong>{capabilityModule.entryTitle}</strong>
-                  <p>{capabilityModule.starterHint}</p>
-                  <span className="wb-muted">
-                    {capabilityModule.stages.join(' → ')}
-                  </span>
-                </div>
-              </div>
-            ))}
-            <p className="wb-muted">
-              需要连接图片生成服务时，工具会显示相应的配置提示。
-            </p>
-          </div>
-        )}
-        {guide.step === 2 && (
-          <div className="wb-guide-materials">
-            <div>
-              <Save size={22} />
-              <div>
-                <strong>保存成功，才会显示可恢复</strong>
-                <p>
-                  地图和交互物保存在当前浏览器。源文件仍可在原工具中导出备份。
-                </p>
-              </div>
-            </div>
-            <div>
-              <Layers3 size={22} />
-              <div>
-                <strong>制作中 → 找到作品 → 继续制作</strong>
-                <p>序列帧作业由本地服务保存；需要处理的问题会单独标出。</p>
-              </div>
-            </div>
-          </div>
-        )}
-        <div className="wb-guide-actions">
-          <button className="wb-button wb-ghost" onClick={close}>
-            跳过引导
-          </button>
-          {guide.step > 0 && (
-            <button
-              className="wb-button"
-              onClick={() => update({ ...guide, step: guide.step - 1 })}
-            >
-              上一步
-            </button>
-          )}
-          {guide.step === 1 && (
-            <button
-              className="wb-button wb-primary"
-              onClick={() => update({ ...guide, step: 2 })}
-            >
-              下一步
-              <ArrowRight size={15} />
-            </button>
-          )}
-          {guide.step === 2 && (
-            <button
-              className="wb-button wb-primary"
-              onClick={() => {
-                close();
-                void wb.navigate(line.href);
-              }}
-            >
-              开始制作{line.name}
-              <ArrowRight size={15} />
-            </button>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }
 

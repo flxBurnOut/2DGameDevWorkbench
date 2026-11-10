@@ -12,6 +12,7 @@ import json
 import re
 import time
 from pathlib import Path
+from compute import requested_device, select_device, synchronize, telemetry, inference_context
 
 MODEL_CONFIG = "configs/sam2.1/sam2.1_hiera_t.yaml"
 
@@ -30,7 +31,15 @@ def write_json(path, value):
 def environment():
     import torch
     import torchvision
+    requested = requested_device()
+    device = select_device(torch, requested)
+    # A real allocation + kernel validates access, not just a compiled-in backend.
+    value = torch.ones(4, device=device).sum().item()
+    synchronize(torch, device)
+    if value != 4: raise RuntimeError('Device probe returned an invalid result')
     return {
+        **telemetry(torch, device, requested),
+        "mps_available": torch.backends.mps.is_available(),
         "torch": torch.__version__, "torchvision": torchvision.__version__,
         "cuda_available": torch.cuda.is_available(), "cuda_runtime": torch.version.cuda,
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
@@ -76,9 +85,8 @@ def segment(job):
             raise ValueError("Each part needs observed point or box prompts")
     # Never overwrite a previous prediction. Each request has its own directory.
     output.mkdir(parents=True, exist_ok=False)
-    device = job.get("device", "cuda" if torch.cuda.is_available() else "cpu")
-    if device not in {"cuda", "cpu"}:
-        raise ValueError("Unsupported device")
+    requested = requested_device(job)
+    device = select_device(torch, requested)
     start = time.monotonic()
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -87,7 +95,7 @@ def segment(job):
     background.alpha_composite(rgba)
     alpha = np.asarray(rgba)[:, :, 3] > 0
     records = []
-    with torch.inference_mode():
+    with torch.inference_mode(), inference_context(torch, device, predictor.model):
         predictor.set_image(np.array(background.convert("RGB"), copy=True))
         for part in parts:
             masks, scores, _ = predictor.predict(
@@ -107,8 +115,7 @@ def segment(job):
                 "area": int(visible.sum()), "excluded_transparent_pixels": int((raw_mask & ~alpha).sum()),
                 "prompt": part, "state": "proposed" if visible.any() else "unknown",
             })
-    if device == "cuda":
-        torch.cuda.synchronize()
+    synchronize(torch, device)
     if sha(source) != source_sha:
         raise ValueError("Source changed during inference")
     receipt = {
@@ -116,7 +123,7 @@ def segment(job):
         "width": width, "height": height, "weights_sha256": job["weights_sha256"],
         "model_config": MODEL_CONFIG, "parts": records, "device": device,
         "seconds": time.monotonic() - start,
-        "peak_gpu_bytes": torch.cuda.max_memory_allocated() if device == "cuda" else None,
+        **telemetry(torch, device, requested),
         "paid_calls": 0, "source_unchanged": True, "semantics_origin": job["semantics_origin"],
         "limitations": ["Mask scores are not accuracy", "Occluded pixels are not reconstructed", "Masks do not authorize image editing"],
     }

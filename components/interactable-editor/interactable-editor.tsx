@@ -44,7 +44,7 @@ import {
 } from '@/lib/workbench/editor-session';
 import { listWorkItems, readWorkspaceDraft } from '@/lib/workbench/browser-store';
 import { AssetImportPicker } from '@/components/workbench/asset-import-picker';
-import { clearImportQuery, readEditorHandoff, storeEditorHandoff, type ImportBundle, type ImportPurpose } from '@/lib/workbench/asset-import';
+import { clearImportQuery, libraryAnimationTiming, readEditorHandoff, storeEditorHandoff, type ImportBundle, type ImportPurpose } from '@/lib/workbench/asset-import';
 import { normalizeProject } from '@/features/interactable-editor/contract.mjs';
 import { projectSchema } from '@/features/interactable-editor/contract.mjs';
 import { portableProject } from '@/features/scene-composer/browser';
@@ -56,6 +56,11 @@ import type { ImageTargetRef } from '@/features/image-edit/client';
 import { imageTargetEquals, readImageEdit } from '@/features/image-edit/client';
 import { clearImageEditNavigation, readImageEditNavigation, writeImageEditNavigation, type ImageEditNavigation } from '@/features/image-edit/navigation';
 import { DocumentSyncStatus } from '@/components/workbench/document-sync-status';
+import { SharedDocumentPicker } from '@/components/workbench/shared-document-picker';
+import { sharedDocumentHref } from '@/features/editor-documents/library';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import type { WorkItem } from '@/lib/workbench/work-items';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
 import { isUntouchedStarterProject } from '@/features/interactable-editor/draft-activity';
 import { Field, Numeric, Check, BehaviorPanel } from './property-panels';
@@ -80,6 +85,9 @@ async function flushPendingDrafts(pass: () => Promise<boolean>) {
 export function InteractableEditor() {
   const { navigate } = useWorkbench();
   const [library, setLibrary] = useState<{purposes: ImportPurpose[]; assetId?: string} | null>(null);
+  const [openProject, setOpenProject] = useState(false), [sharedOpen, setSharedOpen] = useState(false);
+  const [localProjects, setLocalProjects] = useState<WorkItem[]>([]), [localProjectsError, setLocalProjectsError] = useState('');
+  const [localProjectsLoading, setLocalProjectsLoading] = useState(false);
   const importStarted = useRef(false);
   const [handoffUrl, setHandoffUrl] = useState('');
   const [project, setProjectState] =
@@ -113,6 +121,16 @@ export function InteractableEditor() {
     outputs: string[];
   } | null>(null);
   const [draftWritable, setDraftWritable] = useState(true);
+  useEffect(() => {
+    if (!openProject) return;
+    let alive = true;
+    // oxlint-disable-next-line react/react-compiler -- Loading browser-only project summaries is tied to this picker session.
+    setLocalProjectsLoading(true); setLocalProjectsError(''); setLocalProjects([]);
+    void listWorkItems().then(items => {
+      if (alive) setLocalProjects([...new Map(items.filter(item => item.capabilityId === 'interactable-editor' && item.draftKey).map(item => [item.scopeId || item.draftKey, item])).values()]);
+    }).catch(cause => { if (alive) setLocalProjectsError(cause instanceof Error ? cause.message : '本机草稿列表暂时不可读。'); }).finally(() => { if (alive) setLocalProjectsLoading(false); });
+    return () => { alive = false; };
+  }, [openProject]);
   const assetInput = useRef<HTMLInputElement>(null),
     projectInput = useRef<HTMLInputElement>(null),
     framesInput = useRef<HTMLInputElement>(null);
@@ -141,7 +159,7 @@ export function InteractableEditor() {
       if (!value.draftWritable) {
         if (value.project === unreadableFallback.current) return false;
         throw new Error(
-          '原草稿暂时无法读取。请先保存当前源文件或导入项目，再离开页面。',
+          '原草稿暂时无法读取。请先保存当前源文件或打开工程，再离开页面。',
         );
       }
       if (savedProject.current === value.project) return false;
@@ -439,6 +457,7 @@ export function InteractableEditor() {
     try {
       if (bundle.purpose === 'interactable') await adoptImportedProject(await importProject(bundle.files[0].file), bundle.asset.definitionId);
       else {
+        const timing = bundle.purpose === 'animation' ? libraryAnimationTiming(bundle.asset, bundle.files.length) : null;
         const imported: Asset[] = [];
         for (const {file,sha256} of bundle.files) {
           const asset = await importAsset(file);
@@ -452,9 +471,8 @@ export function InteractableEditor() {
         if (next.projectId!==target.projectId || !object || object.visual.assetId!==target.previousAssetId) throw new Error('目标物件已变化，请重新选择导入目标。');
         for (const asset of imported) { const previous=next.assets.find(a=>a.id===asset.id); if(previous&&previous.source!==asset.source)throw new Error('素材身份冲突。'); if(!previous)next.assets.push(asset); }
         if (bundle.purpose === 'animation') {
-          if (!bundle.asset.fps || typeof bundle.asset.loop!=='boolean') throw new Error('动画缺少播放设置。');
           const name=nextClipName(object);
-          object.visual.clips.push({name,fps:bundle.asset.fps,loop:bundle.asset.loop,frames:imported.map(a=>({assetId:a.id,duration:1}))});
+          object.visual.clips.push({name,fps:timing!.fps,loop:timing!.loop,frames:imported.map((a,index)=>({assetId:a.id,duration:timing!.durations[index]}))});
           object.visual.idleAnimation=name;
         } else {object.visual.assetId=imported[0].id;object.visual.idleAnimation='';object.visual.focusAnimation='';}
         setProject(next);setMessage(bundle.purpose==='animation'?'动画帧与播放设置已导入当前物件。':'原图已用于当前物件；其他状态图片和交互行为保留。');
@@ -522,7 +540,7 @@ export function InteractableEditor() {
       <AssetImportPicker open={!!library} onClose={()=>setLibrary(null)} purposes={library?.purposes || ['interactable']} initialAsset={library?.assetId} onImport={importFromLibrary} />
       <header className="ie-toolbar">
         <Box color="var(--theme-cyan)" />
-        <strong>交互物编辑器</strong>
+        <strong>交互物编辑</strong>
         <input
           aria-label="项目名称"
           value={project.name}
@@ -531,15 +549,15 @@ export function InteractableEditor() {
         <span className="ie-note">
           {draftWritable
             ? draftStatus
-            : '原草稿保留，请保存源文件；导入项目可恢复自动保存'}
+            : '原草稿保留，请保存源文件；打开工程可恢复自动保存'}
         </span>
         <span className="ie-spacer" />
-        <button disabled={busy || !ready} onClick={()=>setLibrary({purposes:['interactable']})}>从资产库打开项目</button>
+        <button disabled={busy || !ready} onClick={()=>setLibrary({purposes:['interactable']})}>从资产库选用交互物项目</button>
         <button disabled={busy || !ready || !draftWritable} onClick={()=>void run(async()=>{await saveProjectToLibrary(latest.current.project);await persist(true);setMessage('交互物源项目已保存到资产库，可直接导入场景；尚未导出 Godot。');})}>保存到资产库</button>
         <button disabled={busy || !ready || !draftWritable} onClick={sendToScene}>用于制作场景</button>
-        <button disabled={busy} onClick={() => projectInput.current?.click()}>
+        <button disabled={busy || !ready || imageOpening || Boolean(imageEdit)} onClick={() => setOpenProject(true)}>
           <Upload size={16} />
-          导入项目
+          打开工程
         </button>
         <button
           onClick={() => {
@@ -692,11 +710,12 @@ export function InteractableEditor() {
           </div>
           <details open>
             <summary>素材 · {project.assets.length}</summary>
+            {!project.assets.length && <p className="ie-note">先导入图片 / 音效，或从资产库选用原图 / 动画，再配置物件外观与行为。</p>}
             <button disabled={busy} onClick={() => assetInput.current?.click()}>
               <Upload size={14} />
               导入图片 / 音效
             </button>
-            <button disabled={busy || !ready || !draftWritable} onClick={()=>setLibrary({purposes:['image','animation']})}>从资产库导入原图 / 动画</button>
+            <button disabled={busy || !ready || !draftWritable} onClick={()=>setLibrary({purposes:['image','animation']})}>从资产库选用原图 / 动画</button>
             <div className="ie-asset-list">
               {project.assets.map((a) => (
                 <div key={a.id}>
@@ -1016,6 +1035,25 @@ export function InteractableEditor() {
         </aside>
       </div>
     </main>
+    <Dialog open={openProject} onOpenChange={setOpenProject}>
+      <DialogContent style={{ maxHeight: '85dvh', overflowY: 'auto' }}>
+        <DialogHeader><DialogTitle>打开交互物工程</DialogTitle><DialogDescription>选择本机草稿、服务端共享工程、源文件或资产库项目。当前草稿沿用保存与冲突保护。</DialogDescription></DialogHeader>
+        <Button disabled={busy || !ready} onClick={() => { setOpenProject(false); setSharedOpen(true); }}>浏览服务端共享工程</Button>
+        <Button variant="outline" disabled={busy || !ready} onClick={() => { setOpenProject(false); projectInput.current?.click(); }}>从源文件打开</Button>
+        <Button variant="outline" disabled={busy || !ready} onClick={() => { setOpenProject(false); setLibrary({ purposes: ['interactable'] }); }}>从资产库选用</Button>
+        <h3>当前浏览器的本机草稿</h3>
+        {localProjectsLoading && <output>正在读取本机草稿…</output>}
+        {localProjectsError && <p role="alert">{localProjectsError} 仍可通过上方其他入口打开工程。</p>}
+        {!localProjectsLoading && !localProjectsError && !localProjects.length && <p>当前浏览器没有已保存的交互物草稿。</p>}
+        {localProjects.map(item => <Button variant="outline" key={item.id} disabled={busy || !ready} onClick={() => { setOpenProject(false); void navigate(item.href); }} style={{ height: 'auto', whiteSpace: 'normal', display: 'block', textAlign: 'left' }}><strong>{item.title}</strong><br /><small>{item.detail}</small></Button>)}
+      </DialogContent>
+    </Dialog>
+    <SharedDocumentPicker open={sharedOpen} kind="interactable" currentId={project.projectId} disabled={busy || !ready || imageOpening || Boolean(imageEdit)} onClose={() => setSharedOpen(false)} onOpen={async document => {
+      if (latest.current.busy || imageEditing.current || !latest.current.ready) throw new Error('交互物正在处理内容，请完成后再打开工程。');
+      const href = sharedDocumentHref(location.pathname, document.id);
+      setSharedOpen(false);
+      await navigate(href);
+    }} />
     {imageEdit && <ImageEditWorkspace
       onNavigationChange={writeImageEditNavigation}
       target={imageEdit.target}

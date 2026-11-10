@@ -1,6 +1,6 @@
 # 阶段二：资产目录与交接清单
 
-物品原图以 `kind=prop` 收录，独立于角色和已配置交互物。GPT Image 2.5 素材保留 `image:<task-id>` 身份，编辑链接为 `/tools/interactable-editor?imageTask=...`；旧 PixelLab 保留 `reference:<task-id>` 和 `?artTask=...`。下载提供真实 PNG，不会自动采用、创建行为或导出 Godot。
+物品原图以 `kind=prop` 收录，独立于角色和已配置交互物。GPT Image 2.6 素材保留 `image:<task-id>` 身份，编辑链接为 `/tools/interactable-editor?imageTask=...`；旧 PixelLab 保留 `reference:<task-id>` 和 `?artTask=...`。下载提供真实 PNG，不会自动采用、创建行为或导出 Godot。
 
 MCP 0.8.0 增加三个只读工具，前端入口为“资产库”。资产与执行任务分开：查询不会 prepare/run，不会调用生图或检查模型，也不会修改源文件。游戏架构设计和脚本编写由[第三阶段工程 Skill](game-engineering.md)承接。
 
@@ -9,11 +9,12 @@ MCP 0.8.0 增加三个只读工具，前端入口为“资产库”。资产与�
 - 扫描 manifest 配置的全部任务记录，不局限于最近 200 条；只纳入有已登记产物的记录。纯准备记录、空任务和明确的 fixture 诊断任务不算资产。
 - 从 SpritePipeline 的 `/v1/artworks` 读取原生作品库。角色 preset 和每个有画面的动画候选分别有稳定 ID；原生作品库导入的单张地图不纳入统一资产库。
 - 角色原图生成与 transfer 用明确的 sourceTaskId / characterId 关系合并展示；不同角色或独立生成不会因为像素相同被擅自合并。
-- `image-assets` 的 `generate-background`、`generate-prop` 和 `edit-image` 使用 GPT Image 2.5（模型 `gpt-image-2.5-sunburst`）。每个完成任务形成独立的 `image:<taskId>`；`kind=prop` 为透明物件，背景为 `kind=map` / `mapType=image`。编辑不覆盖源图，也不因像素相同合并独立来源。候选仍标记 `requiresAdoption=true`，资产存在不代表已被任何地图、交互物或场景采用。
+- `image-assets` 的 `generate-background`、`generate-prop` 和 `edit-image` 使用 GPT Image 2.6（模型 `gpt-image-2.6-sunburst`）。每个完成任务形成独立的 `image:<taskId>`；`kind=prop` 为透明物件，背景为 `kind=map` / `mapType=image`。编辑不覆盖源图，也不因像素相同合并独立来源。候选仍标记 `requiresAdoption=true`，资产存在不代表已被任何地图、交互物或场景采用。
 - 动画 ID 为 `animation:<jobId>:<candidateIndex>`。创建、查询、检查和导出同一候选的多条任务不会增加资产数。旧的本地产物快照与当前原生资产区分标注。
 - 交互物以 projectId + definitionId 标识。完整保存更新当前对象集合；导出部分对象不删除其余对象。重新保存后不把旧导出包声称为当前版本。
 - 地图同时保留完整可编辑工程（`map-project:<projectId>`）和已保存的原图、扩图、拼接等历史图片（原有 `map:<taskId>:<name>` ID 不变）。工程读取 `workspace.mapProjectDirectory`，同一工程保存更新同一资产并保留创建时间。`kind=map` 返回两类，`mapType=project|image` 可筛选；地图生产仍仅由人工编辑器执行。
 - 完整场景读取 manifest 的 `workspace.sceneExportDirectory`（默认 `work/scene-exports/`）。每次成功导出以 `scene:<exportId>` 单独收录，保留 sceneId、sceneRevision 和导出时间；不同导出不会相互覆盖。新记录保存名称与素材/实例数量，旧记录从已有 `scene-source.zip` 读取这些信息。场景导出不是生产任务。
+- 素材包导入使用独立的 `imported-package` 来源与 `imported:<内容身份>` 本机资产 ID，保存在 `workspace.importedAssetDirectory`。原始上传、素材文件、规范化元数据及来源身份一起持久保存；原服务离线时仍可查看详情、预览、下载、放入回收站及从编辑器选用。它不创建原生生成任务或伪造原作业。来源审核文字和已有 Godot 包只作未经本机验证的来源说明。
 
 归档只隐藏执行历史，不删除或隐藏资产。任务扫描忽略 `.archived.json` 等内部索引；原生作品库读取包含已归档作业的完整素材记录。动画快照保留原始作业创建时间（旧数据缺少时采用最早关联任务时间），交互物重新保存保留首次创建时间及来源任务。详情中的 `history` 可追溯已归档的制作/导出记录；当前下载只提供当前版本文件，不夹带旧导出包。
 
@@ -31,7 +32,7 @@ MCP 0.8.0 增加三个只读工具，前端入口为“资产库”。资产与�
 | workbench_get_asset | asset | assetId |
 | workbench_get_asset_manifest | asset-manifest | assetIds，1–100 个；projectName 可选 |
 
-kind 为 character / prop / animation / map / interactable / scene。sortBy 为 createdAt（默认）或 updatedAt；原生素材没有创建时间时保留未知，不把最近打开时间伪装成生成时间。limit 默认为 24，最高 100。返回 nextOffset 不为空时继续分页，并带回 snapshot；目录变化时从第一页重新查询，避免重复或漏项。
+kind 为 character / prop / animation / map / interactable / scene。sortBy 为 createdAt（默认）或 updatedAt；原生素材没有创建时间时保留未知，不把最近打开时间伪装成生成时间。limit 默认为 24，最高 100。返回 nextOffset 不为空时继续分页，并带回 snapshot；目录变化时从第一页重新查询，避免重复或漏项。`purposes` 可传 map / interactable / scene / image / animation 数组（GET 允许逗号分隔），`target` 可传 manifest 中的目标工具身份；服务端按用途和目标筛选后分页，完整地图工程不会出现在外观图片选择中。
 
 `query` 是名称关键词。让 Agent 将“最新一组三个候选中的第二个”映射为 candidateCount=3、candidateIndex=2、kind=animation、sortBy=createdAt、limit=1；不要把整句指令作为关键词搜索。
 
@@ -50,6 +51,16 @@ get_asset_manifest 返回 `manifest` 和 `markdown`，供 Agent 交接，不会�
 前端“下载所选素材”和详情页“下载素材（ZIP）” / “下载编辑源文件（ZIP）”调用 `POST /api/workbench/assets/download`，由共享资产目录打包真实素材，再通过 `POST /v1/assets/download` 返回 `forge-assets.zip`。每件素材有独立文件夹：角色原图提供图片，地图工程提供当前完整 `map-source.zip`，地图原图与历史素材提供实际图片及已有源包 / Godot 包，可通过详情“继续编辑地图”恢复精确工程，也可解压下载包后在地图工具导入源 ZIP 为新工程；动画提供按顺序命名的 PNG 帧、已有 GIF、精灵图和 Godot SpriteFrames ZIP；交互物提供可重新打开的源工程及已有 Godot 包；完整场景提供原字节的 `scene-source.zip` 和 `scene-godot.zip`。将场景源包导入场景组装器可继续编辑。包内附可读的尺寸、帧率和当前状态说明，不以描述清单替代素材。
 
 下载仅复制登记的当前文件字节到响应，不创建任务或重新执行审核、生成、引擎导出。未审核动画可以下载当前帧，审核状态保持原样。尚未导出的交互物只有源工程，不承诺已有引擎包。按来源及候选分别命名，避免同名覆盖；缺失文件或打包期间内容变化时明确报错。每次最多 100 件、普通素材源文件总量最多 128 MB；包含地图工程或完整场景时总量上限为 768 MB；地图源包上限为 256 MB，场景单文件上限为 512 MB。超过时分批下载。
+
+下载包根目录含 `forge-assets.json`（`format=forge-asset-archive`、`version=1`）。每项保留来源身份和版本指纹、地图子类型、来源时间与状态说明，以及每个实际素材文件的相对路径、角色、字节数、MIME 和 SHA-256。动画记录确切帧序、FPS 与循环；未知参数为 null，不从 GIF 猜测循环。原始帧和已导出精灵表分别登记播放参数；只有实际候选和精灵表哈希匹配时才登记导出表示的关联。现有源 ZIP 和 Godot 附件保持原字节。
+
+动画 `frameDurations` 与帧序逐项对应，值表示相对于 `1 / fps` 秒的时长倍数；省略时每帧为一个单位。内部选用保留时长、锚点与朝向元数据，目标编辑器不支持的播放范围须明确报错；不会把源锚点自动应用为已有物件的变换。导入资产的 `readiness.godotPackageAvailable` 仅在已识别 Godot 清单对应的登记文件可读时为 true；只有名字带 Godot 的附件不具有交付资格。
+
+包格式、检查和提交 API、解包限制与恢复语义见 [Forge 素材包导入合同](asset-packages.md)。
+
+“导入 Forge 素材包”先检查上传包，再确认所选有效项入库。入口位于资产库顶部与空白状态，也可通过 `/assets?import=package` 打开。检查时展示源图或动画预览；旧动画缺少循环设置时需明确选择，交互物项目可选择要恢复的对象。部分条目入库后，未选条目保留，可继续补齐。已知源包、旧资产库 ZIP 和已知 Godot 包按内容识别；完整清单损坏时报告问题，不改用另一格式继续。检查原件位于 `workspace.packageImportDirectory` 的隔离暂存区；提交带稳定 commandId，整批原子发布，重试复用原结果。导入选择与补充参数由检查结果决定，缺失依赖不能冒充完整工程。
+
+导入资产的“打开编辑副本”复用已有内部选用接口并校验当前 revision。交互物只恢复用户选定的物件，项目依赖媒体保留；工程身份分配为本机新 ID，场景内嵌工程同时映射，源文件与原身份保留在来源记录中。地图未完成队列沿用已有暂停恢复机制。新副本发生编辑后，原随包 Godot 附件仍属于原素材快照，不成为新副本的导出。
 
 ## 已有图片的局部调整（7A–7D）
 
@@ -103,7 +114,7 @@ Web 的 `/api/workbench/tasks` 代理 `/v1/tasks`，支持相同的本地任务�
 
 ### 地图工程卡预览
 
-地图工程预览由浏览器随保存本地合成，最长边不超过 640 像素；仅展示参与输出的卡片，按现有分层与顶层规则合成，不显示网格、选中框或区域辅助线。预览以透明 PNG 作为工程附件，与当前源包版本一同持久保存，不新增图片资产；下载仍提供完整源工程。卡片按 16:9 等比显示并使用棋盘底，附地图块数与保存时间，点击预览继续编辑，详情可放大。视图切换、选择、缩放和平移不触发重绘。预览失败、缺失或旧工程无图时显示占位，源工程保存与下载不受影响，也不复用过期预览。旧工程在下次打开并保存时补齐。
+地图工程预览由浏览器随保存本地合成，最长边不超过 640 像素；仅展示参与输出的卡片，按现有分层与顶层规则合成，不显示网格、选中框或区域辅助线。预览以透明 PNG 作为工程附件，与当前源包版本一同持久保存，不新增图片资产；下载仍提供完整源工程。卡片按 16:9 等比显示并使用棋盘底，附地图块数与保存时间，点击预览统一进入资产详情，“继续编辑”使用独立入口，详情可放大。视图切换、选择、缩放和平移不触发重绘。预览失败、缺失或旧工程无图时显示占位，源工程保存与下载不受影响，也不复用过期预览。旧工程在下次打开并保存时补齐。
 
 ## 可恢复的资产回收站
 

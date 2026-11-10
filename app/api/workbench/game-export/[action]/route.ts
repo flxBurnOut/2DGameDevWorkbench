@@ -6,7 +6,7 @@ import {
 async function proxy(request: Request) {
   const url = new URL(request.url),
     action = url.pathname.split('/').pop() || '';
-  if (!['settings', 'select', 'browse', 'pick', 'deliver', 'package'].includes(action))
+  if (!['settings', 'history', 'record', 'select', 'browse', 'pick', 'deliver', 'package'].includes(action))
     return new Response(null, { status: 404 });
   const origin = request.headers.get('origin');
   if (
@@ -28,7 +28,8 @@ async function proxy(request: Request) {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
-    const response = await fetchWorkbenchRuntime('/v1/game-export/' + action, {
+    const query = ['history', 'record'].includes(action) ? url.search : '';
+    const response = await fetchWorkbenchRuntime('/v1/game-export/' + action + query, {
       method: request.method,
       headers,
       ...(request.method === 'POST'

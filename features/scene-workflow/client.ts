@@ -101,8 +101,8 @@ export interface WorkflowPlan {
     dependsOn: string[];
     input: string;
   }>;
-  visualCriteria: Array<{ id: string; description: string }>;
-  acceptance: Array<{ id: string; description: string }>;
+  visualCriteria: Array<{ id: string; description: string; requirementIds?: string[]; region?: { x: number; y: number; width: number; height: number } | null }>;
+  acceptance: Array<{ id: string; description: string; requirementIds?: string[]; events?: unknown[]; expectEvents?: unknown[]; expectStates?: unknown[] }>;
 }
 export interface Evidence {
   id: string;

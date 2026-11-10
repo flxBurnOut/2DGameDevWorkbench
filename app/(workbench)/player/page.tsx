@@ -3,18 +3,15 @@
 import { ArrowRight } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
 import { ModuleIcon } from '@/components/workbench/module-icon';
+import { WorkbenchBreadcrumb } from '@/components/workbench/shared-navigation';
 
 export default function PlayerPage() {
-  const { modules } = useWorkbench();
+  const { modules, lines } = useWorkbench();
   return (
     <main className="wb-page wb-scene" data-accent="violet">
-      <div className="wb-breadcrumb">
-        <a href="/">开始</a>
-        <span>/</span>
-        <span>角色与动作</span>
-      </div>
+      <WorkbenchBreadcrumb />
       <div className="wb-eyebrow">CHARACTER / MOTION</div>
-      <h1>从一个角色，到一组动作。</h1>
+      <h1>{lines.find((line) => line.id === 'player')?.name}</h1>
       <p className="wb-intro">
         先用描述制作像素原图；已有参考图，也可以直接制作序列帧。
       </p>
@@ -29,7 +26,7 @@ export default function PlayerPage() {
               <h2>{module.entryTitle}</h2>
               <p>{module.starterHint}</p>
               <a className="wb-button wb-primary" href={module.href}>
-                进入{module.shortName}工具 <ArrowRight size={16} />
+                进入{module.name} <ArrowRight size={16} />
               </a>
             </article>
           ))}

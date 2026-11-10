@@ -82,7 +82,7 @@ flowchart LR
     X --> S[SpritePipeline]
     X --> T[Map Stitcher]
     X --> O[Interactable Editor]
-    X --> G[Image 2.5 assets]
+    X --> G[Image 2.6 assets]
     G --> E
     T -.可选外部生成.-> E[Gemini / OpenAI Images / Hunyuan]
     R --> Q[work/tasks]
@@ -121,9 +121,9 @@ MCP、CLI 和 Web 在允许的能力范围内汇入同一套运行时，因此�
 
 ## 5. 生产能力
 
-### Image 2.5 独立素材
+### Image 2.6 独立素材
 
-`image-assets` 负责路线 A 的背景、透明物品与已有图片编辑。它嵌入地图/交互物页面，不创建重复的导航模块。统一适配器使用 `gpt-image-2.5-sunburst`，保存原始响应、规范化 PNG、尺寸、实际 Alpha 和 SHA-256。任务先持久化为 running，再异步调用；轮询不重复提交，结果不确定时需要检查。生成与采用分开：采用重读文件并核对哈希，背景成为独立地图层，透明物品绑定现有交互物。旧 PixelLab 链路继续可用；不接入 Qwen 分层。
+`image-assets` 负责路线 A 的背景、透明物品与已有图片编辑。它嵌入地图/交互物页面，不创建重复的导航模块。统一适配器使用 `gpt-image-2.6-sunburst`，保存原始响应、规范化 PNG、尺寸、实际 Alpha 和 SHA-256。任务先持久化为 running，再异步调用；轮询不重复提交，结果不确定时需要检查。生成与采用分开：采用重读文件并核对哈希，背景成为独立地图层，透明物品绑定现有交互物。旧 PixelLab 链路继续可用；不接入 Qwen 分层。
 
 新图片请求另保存白名单用量证据 `provider-usage.json`，包括可取得的 token 计数、HTTP/请求身份、耗时和返回质量。在图片校验前持久化，输出验证失败仍能保留已返回的 usage；缺失计数与实际账单金额保持 null。记录失败不会重新请求。费率估算属于独立评测，不能由任务 completed 推断质量通过或实际收费。
 
@@ -218,11 +218,13 @@ Web 工作台提供生产台、场景台、专业工具和高级配置。它负�
 
 ## 场景与交互物共享文档
 
-场景组装在 Manifest 的 `editorModules` 注册网页入口；共享文档操作不伪装为生成任务。场景与交互物保存在 `workspace.documentDirectory`，Bridge 是写入权威，MCP/CLI 转发至同一写入入口。提交要求 `expectedRevision` 和 `commandId`，保存不可变历史与原子当前版本；恢复产生新版本。媒体嵌入并核对来源，后续修改原文件不会改变已保存快照。IndexedDB 是本地缓存与冲突恢复备份，未提交草稿不冒充服务端版本。
+场景组装在 Manifest 的 `editorModules` 注册网页入口；共享文档操作不伪装为生成任务。场景与交互物保存在 `workspace.documentDirectory`，Bridge 是写入权威，MCP/CLI 转发至同一写入入口。提交要求 `expectedRevision` 和 `commandId`，保存不可变历史与原子当前版本；恢复产生新版本。新历史将媒体保存为 SHA-256 引用，原件按内容复用并在入库时核验，媒体文件变化后重新检查完整性；旧内嵌历史保持原身份。场景浏览器使用引用与独立 IndexedDB Blob 缓存，兼容制作接口默认展开媒体，导出生成自包含包。`contentHash` 始终标识存储版本。IndexedDB 是本地缓存与冲突恢复备份，未提交草稿不冒充服务端版本。
 
 前端支持 `?document=<id>` 打开共享工程，干净状态跟随远端更新；忙碌、有本地修改、离线或版本冲突时保留草稿，显式加载远端前备份本地内容。AI 使用类型化命令编辑实例、排序、地图碰撞与交互物行为，不执行任意脚本。`document-observe` 对保存版本做确定性渲染，返回 PNG、内容哈希、世界坐标变换和辅助层；这不是未保存页面截图。`document-simulate` 运行既有交互模拟器的有限事件，不证明 Godot 物理或关卡可达。详见[场景组装](scene-composer.md)。
 
-`document-export` 导出精确场景版本，复用已有导出器，将源包/Godot 包与文档哈希一同保存。输出仍进入场景导出目录并收录资产库。独立路线 A 提供背景生成、显式采用和共享场景命令；有界自动地图创建与扩展通过场景协作调度，Qwen 分层未开放。
+`SceneEditSession` 统一协调预览、保存准备、候选、采用与撤销；预览阻止远端替换，采用作为可撤销事务，撤销/重做仍经共享 CAS。`RequestJournal` 在 IndexedDB 原子保存原始请求与回执，供共享保存、协作、分层与图片编辑恢复；多页面不覆盖未确认请求，旧请求重放不改正文。个人视图不进入共享内容版本。
+
+网页默认导出与 `document-export` 使用相同的精确共享版本。显式本机草稿导出标记为 `local-snapshot`。两者都保存来源描述、展开内容哈希与源包 SHA-256，源包和 Godot 清单携带相同身份；原有 ZIP 入口保持兼容。输出仍进入场景导出目录并收录资产库。独立路线 A 提供背景生成、显式采用和共享场景命令；有界自动地图创建与扩展通过场景协作调度，Qwen 分层未开放。
 
 `features/scene-composer/links.mjs` 定义稳定实例联动、类型与有向无环检查；场景模拟器按 FIFO 分发至幂等状态设置器。`simulation-replay.mjs` 为 document-simulate 和 document-observe 共用有界输入事件与最终状态计算，后者同时渲染回放后图片和有效碰撞。导出场景附带 `scene_link_router.gd`，连接已有交互运行时的信号；不创建第二套运行时。前端联动表单、状态反馈与服务器验证共用模型。实际 Godot 4.7 引擎验证另保存包哈希、物理查询与原生渲染证据。
 

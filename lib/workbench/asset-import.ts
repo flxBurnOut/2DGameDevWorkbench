@@ -13,6 +13,7 @@ export type LibraryAsset = {
   kind: string;
   origin?: string;
   mapType?: 'project' | 'image';
+  attachmentOnly?: boolean;
   title: string;
   revision?: string;
   statusLabel?: string;
@@ -30,16 +31,31 @@ export type ImportBundle = {
     candidateIndex?: number;
     fps?: number;
     loop?: boolean;
+    frameDurations?: number[];
+    anchor?: [number, number];
+    sourceFacing?: 'left' | 'right';
+    facing?: 'left' | 'right';
+    definitionIds?: string[];
     width?: number;
     height?: number;
   };
   files: { file: File; sha256: string }[];
 };
+/** Durations are frame weights: the actual time is duration / fps seconds. */
+export function libraryAnimationTiming(asset: ImportBundle['asset'], frameCount: number) {
+  const { fps, loop } = asset;
+  if (typeof fps !== 'number' || !Number.isFinite(fps) || fps < 0.1 || fps > 120 || typeof loop !== 'boolean')
+    throw new Error('此动画的播放设置超出交互物支持范围（0.1–120 FPS）；原素材仍保留在资产库。');
+  const durations = asset.frameDurations ?? Array<number>(frameCount).fill(1);
+  if (durations.length !== frameCount || durations.some((duration) => !Number.isFinite(duration) || duration < 0.01 || duration > 100))
+    throw new Error('动画帧时长缺失或超出交互物支持范围（每帧 0.01–100）；原素材仍保留在资产库。');
+  return { fps, loop, durations };
+}
 export function purposesFor(asset: LibraryAsset, purposes: ImportPurpose[]) {
   return manifest.assetImports.filter(
     (rule) =>
-      purposes.includes(rule.id as ImportPurpose) &&
-      rule.kinds.includes(asset.kind) && (asset.origin !== 'map-project' || rule.id === 'map'),
+      !asset.attachmentOnly && purposes.includes(rule.id as ImportPurpose) &&
+      rule.kinds.includes(asset.kind) && (asset.origin !== 'map-project' && asset.mapType !== 'project' || rule.id === 'map'),
   );
 }
 export function importLink(
@@ -57,10 +73,18 @@ export function importLink(
     )
   )
     throw new Error('不支持的导入目标。');
+  const params = new URLSearchParams({ importAsset: assetId, importPurpose: purpose });
+  if (typeof location !== 'undefined') {
+    const source = new URL(location.href);
+    if (source.pathname === '/assets') {
+      source.searchParams.set('asset', assetId); source.searchParams.delete('import');
+      params.set('returnTo', source.pathname + source.search);
+    }
+  }
   return (
     route +
     '?' +
-    new URLSearchParams({ importAsset: assetId, importPurpose: purpose })
+    params
   );
 }
 export async function loadLibraryAsset(

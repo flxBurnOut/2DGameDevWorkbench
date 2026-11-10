@@ -14,6 +14,12 @@
 
 重复移送同一原图会复用相同角色 ID，不重复创建角色；若相同 ID 的内容已发生变化则拒绝覆盖。移送验证源任务身份、登记产物、SHA-256、图片尺寸与 Alpha。它不缩放、不重画、不提交动画。
 
+原图预览下的“角色外观约束（可选）”最多 300 字符，移送时通过 `identityDescription` 单独保存；它描述需要保持的配色、装备、比例和轮廓，不改写原生图提示词，也不承载动作或站姿要求。留空维持既有默认移送行为。切换原图记录时按源任务隔离草稿，并恢复该原图最近一次成功移送的外观约束；不会沿用另一角色的文字。同源角色已经移送后仍保留不可变身份合同，不会因改填文字覆盖已有角色。
+
+角色动画准备页展开“上传自己的原图”时也可填写同名可选字段，按既有上传接口最多 1000 字符，通过 `identity_description` 进入新角色预设。选择已有角色、成功上传或打开另一个作品后，新上传字段不会携带前一角色的文字。角色名称、朝向、图片大小和透明度仍由原有接口校验；填写这些文字不会规划或绘图。
+
+已有角色图片可在资产详情选择“用作角色参考”，或在角色原图页点击“从资产库选用角色原图”。选择器先按角色类型筛选再分页；选用通过既有 `operation: import` 保存一条真实的本地导入记录，不调用图片生成服务。原图必须是最多 2,000,000 字节、64×64 或 128×128 的 PNG，且同时具有可见像素和透明背景；不会自动缩放、重新绘制或推断其他尺寸的角色预设。导入后仍需主动点击移送按钮才能进入角色动画。导入记录可以通过 `?task=` 刷新恢复，来自资产详情的 `returnTo` 继续保留。
+
 ## 架构与密钥
 
 - `components/reference-art/`：原图表单、预览、历史和移送按钮。
@@ -47,6 +53,8 @@ npm run workbench -- status <task-id> --json
 ```
 
 生成输入：`operation: generate`，必需 prompt，可选 name、facing（right/left）及 seed、size（64/128）。移送输入包含 `operation: transfer` 与 `sourceTaskId`，可选不超过 300 字符的 identityDescription 仅描述外观；名称、提示词和朝向来自已保存的源任务。移送任务产出 `result.json`，包含 characterId、sourceTaskId 和序列帧打开链接。MCP 通过通用工作台任务工具执行；使用 get_result 读取移送的 characterId，使用 read_artifact 查看原图，无需直接读取磁盘 JSON。
+
+本地导入输入为 `operation: import`，`sourceImagePath`（仓库内 PNG 路径）与 `sourceImage`（严格的 `data:image/png;base64,...`）二选一，二者使用同一尺寸、像素和透明度校验。`sourceImage` 的原始字节上限为 2,000,000；最多 2,666,690 个字符包含 data URL 前缀。`prompt` 是导入时补充的展示描述，`result.json` 将其标为 `description-added-on-import`，不冒充原始生成提示词；`model=null`、`providerCalled=false` 和实际字节哈希表明本次只保存已有图片。
 
 ## 验证
 

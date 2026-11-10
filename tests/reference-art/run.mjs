@@ -92,6 +92,27 @@ try {
   assert.equal(importedMetadata.model,null);assert.equal(importedMetadata.provenance.generatedHere,false);
   assert.equal(importedMetadata.provenance.promptOrigin,'description-added-on-import');
   assert.deepEqual(await readFile(importedPath),image);
+  const browserSource = `data:image/png;base64,${image.toString('base64')}`;
+  const browserImport = await runConnector(manifest, capability, { operation: 'import', sourceImage: browserSource, prompt: '资产库角色的导入展示描述', name: '资产库参考图', size: 128, facing: 'left' });
+  assert.equal(browserImport.task.status, 'completed');
+  assert.equal(browserImport.task.input.facing, 'left');
+  const browserMetadata = JSON.parse(await readFile(path.join(repositoryRoot, browserImport.task.outputs.find(file => file.endsWith('/result.json'))), 'utf8'));
+  assert.equal(browserMetadata.model, null);
+  assert.equal(browserMetadata.provenance.providerCalled, false);
+  assert.equal(browserMetadata.provenance.sourceType, 'browser-image');
+  assert.deepEqual(await readFile(path.join(repositoryRoot, browserImport.task.outputs.find(file => file.endsWith('/reference.png')))), image);
+  const browserPresentation = await agentRequest(manifest, 'result', { taskId: browserImport.task.id });
+  assert.equal(browserPresentation.viewPath, `/tools/reference-art?task=${browserImport.task.id}`, 'Imported references retain the existing resumable task route');
+  const invalidBrowserImages = [
+    `data:image/jpeg;base64,${image.toString('base64')}`,
+    `data:image/png;base64,${(await sharp(image).resize(64, 64).png().toBuffer()).toString('base64')}`,
+    `data:image/png;base64,${(await sharp(image).flatten({ background: '#ffffff' }).png().toBuffer()).toString('base64')}`,
+    `data:image/png;base64,${Buffer.alloc(2_000_001).toString('base64')}`,
+  ];
+  for (const sourceImage of invalidBrowserImages) await assert.rejects(runConnector(manifest, capability, { operation: 'import', sourceImage, prompt: 'invalid fixture', size: 128 }), /PNG|原图|输入|length|maxLength/);
+  assert.ok(validateInput(capability, { operation: 'import', sourceImage: browserSource, sourceImagePath: path.relative(repositoryRoot, importedPath), prompt: 'ambiguous' }).length);
+  assert.ok(validateInput(capability, { operation: 'generate', sourceImage: browserSource, prompt: 'invalid source' }).length);
+  assert.equal(received.length, callsBefore, 'Valid and invalid browser reference imports must never call a model service');
   const importedResult=await agentRequest(manifest,'result',{taskId:local.task.id});
   assert.match(importedResult.presentation.summary,/本地导入/);
   const catalog=await agentRequest(manifest,'assets',{kind:'character',query:'导入角色'});

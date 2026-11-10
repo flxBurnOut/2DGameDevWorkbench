@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from worker import MODEL_CONFIG, sha, write_json
+from compute import requested_device, select_device, synchronize, telemetry, inference_context
 
 TRACKER_VERSION = 'sam2_png_parts_v1'
 LEGACY_SEED_POLICY = 'reference_and_corrections_v1'
@@ -151,9 +152,8 @@ def track(job):
                 raise ValueError('Visible correction needs actual image prompts')
 
     output.mkdir(parents=True, exist_ok=False)
-    device = job.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
-    if device not in ('cpu', 'cuda'):
-        raise ValueError('Unsupported device')
+    requested = requested_device(job)
+    device = select_device(torch, requested)
     start = time.monotonic()
     if device == 'cuda':
         torch.cuda.reset_peak_memory_stats()
@@ -161,26 +161,30 @@ def track(job):
                                            apply_postprocessing=False)
 
     def png_loader(*, image_size, offload_video_to_cpu, compute_device, **_):
-        images=[]
-        for rgba in rgba_frames:
+        # Allocate once; stacking and out-of-place normalization can briefly
+        # triple the host memory needed by a long 1024x1024 sequence.
+        tensor=torch.empty((len(rgba_frames), 3, image_size, image_size))
+        for index, rgba in enumerate(rgba_frames):
             background=Image.new('RGBA', rgba.size, (127, 127, 127, 255))
             background.alpha_composite(rgba)
             values=np.array(background.convert('RGB').resize((image_size, image_size)), copy=True)
-            images.append(torch.from_numpy(values).permute(2, 0, 1).float()/255)
-        tensor=torch.stack(images)
+            tensor[index].copy_(torch.from_numpy(values).permute(2, 0, 1))
+        tensor.div_(255)
         if not offload_video_to_cpu: tensor=tensor.to(compute_device)
-        tensor=(tensor-torch.tensor([.485, .456, .406], device=tensor.device)[:, None, None]) / torch.tensor([.229, .224, .225], device=tensor.device)[:, None, None]
+        tensor.sub_(torch.tensor([.485, .456, .406], device=tensor.device)[:, None, None])
+        tensor.div_(torch.tensor([.229, .224, .225], device=tensor.device)[:, None, None])
         return tensor, height, width
 
     old_loader=video_module.load_video_frames
     try:
         video_module.load_video_frames=png_loader
-        state=predictor.init_state(video_path='frozen-png-memory', offload_video_to_cpu=True)
+        with torch.inference_mode(), inference_context(torch, device, predictor):
+            state=predictor.init_state(video_path='frozen-png-memory', offload_video_to_cpu=True)
     finally:
         video_module.load_video_frames=old_loader
     visibility={(c['frame_index'], c['part_id']):c for c in corrections}
     records=[]
-    with torch.inference_mode():
+    with torch.inference_mode(), inference_context(torch, device, predictor):
         propagation_start = seed_predictor(predictor, state, parts, initial_masks, corrections, seed_policy)
         arguments = {} if propagation_start is None else {'start_frame_idx': propagation_start}
         for internal_index, ids, logits in predictor.propagate_in_video(state, **arguments):
@@ -208,7 +212,7 @@ def track(job):
     records.sort(key=lambda r:r['frame_index'])
     if [r['frame_index'] for r in records] != list(range(len(frames))):
         raise ValueError('Tracker omitted or duplicated a playback frame')
-    if device == 'cuda': torch.cuda.synchronize()
+    synchronize(torch, device)
     if any(sha(s['path']) != s['sha256'] for s in sources) or any(sha(p['mask_path']) != p['mask_sha256'] for p in parts):
         raise ValueError('Frozen source changed during tracking')
     receipt={'version':1, 'operation':'track', 'tracker_version':TRACKER_VERSION,
@@ -217,7 +221,7 @@ def track(job):
         'source_frames':frames, 'reference_parts':parts, 'frames':records,
         'corrections':corrections, 'weights_sha256':job['weights_sha256'],
         'device':device, 'seconds':time.monotonic()-start,
-        'peak_gpu_bytes':torch.cuda.max_memory_allocated() if device=='cuda' else None,
+        **telemetry(torch, device, requested),
         'paid_calls':0, 'source_unchanged':True,
         'limitations':['Propagated masks are estimates, not verified semantic identities',
             'Mask centroids are not joints or grip positions',

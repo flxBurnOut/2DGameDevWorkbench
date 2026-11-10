@@ -9,7 +9,8 @@ import sharp from 'sharp';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createProject, createObject } from '../../features/interactable-editor/contract.mjs';
-import { createScene } from '../../features/scene-composer/model.mjs';
+import { createScene, replaceMap } from '../../features/scene-composer/model.mjs';
+import { parseDocumentMediaReference } from '../../features/editor-documents/media-references.mjs';
 import { applyDocumentCommands, createDocument, getDocument, listDocuments, restoreDocument, saveDocument, documentDirectory, documentRequest, validateDocument, simulateDocument } from '../../lib/workbench/editor-documents.mjs';
 
 const testRoot = path.resolve('work/test-runs', process.env.WORKBENCH_TEST_RUN);
@@ -113,7 +114,9 @@ try {
   const linkedManifest = { workspace: { ...manifest.workspace, taskDirectory: 'work/linked-storage/tasks' } };
   await reject(() => createDocument(root, linkedManifest, { kind: 'scene', commandId: 'linked-storage' }), 'UNSAFE_DOCUMENT_PATH');
   check(await readdir(outsideRoot), ['source.png']);
-  check((await readdir(documentDirectory(root, manifest))).length, 2);
+  const storedEntries = await readdir(documentDirectory(root, manifest));
+  check(storedEntries.filter(name => /^document-[a-f0-9]{40}$/.test(name)).length, 2);
+  check(storedEntries.includes('media'), true);
   const lockedScene = structuredClone(placed.document.content); lockedScene.id = 'locked-doc'; lockedScene.instances[0].locked = true;
   await createDocument(root, manifest, { kind: 'scene', commandId: 'locked-create', content: lockedScene });
   await reject(() => applyDocumentCommands(root, manifest, { documentId: 'locked-doc', expectedRevision: 1, commandId: 'locked-move', commands: [{ type: 'move-instances', ids: ['switch-instance'], x: 10 }] }), 'INVALID_COMMAND');
@@ -189,6 +192,24 @@ async function testBridge() {
     check(createHash('sha256').update(bytes).digest('hex'), artifact.sha256);
     const valid = await client.callTool({ name: 'workbench_validate_document', arguments: { documentId: scene.id, revision: 4 } });
     check(valid.structuredContent.valid, true);
+    const mediaScene = createScene('HTTP media'); mediaScene.id = `http-media-${process.env.WORKBENCH_TEST_RUN}`;
+    replaceMap(mediaScene, { name: 'Map', origin: { x: 0, y: 0 }, offset: { x: 0, y: 0 }, collisions: [], warnings: [],
+      source: 'data:application/zip;base64,UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==',
+      layers: [{ id: 'map_overall', name: 'Map', source, width: 8, height: 12, locked: false, hidden: false, included: true }] });
+    const created = await post('/v1/documents?media=references', { kind: 'scene', content: mediaScene, commandId: 'http-media-create' });
+    check(created.status, 200);
+    const reference = created.body.document.content.map.layers[0].source, media = parseDocumentMediaReference(reference);
+    assert.ok(media); assertions++;
+    const mediaUrl = `${base}/v1/document-media/${media.key}`;
+    const mediaHead = await fetch(mediaUrl, { method: 'HEAD' });
+    check(mediaHead.status, 200); check(mediaHead.headers.get('content-length'), String(png.length));
+    check(Buffer.from(await (await fetch(mediaUrl)).arrayBuffer()), png);
+    const uploaded = await fetch(mediaUrl, { method: 'PUT', headers: { 'content-type': 'image/png' }, body: png });
+    check(uploaded.status, 200); check((await uploaded.json()).media.created, false);
+    check((await fetch(`${base}/v1/document-media/${'f'.repeat(64)}.png`, { method: 'PUT', headers: { 'content-type': 'image/png' }, body: png })).status, 400);
+    const saved = await post(`/v1/documents/${mediaScene.id}/save?media=references`, { expectedRevision: 1, commandId: 'http-media-save', content: { ...created.body.document.content, name: 'HTTP compact edit' } });
+    check(saved.status, 200); check(saved.body.document.content.map.layers[0].source, reference);
+    check((await (await fetch(`${base}/v1/documents/${mediaScene.id}`)).json()).document.content.map.layers[0].source, source);
   } finally {
     await client.close(); child.kill('SIGTERM');
     await new Promise(resolve => child.exitCode !== null ? resolve() : child.once('exit', resolve));

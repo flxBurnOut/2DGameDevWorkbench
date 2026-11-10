@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -38,6 +39,17 @@ try {
   assert.deepEqual(crop.viewport.worldToImage, [1, 0, 0, 1, -0, -0]);
   assert.equal(crop.images.length, 1);
   assert.equal(crop.images[0].width, 10);
+  const large = structuredClone(document);
+  const noise = randomBytes(1900 * 1500 * 3);
+  const largeImage = await sharp(noise, { raw: { width: 1900, height: 1500, channels: 3 } }).png().toBuffer();
+  Object.assign(large.content.map.layers[0], { source: 'data:image/png;base64,' + largeImage.toString('base64'), width: 1900, height: 1500 });
+  const region = { x: 990, y: 980, width: 128, height: 128 };
+  const detail = await observeScene(root, manifest, large, { region, overlay: false });
+  const result = await sharp(Buffer.from(detail.images[0].data, 'base64')).removeAlpha().raw().toBuffer();
+  const expected = await sharp(largeImage).extract({ left: 1000, top: 1000, width: 128, height: 128 }).raw().toBuffer();
+  assert.deepEqual(result, expected, 'A high-entropy map can be inspected across two tile boundaries with original pixels');
+  const overview = await observeScene(root, manifest, large, { maxWidth: 512, maxHeight: 512, overlay: false });
+  assert.equal(overview.images[0].width, 512, 'The complete large map can be rendered at overview scale');
   await assert.rejects(observeScene(root, manifest, document, { revision: 2 }), /不匹配/);
   const bad = structuredClone(document);
   bad.content.materials[0].project.assets[0].source = 'https://example.invalid/image.png';

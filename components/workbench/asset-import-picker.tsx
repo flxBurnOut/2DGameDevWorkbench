@@ -34,12 +34,14 @@ export function AssetImportPicker({
   purposes,
   onImport,
   initialAsset = '',
+  kind,
 }: {
   open: boolean;
   onClose: () => void;
   purposes: ImportPurpose[];
   onImport: (bundle: ImportBundle) => Promise<void>;
   initialAsset?: string;
+  kind?: string;
 }) {
   const [catalog, setCatalog] = useState<Catalog | null>(null),
     [query, setQuery] = useState(''),
@@ -63,6 +65,8 @@ export function AssetImportPicker({
               ? new URLSearchParams({ assetId: initialAsset })
               : new URLSearchParams({
                   query,
+                  purposes: purposeKey,
+                  ...(kind ? { kind } : {}),
                   limit: '24',
                   offset: String(page.offset),
                   ...(page.snapshot ? { snapshot: page.snapshot } : {}),
@@ -100,7 +104,7 @@ export function AssetImportPicker({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [open, query, page, purposeKey, refresh, initialAsset]);
+  }, [open, query, page, purposeKey, refresh, initialAsset, kind]);
   const choose = async (asset: LibraryAsset, purpose: ImportPurpose) => {
     if (lock.current) return;
     lock.current = true;
@@ -128,7 +132,7 @@ export function AssetImportPicker({
     }
   };
   const visible = (catalog?.assets || []).filter(
-    (asset) => purposesFor(asset, purposes).length,
+    (asset) => (!kind || asset.kind === kind) && purposesFor(asset, purposes).length,
   );
   return (
     <Dialog
@@ -139,7 +143,7 @@ export function AssetImportPicker({
     >
       <DialogContent className="wb-import-modal">
         <DialogHeader>
-          <DialogTitle>从资产库导入</DialogTitle>
+          <DialogTitle>从资产库选用</DialogTitle>
           <DialogDescription>
             直接复用已保存素材。导入保留源文件，不会重新生成或产生费用。
           </DialogDescription>
@@ -186,7 +190,7 @@ export function AssetImportPicker({
         </div>
         {!loading && !visible.length && (
           <p>
-            本页没有适用素材，可搜索名称或翻页。外观原图需要先在交互物编辑器配置行为，才能作为交互物加入场景。
+            没有匹配的适用素材，可调整搜索条件或在资产库导入素材包。外观原图需要先在交互物编辑器配置行为，才能作为交互物加入场景。
           </p>
         )}
         <div className="wb-tool-links">

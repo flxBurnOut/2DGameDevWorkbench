@@ -1,25 +1,10 @@
 import JSZip from 'jszip';
 import { validateScene } from './model.mjs';
+import { documentMediaReferences } from '../editor-documents/media-references.mjs';
 
 export const MAX_PACKAGE_BYTES = 256 * 1024 * 1024;
-function references(scene) {
-  return [
-    ...(scene.map
-      ? [
-          { owner: scene.map, key: 'source', mime: 'application/zip' },
-          ...scene.map.layers.map((l) => ({
-            owner: l,
-            key: 'source',
-            mime: 'image/png',
-          })),
-        ]
-      : []),
-    ...scene.materials.flatMap((m) =>
-      m.project.assets.map((a) => ({ owner: a, key: 'source', mime: a.mime })),
-    ),
-  ];
-}
-export async function createScenePackage(input) {
+const references = scene => documentMediaReferences('scene', scene);
+export async function createScenePackage(input, { provenance } = {}) {
   const scene = validateScene(input);
   const zip = new JSZip();
   const paths = new Map();
@@ -42,6 +27,7 @@ export async function createScenePackage(input) {
     ref.owner[ref.key] = paths.get(data);
   }
   zip.file('scene.json', JSON.stringify(scene));
+  if (provenance) zip.file('scene-provenance.json', JSON.stringify(provenance, null, 2));
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
 }
 export async function readScenePackage(bytes) {
@@ -68,7 +54,7 @@ export async function readScenePackage(bytes) {
   const entry = zip.file('scene.json');
   if (!entry || entry._data?.uncompressedSize > 32 * 1024 * 1024)
     throw new Error('场景清单缺失或过大。');
-  const scene = validateScene(JSON.parse(await entry.async('string')));
+  const scene = validateScene(JSON.parse(await entry.async('string')), { allowPackageReferences: true });
   const cache = new Map();
   for (const ref of references(scene)) {
     const file = ref.owner[ref.key];

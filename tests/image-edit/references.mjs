@@ -120,16 +120,25 @@ try {
   // Shared-service adoption/restoration must recognize only this session's own
   // derived materials, while preserving later geometry and behavior edits.
   const restoreFixture = await fixture('restore-reference');
-  const inspection = await request('image-inspect', { target: restoreFixture.ref });
+  const inspection = await request('image-inspect', { target: restoreFixture.ref, intent: '#64503c → #cc8800，#cc8800 → #64503c' });
+  check(inspection.plan.route, 'local'); check(inspection.plan.operation.type, 'palette-map');
   check(inspection.target.kind, 'prop'); check(inspection.target.aiEdit.supported, false);
   const region = await request('image-resolve', { ...targetGuard(inspection.target), region: { type: 'all' } });
-  const edit = await request('image-edit', { ...targetGuard(inspection.target), regionRef: region.regionRef, operation: { type: 'replace-color', from: '#64503c', to: '#cc8800' }, commandId: 'reference-edit' }); check(edit.status, 'completed');
+  const edit = await request('image-edit', { ...targetGuard(inspection.target), regionRef: region.regionRef, operation: inspection.plan.operation, commandId: 'reference-edit' }); check(edit.status, 'completed');
+  const compare = async () => (await request('image-session-get', { editId: edit.edit.editId, candidateVersion: edit.candidateVersion, comparison: {} })).edit.comparison;
+  const firstComparison = await compare();
+  check(firstComparison.baseSha256, inspection.target.sha256);
+  check(firstComparison.scaleSource, 'saved-placement');
+  check(firstComparison.width, Math.round(inspection.target.placement.width));
+  check(firstComparison.placement.flipH, inspection.target.placement.flipH);
+  assert.notEqual(firstComparison.beforePng, firstComparison.afterPng);
   const applyInput = { editId: edit.edit.editId, candidateVersion: edit.candidateVersion, ...guard(inspection.target), commandId: 'reference-apply' };
   const applied = await request('image-apply', applyInput); check(applied.adoption.sharedInstanceCount, 2);
   let currentDoc = await get(restoreFixture.document.id), revised = structuredClone(currentDoc.content);
   Object.assign(revised.instances[0], { x: 444.25, y: -123.5, scale: 2.5, flipH: false, anchor: { x: 2.5, y: 11.75 } });
   const currentObject = materialOf(revised, 'first').project.objects[0]; currentObject.visual.offset.x = 5; currentObject.visual.width = 33; currentObject.content.pages = ['Later behavior preserved']; currentObject.behavior.initialToggle = true;
   await saveDocument(root, manifest, { documentId: currentDoc.id, expectedRevision: currentDoc.revision, commandId: 'reference-later-geometry', content: revised });
+  check(await compare(), firstComparison);
   const currentInspection = await request('image-inspect', { target: restoreFixture.ref });
   check(currentInspection.target.imageBindingFingerprint, applied.target.imageBindingFingerprint); assert.notEqual(currentInspection.target.slotFingerprint, applied.target.slotFingerprint); checks++;
   const restoreInput = { editId: edit.edit.editId, candidateVersion: 'source', ...guard(currentInspection.target), commandId: 'restore-reference-source' };

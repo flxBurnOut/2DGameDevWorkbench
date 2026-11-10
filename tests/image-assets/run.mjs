@@ -62,10 +62,10 @@ try {
   };
 
   assert.equal(capability.connector.providerSource, 'map-stitcher');
-  assert.equal(getPublicMapGenerationSettings(capability.connector).providers[0].model, 'gpt-image-2.5-sunburst');
-  assert.equal(resolveMapGenerationProvider(capability.connector, 'gpt-image-2.5', 'generate-background').endpoint, 'http://127.0.0.1:9012/v1/images/generations');
+  assert.equal(getPublicMapGenerationSettings(capability.connector).providers[0].model, 'gpt-image-2.6-sunburst');
+  assert.equal(resolveMapGenerationProvider(capability.connector, 'gpt-image-2.6', 'generate-background').endpoint, 'http://127.0.0.1:9012/v1/images/generations');
   process.env.MAP_STITCHER_OPENAI_GENERATION_API_URL = 'http://127.0.0.1:9012/custom-generations';
-  assert.match(resolveMapGenerationProvider(capability.connector, 'gpt-image-2.5', 'generate-prop').endpoint, /custom-generations$/);
+  assert.match(resolveMapGenerationProvider(capability.connector, 'gpt-image-2.6', 'generate-prop').endpoint, /custom-generations$/);
   delete process.env.MAP_STITCHER_OPENAI_GENERATION_API_URL;
   assert.deepEqual(validateInput(capability, { operation: 'generate-prop', prompt: '灯笼' }), []);
   assert.deepEqual(validateInput(capability, { operation: 'edit-image', prompt: 'fixture', image: dataUrl(source), preserveAlpha: true }), []);
@@ -98,7 +98,7 @@ try {
   assert.equal(result.width, 1024);
   assert.equal(result.hasTransparency, true);
   assert.equal(result.requiresAdoption, true);
-  assert.equal(calls.at(-1).fields.model, 'gpt-image-2.5-sunburst');
+  assert.equal(calls.at(-1).fields.model, 'gpt-image-2.6-sunburst');
   assert.equal(calls.at(-1).fields.background, 'transparent');
   assert.equal(calls.at(-1).url, 'http://127.0.0.1:9012/v1/images/generations');
   assert.equal(calls.at(-1).headers.authorization, 'Bearer test-image-secret');
@@ -123,7 +123,7 @@ try {
   assert.equal(JSON.stringify(prop).includes('test-image-secret'), false);
 
   const beforeEvidenceFailure = calls.length;
-  await assert.rejects(requestOpenAIImage(resolveMapGenerationProvider(capability.connector, 'gpt-image-2.5', 'generate-background'), {
+  await assert.rejects(requestOpenAIImage(resolveMapGenerationProvider(capability.connector, 'gpt-image-2.6', 'generate-background'), {
     prompt: 'fixture evidence failure', dimensions: { size: '1024x1024' },
     onResponseMetadata: async () => { throw new Error('test-image-secret disk failure'); },
   }), error => error.submissionUnknown === true && !error.message.includes('test-image-secret'));
@@ -174,11 +174,11 @@ try {
 
   const map = findCapability(manifest, 'map-stitcher');
   const expanded = (await runConnector(manifest, map, {
-    operation: 'generate-layer', provider: 'gpt-image-2.5', image: dataUrl(source), prompt: 'extend forest',
+    operation: 'generate-layer', provider: 'gpt-image-2.6', image: dataUrl(source), prompt: 'extend forest',
     tile: { key: '1,0' }, layer: 'overall', mask_mode: 'white',
   })).task;
   assert.equal(expanded.status, 'completed', expanded.error);
-  assert.equal(calls.at(-1).fields.model, 'gpt-image-2.5-sunburst');
+  assert.equal(calls.at(-1).fields.model, 'gpt-image-2.6-sunburst');
   const maskBytes = Buffer.from(await calls.at(-1).body.get('mask').arrayBuffer());
   assert.equal((await inspectImageBytes(maskBytes)).hasFullyTransparentPixels, true);
   const composite = await sharp(await readFile(artifact(expanded, 'generated-layer.png'))).raw().toBuffer();

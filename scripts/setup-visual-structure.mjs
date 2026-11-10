@@ -18,14 +18,18 @@ const python = path.join(runtime, 'venv', pythonRelative);
 const source = path.join(runtime, 'sam2');
 const weights = path.join(runtime, 'checkpoints', 'sam2.1_hiera_tiny.pt');
 const checkOnly = process.argv.includes('--check');
-const cpu = process.argv.includes('--cpu') || process.platform === 'darwin';
+const cpu = process.argv.includes('--cpu');
 const run = (command, args, capture = false) => {
   const result = spawnSync(command, args, {
     cwd: root,
     windowsHide: true,
     stdio: capture ? 'pipe' : 'inherit',
     encoding: 'utf8',
-    env: { ...process.env, SAM2_BUILD_CUDA: '0' },
+    env: {
+      ...process.env,
+      SAM2_BUILD_CUDA: '0',
+      ...(cpu ? { FORGE_STRUCTURE_DEVICE: 'cpu' } : {}),
+    },
   });
   if (result.error || result.status !== 0)
     throw new Error(
@@ -119,6 +123,12 @@ try {
   )
     throw new Error('SAM 源码版本不符');
   run(python, ['-m', 'pip', 'check']);
+  if (!checkOnly) {
+    fs.writeFileSync(
+      path.join(runtime, 'device.json'),
+      JSON.stringify({ device: cpu ? 'cpu' : 'auto' }),
+    );
+  }
   run(python, [path.join(tool, 'worker.py'), 'doctor']);
   console.log(
     '独立结构工具检查完成；未调用外部模型，未修改 SpritePipeline 环境。',

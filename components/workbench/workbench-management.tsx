@@ -4,12 +4,14 @@ import { useEffect, useState } from 'react';
 import { useWorkbench } from './workbench-provider';
 import { ClearHistory } from './clear-history';
 import { TaskResultCard } from './task-result-card';
+import { GameDeliveryHistory } from './game-delivery-history';
 import { workStateLabels, operationLabel } from '@/lib/workbench/work-items';
 
-type Tab = 'services' | 'records' | 'data';
+type Tab = 'services' | 'records' | 'deliveries' | 'data';
 const tabs: [Tab, string][] = [
   ['services', '服务状态'],
-  ['records', '制作记录'],
+  ['records', '全部制作记录'],
+  ['deliveries', '游戏交付'],
   ['data', '本机数据'],
 ];
 const time = (value: string) =>
@@ -85,15 +87,15 @@ export function WorkbenchManagement() {
         <div>
           <div className="wb-eyebrow">WORKBENCH / MANAGEMENT</div>
           <h1>工作台管理</h1>
-          <p>检查服务、继续制作，或整理本机数据。</p>
+          <p>检查服务、继续制作、查看游戏交付，或整理本机数据。</p>
         </div>
-        <button
+        {tab !== 'deliveries' && <button
           className="wb-button"
           disabled={wb.refreshing}
           onClick={() => void wb.refresh()}
         >
           {wb.refreshing ? '刷新中…' : '刷新状态'}
-        </button>
+        </button>}
       </div>
       <div
         className="wb-management-tabs"
@@ -226,8 +228,8 @@ export function WorkbenchManagement() {
               </p>
             )}
             <div className="wb-task-layout">
-              <section aria-label="制作记录">
-                <h2>制作记录</h2>
+              <section aria-label="全部制作记录">
+                <h2>全部制作记录</h2>
                 {visible.map((entry) => (
                   <button
                     className="wb-task-button"
@@ -344,6 +346,7 @@ export function WorkbenchManagement() {
             </div>
           </>
         )}
+        {tab === 'deliveries' && <GameDeliveryHistory />}
         {tab === 'data' && <ClearHistory />}
       </section>
     </main>

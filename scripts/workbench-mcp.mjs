@@ -6,6 +6,7 @@ import * as z from 'zod/v4';
 import { assetInputs, assetTools } from '../lib/workbench/asset-contract.mjs';
 import { documentInputs, documentTools } from '../lib/workbench/document-contract.mjs';
 import { imageEditInputs, imageEditTools } from '../lib/workbench/image-edit-contract.mjs';
+import { sceneSplitInputs, sceneSplitTools } from '../lib/workbench/scene-split-contract.mjs';
 import { sceneWorkflowInputs, sceneWorkflowTools } from '../lib/workbench/scene-workflow-contract.mjs';
 import { sceneWorkflowPath } from '../lib/workbench/scene-workflow-presentation.mjs';
 import { mcpContent } from '../lib/workbench/presentation.mjs';
@@ -48,6 +49,31 @@ const server = new McpServer(
 );
 
 function success(value, name) {
+  if (value.plan?.previewPng) {
+    const {previewPng,localPreviewPng,softReferencePreviewPng,...plan}=value.plan;
+    const images=[{role:'writable-area',data:previewPng,mimeType:'image/png'}];
+    if (softReferencePreviewPng) images.push({role:plan.softReference.kind==='rgb'?'rgb-control':'diffuse-shading',data:softReferencePreviewPng,mimeType:'image/png'});
+    if (localPreviewPng) images.push({role:'clean-crop',data:localPreviewPng,mimeType:'image/png'});
+    return success({...value,plan,images},name);
+  }
+  if (value.analysis?.previews) {
+    const {previews,...analysis}=value.analysis;
+    const images=Object.entries(previews).map(([role,data])=>({role,data,mimeType:'image/png'}));
+    return success({...value,analysis,images},name);
+  }
+  if(value.check?.views?.some(view=>view.png)){
+    const views=value.check.views;
+    return success({...value,check:{...value.check,views:views.map(({png:_png,...metadata})=>metadata)},
+      images:views.map(view=>({role:view.role,data:view.png,mimeType:'image/png'}))},name);
+  }
+  if (value.part?.views?.some(view => view.png)) {
+    const { views, suggestion, ...context } = value.part;
+    const images = views.map(view => ({ role: view.role, data: view.png, mimeType: 'image/png' }));
+    const { previewPng, ...fields } = suggestion ?? {};
+    if (previewPng) images.push({ role: 'suggested-scope', data: previewPng, mimeType: 'image/png' });
+    const part = { ...context, views: views.map(({ png: _png, ...view }) => view), ...(suggestion ? { suggestion: fields } : {}) };
+    return success({ ...value, part, images }, name);
+  }
   if (Array.isArray(value.images) && value.images.some(image => image.data)) {
     const metadata = { ...value, images: value.images.map(({ data: _data, ...image }) => image) };
     return { content: [{ type: 'text', text: mcpContent(name, metadata) }, ...value.images.filter(image => image.data).map(image => ({ type: 'image', data: image.data, mimeType: image.mimeType }))], structuredContent: metadata };
@@ -112,6 +138,11 @@ function registerTool(name, options, handler) {
   server.registerTool(name, options, async (input) => {
     try {
       const sceneOperation = sceneOperations.get(name);
+      if (workbuddyPreview.enabled && name === 'workbench_prepare_map_split' && input.mode === 'vision') {
+        workbuddyPreview.configure(input.previewPolicy);
+        const blocked = await workbuddyPreview.beforeRun(await loadManifest(), `/tools/scene-composer?document=${encodeURIComponent(input.documentId)}`);
+        if (blocked) return success(blocked, name);
+      }
       if (sceneProduction.has(sceneOperation) && workbuddyPreview.enabled) {
         workbuddyPreview.configure(input.previewPolicy);
         const manifest = await loadManifest();
@@ -130,12 +161,15 @@ function registerTool(name, options, handler) {
         if (blocked) return success(blocked, name);
         following = !workbuddyPreview.disabledReason;
       }
-      if (name === 'workbench_edit_image_region' && input.operation?.type === 'ai-edit' && workbuddyPreview.enabled) {
+      if (workbuddyPreview.enabled && (name === 'workbench_request_candidate_check' || name === 'workbench_request_part_suggestion' || (name === 'workbench_edit_image_region' && input.operation?.type === 'ai-edit'))) {
         workbuddyPreview.configure(input.previewPolicy);
         const manifest = await loadManifest();
-        const target = await agentRequest(manifest, 'image-inspect', input.targetId ? { targetId: input.targetId } : { target: input.target });
+        let targetId = input.targetId;
+        if (name === 'workbench_request_part_suggestion') targetId = (await agentRequest(manifest, 'image-part-get', {partRef:input.partRef})).part.targetId;
+        if (name === 'workbench_request_candidate_check') targetId = (await agentRequest(manifest,'image-critic-get',{reviewRef:input.reviewRef})).check.targetId;
+        const target = await agentRequest(manifest, 'image-inspect', targetId ? { targetId } : { target: input.target });
         const kind = target.target.targetRef.kind;
-        const moduleId = kind === 'interactable' ? 'interactable-editor' : ['scene-layer', 'scene-instance'].includes(kind) ? 'scene-composer' : 'map-stitcher';
+        const moduleId = kind === 'interactable' ? 'interactable-editor' : ['scene-layer', 'scene-instance','scene-split-part'].includes(kind) ? 'scene-composer' : 'map-stitcher';
         const route = kind === 'image-task' ? manifest.agentAssets.assetCatalog.route : [...manifest.capabilities, ...manifest.editorModules].find(module => module.id === moduleId)?.ui?.route;
         const blocked = await workbuddyPreview.beforeRun(manifest, route || '/');
         if (blocked) return success(blocked, name);
@@ -146,13 +180,18 @@ function registerTool(name, options, handler) {
       if (sceneFollowing.has(sceneOperation) || ['workbench_list_capabilities','workbench_describe_capability','workbench_present','workbench_run_task','workbench_get_task','workbench_get_frontend_context','workbench_edit_image_region','workbench_get_image_edit'].includes(name)) {
         value = await workbuddyPreview.decorate(await loadManifest(), value, value.frontendPresentation?.viewPath || value.presentation?.actions?.[0]?.viewPath || value.presentation?.viewPath || value.viewPath || value.capability?.ui?.route || '/');
       }
-      if (value.imageBase64 || value.edit?.pixels?.imageBase64) {
+      if (value.imageBase64 || value.edit?.pixels?.imageBase64 || value.edit?.comparison) {
         const { imageBase64, ...metadata } = value;
         const images = imageBase64 ? [{ data: imageBase64, mimeType: value.imageMimeType || 'image/png' }] : [];
         if (value.edit?.pixels?.imageBase64) {
           const { imageBase64: candidateImage, ...pixels } = value.edit.pixels;
           metadata.edit = { ...value.edit, pixels };
           images.push({ data: candidateImage, mimeType: value.edit.pixels.imageMimeType || 'image/png' });
+        }
+        if (value.edit?.comparison) {
+          const { beforePng, afterPng, ...comparison } = value.edit.comparison;
+          metadata.edit = { ...metadata.edit, comparison };
+          images.push({ data: beforePng, mimeType: 'image/png' }, { data: afterPng, mimeType: 'image/png' });
         }
         const result = success(metadata, name);
         result.content.push(...images.map(image => ({ type: 'image', ...image })));
@@ -410,7 +449,12 @@ for (const [name, operation, description] of documentTools) {
   registerTool(name, { description, inputSchema: documentInputs[operation].shape, annotations: { readOnlyHint: ['documents', 'document-get', 'document-observe', 'document-validate', 'document-simulate'].includes(operation), destructiveHint: false, idempotentHint: operation !== 'document-export', openWorldHint: false } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of imageEditTools) {
-  registerTool(name, { description, inputSchema: imageEditInputs[operation].shape, annotations: { readOnlyHint: ['image-inspect', 'image-session-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: operation === 'image-edit' } }, async input => agentRequest(await loadManifest(), operation, input));
+  registerTool(name, { description, inputSchema: imageEditInputs[operation].shape, annotations: { readOnlyHint: ['image-inspect', 'image-session-get', 'image-panel-suggest', 'image-plan-get', 'image-analysis-get', 'image-part-get', 'image-critic-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: ['image-edit', 'image-part-suggest', 'image-critic-run'].includes(operation) } }, async input => agentRequest(await loadManifest(), operation, input));
+}
+for (const [name, operation, description] of sceneSplitTools) {
+  const inputSchema = { ...sceneSplitInputs[operation].shape, ...(operation === 'scene-split-prepare' ? {previewPolicy:previewPolicySchema} : {}) };
+  registerTool(name, {description,inputSchema,annotations:{readOnlyHint:['scene-split-get','scene-split-inspect'].includes(operation),destructiveHint:false,idempotentHint:true,openWorldHint:operation==='scene-split-prepare'}},
+    async ({previewPolicy: _policy,...input}) => agentRequest(await loadManifest(),operation,input));
 }
 for (const [name, operation, description] of previewTools) {
   registerTool(name, {

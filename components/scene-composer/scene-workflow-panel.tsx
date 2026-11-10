@@ -1,6 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- These are versioned, hash-verified evidence images. */
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -11,9 +11,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  listDocuments,
   type SharedDocument,
+  type SharedDocumentSummary,
 } from '@/features/editor-documents/client';
+import { readSharedDocumentLibrary } from '@/features/editor-documents/library';
+import { browserRequestJournal } from '@/features/editor-documents/browser-journal';
 import type { Scene } from '@/features/scene-composer/model.mjs';
 import {
   adoptionInput,
@@ -42,6 +44,7 @@ import type {
   WorkflowHistoryPage,
 } from '@/features/scene-workflow/client';
 import './scene-workflow.css';
+import { WorkflowAcceptanceDetails, WorkflowStepDetails } from './scene-workflow-plan-details';
 
 const defaultProfile: ModelProfile = {
   provider: 'openai',
@@ -533,7 +536,7 @@ export function SceneWorkflowPanel({
       roles: {},
     });
   const [keys, setKeys] = useState({ openai: '', tokenhub: '' }),
-    [sources, setSources] = useState<Array<SharedDocument>>([]);
+    [sources, setSources] = useState<Array<SharedDocumentSummary>>([]);
   const [works, setWorks] = useState<SceneWorkflow[]>([]),
     [work, setWork] = useState<SceneWorkflow | null>(null);
   const [historyPage, setHistoryPage] = useState<WorkflowHistoryPage | null>(null);
@@ -552,6 +555,7 @@ export function SceneWorkflowPanel({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState('');
+  const [recovering, setRecovering] = useState(true);
   const [clarification, setClarification] = useState(''),
     [acknowledged, setAcknowledged] = useState<string[]>([]),
     [reviewNote, setReviewNote] = useState('');
@@ -562,6 +566,7 @@ export function SceneWorkflowPanel({
   const selectionCallback = useRef(onSelection);
   useEffect(() => { selectionCallback.current = onSelection; }, [onSelection]);
   const storageKey = `forge-scene-workflow-pending:${document.id}`;
+  const journal = useMemo(() => browserRequestJournal('scene-workflow', document.id), [document.id]);
   const select = (next: SceneWorkflow | null) => {
     selectedId.current = next?.id || null;
     setWork((current) => (next ? newerWorkflow(current, next) : null));
@@ -607,10 +612,16 @@ export function SceneWorkflowPanel({
   };
   useEffect(() => {
     let alive = true;
+    const sourceController = new AbortController();
     const initialize = async () => {
       try {
         const saved = sessionStorage.getItem(storageKey);
-        if (saved) setPending(JSON.parse(saved) as Pending);
+        if (saved) {
+          await journal.begin(JSON.parse(saved) as Pending);
+          sessionStorage.removeItem(storageKey);
+        }
+        const original = await journal.pending();
+        if (alive) setPending(original?.request ?? null);
         const [models, history, requested] = await Promise.allSettled([
           workflowRequest<ModelSettings>('settings'),
           workflowRequest<WorkflowHistoryPage>('list', {
@@ -640,26 +651,18 @@ export function SceneWorkflowPanel({
             setWork(requested.value.work);
           } else if (requested.status === 'rejected') setError(message(requested.reason));
         }
-        const rows: Array<SharedDocument> = [];
-        let offset: number | undefined = 0;
-        do {
-          const result: {
-            documents: Array<SharedDocument>;
-            nextOffset?: number;
-          } = await listDocuments('interactable', offset);
-          rows.push(...result.documents);
-          offset = result.nextOffset;
-        } while (offset !== undefined && offset !== null);
-        if (alive) setSources(rows);
+        const result = await readSharedDocumentLibrary('interactable', sourceController.signal);
+        if (alive) setSources(result.documents);
       } catch (cause) {
         if (alive) setError(message(cause));
-      }
+      } finally { if (alive) setRecovering(false); }
     };
     void initialize();
     return () => {
       alive = false;
+      sourceController.abort();
     };
-  }, [document.id, storageKey, initialWorkId]);
+  }, [document.id, storageKey, initialWorkId, journal]);
   const pollingId = work?.id,
     pollingRunning = work?.running;
   useEffect(() => {
@@ -690,44 +693,49 @@ export function SceneWorkflowPanel({
       clearTimeout(timer);
     };
   }, [pollingId, pollingRunning]);
-  const remember = (value: Pending | null) => {
-    if (value) sessionStorage.setItem(storageKey, JSON.stringify(value));
-    else sessionStorage.removeItem(storageKey);
-    setPending(value);
-  };
   const run = async (attempt: Pending) => {
-    if (mutation.current) return;
+    if (mutation.current || recovering) return;
     mutation.current = true;
     setBusy(true);
     setError('');
     setNotice('');
+    let awaitingResponse = false;
     try {
       if (attempt.operation === 'adopt') await beforeAdopt();
-      remember(attempt);
+      const entry = await journal.begin(attempt);
+      attempt = entry.request;
+      setPending(attempt);
+      awaitingResponse = true;
       const result = await workflowRequest<WorkflowResult>(
         attempt.operation,
         attempt.input,
       );
+      awaitingResponse = false;
       validateMutationResult(
         result,
         attempt.operation,
         attempt.input,
         document.id,
       );
+      await journal.respond(attempt, result);
       select(result.work);
       if (attempt.operation === 'adopt') {
         await onAdopt(result.adoption!);
         setNotice('候选已采用，场景编辑器已更新。');
       }
-      remember(null);
+      await journal.complete(attempt);
+      setPending(null);
       await refresh();
     } catch (cause) {
       if (
-        cause instanceof WorkflowClientError &&
+        awaitingResponse && cause instanceof WorkflowClientError &&
         cause.status >= 400 &&
-        cause.status < 500
-      )
-        remember(null);
+        cause.status < 500 && cause.status !== 408
+      ) {
+        try { await journal.complete(attempt, 'rejected'); }
+        catch (storageError) { setError(message(storageError)); return; }
+        setPending(null);
+      }
       setError(message(cause));
     } finally {
       mutation.current = false;
@@ -753,7 +761,7 @@ export function SceneWorkflowPanel({
   const plan = work?.plans.at(-1),
     review = work?.reviews.at(-1);
   const canAdopt = !!work && canAdoptWorkflow(work);
-  const disabled = busy || !!pending;
+  const disabled = recovering || busy || !!pending;
   const latestEvidence = work?.evidence.find(
     (e) =>
       e.contentHash === review?.candidateHash &&
@@ -1283,6 +1291,7 @@ export function SceneWorkflowPanel({
                                     .join('、')}
                                 </span>
                               )}
+                              <WorkflowStepDetails step={item} scene={document.content} steps={plan.plan.steps} />
                             </li>
                           );
                         })}
@@ -1290,6 +1299,7 @@ export function SceneWorkflowPanel({
                     </>
                   )}
                 </details>
+                {plan && <WorkflowAcceptanceDetails plan={plan.plan} scene={document.content} />}
                 <WorkflowProductionReceipts work={work} />
                 {work.evidence.length > 0 && (
                   <section aria-label="候选画面对比">

@@ -1,4 +1,5 @@
 'use client';
+import { WorkbenchBreadcrumb } from '@/components/workbench/shared-navigation';
 
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -194,15 +195,13 @@ export function FrameRoninMapEditor({ initialOriginOpen = false }: { initialOrig
         <header className="map-project-bar">
           <div className="map-project-title">
             <EditorWorkbenchMenu />
-            <h1 title={c.sourceAsset?.name || '地图拼接'}>
-              {c.sourceAsset?.name.replace(/\.[^.]+$/, '') || '地图拼接'}
-            </h1>
+            <WorkbenchBreadcrumb compact projectName={c.sourceAsset?.name.replace(/\.[^.]+$/, '') || '未命名地图工程'} />
             <span>{c.tiles.length} 块</span>
           </div>
           <div className="map-project-actions">
             <EditorDraftControl capabilityId="map-stitcher" />
             <MapSceneButton c={c} />
-            <Button size="sm" variant="outline" disabled={c.busy || workspace.loading} onClick={()=>setLibrary({})}>从资产库导入</Button>
+            <Button size="sm" variant="outline" disabled={c.busy || workspace.loading} onClick={()=>setLibrary({})}>从资产库选用</Button>
             <Button
               className="map-project-wide-action"
               variant="outline"
@@ -220,7 +219,7 @@ export function FrameRoninMapEditor({ initialOriginOpen = false }: { initialOrig
               onClick={() => stateInput.current?.click()}
             >
               <FolderOpen />
-              打开
+              打开工程
             </Button>
             <Button
               size="sm"
@@ -656,7 +655,7 @@ export function FrameRoninMapEditor({ initialOriginOpen = false }: { initialOrig
                 Cmd + Z 重做。
               </p>
               <p>
-                “新建项目”进入空白状态，再通过“生成原图”或画布上的“导入地图图片”开始；“打开”恢复已有项目。草稿自动保存在本机，也可从“更多”下载编辑源文件。新
+                “新建项目”进入空白状态，再通过“生成原图”或画布上的“导入地图图片”开始；“打开工程”恢复已有项目。草稿自动保存在本机，也可从“更多”下载编辑源文件。新
                 Godot 包包含完整编辑源；旧包可能只能恢复合成图片。
               </p>
               <Button

@@ -17,6 +17,8 @@ const test = (name, run) => tests.push({ name, run });
 try {
   const { workbenchModules: modules, productionLines: lines } =
     await server.ssrLoadModule('/lib/workbench/modules.ts');
+  const { workspaceGroups, currentWorkbenchPage, assetReturnHref } =
+    await server.ssrLoadModule('/lib/workbench/navigation.ts');
   const { taskWorkItems, spriteWorkItem, mergeWorkItems, interactableItemId } =
     await server.ssrLoadModule('/lib/workbench/work-items.ts');
   const sessions = await server.ssrLoadModule(
@@ -30,6 +32,27 @@ try {
     '/features/interactable-editor/contract.mjs',
   );
   const { restoreTaskProject } = await server.ssrLoadModule('/features/interactable-editor/task-project.ts');
+  test('shared navigation names every tool once and resolves compatibility deep links', () => {
+    assert.deepEqual(workspaceGroups.flatMap((group) => group.tools.map((tool) => tool.id)).sort(), modules.map((tool) => tool.id).sort());
+    assert.deepEqual(new Set(modules.map((tool) => tool.name)), new Set(['角色原图', '角色动画', '地图编辑', '交互物编辑', '场景组装']));
+    for (const tool of modules) {
+      assert.equal(tool.name, tool.shortName);
+      assert.equal(tool.name, tool.entryTitle);
+      assert.equal(currentWorkbenchPage(tool.href).tool.id, tool.id);
+      assert.equal(currentWorkbenchPage(tool.href).group.id, tool.productionLine);
+    }
+    assert.equal(currentWorkbenchPage('/tools/map-stitcher-legacy').tool.id, 'map-stitcher');
+    assert.equal(currentWorkbenchPage('/player').name, '角色制作总览');
+    assert.equal(currentWorkbenchPage('/scene').name, '场景制作总览');
+  });
+  test('asset return links preserve list and detail state and reject other navigation targets', () => {
+    const source = '/assets?q=城门&kind=interactable&scope=active&offset=40&asset=example#selected';
+    assert.equal(decodeURI(assetReturnHref('?returnTo=' + encodeURIComponent(source))), source);
+    for (const target of ['https://evil.example/assets', '//evil.example/assets', '/advanced', '/assets/other', '/assets\\other', '/assets\n', 'javascript:alert(1)', '']) {
+      assert.equal(assetReturnHref('?returnTo=' + encodeURIComponent(target)), undefined, target);
+    }
+    assert.equal(assetReturnHref('?importAsset=example'), undefined);
+  });
   test('Agent project resume preserves different local drafts and reuses the imported version', async () => {
     const project = createProject();
     const local = structuredClone(project);
@@ -56,7 +79,7 @@ try {
     assert.equal(item.state, 'saved');
     assert.match(item.detail, /尚未导出/);
     assert.match(item.href, /interactable-editor\?task=saved-task/);
-    assert.equal(lines.find((line) => line.id === 'player').name, '角色美术');
+    assert.equal(lines.find((line) => line.id === 'player').name, '角色制作总览');
   });
 
   test('prop generation records open the exact image in scene art, not the character editor', () => {
@@ -65,7 +88,7 @@ try {
     assert.equal(item.title,'物品原图');
     assert.equal(item.href,'/tools/interactable-editor?artTask=prop-task');
   });
-  test('Image 2.5 work items use existing editors without duplicate navigation modules', () => {
+  test('Image 2.6 work items use existing editors without duplicate navigation modules', () => {
     assert.equal(modules.some((entry) => entry.id === 'image-assets'), false);
     for (const [operation, kind, module] of [['generate-background', 'background', 'map-stitcher'], ['generate-prop', 'prop', 'interactable-editor'], ['edit-image', 'prop', 'interactable-editor']]) {
       const [item] = taskWorkItems([{ id: 'image-result', capabilityId: 'image-assets', status: 'completed', input: { operation, kind } }], modules);

@@ -1,5 +1,7 @@
 'use client';
 import { MotionTargets } from './motion-targets';
+import { CharacterIdentityField } from './character-identity-field';
+import { uploadedIdentityLimit, uploadedReferenceIdentity } from './character-identity';
 /* oxlint-disable next/no-img-element -- Inspection uses unmodified pixel frames, not optimized display images. */
 
 import Link from 'next/link';
@@ -25,6 +27,7 @@ import {
   Upload,
   Sparkles,
 } from 'lucide-react';
+import { WorkbenchBreadcrumb } from '@/components/workbench/shared-navigation';
 import { EditorWorkbenchMenu } from '@/components/workbench/editor-chrome';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
 import {
@@ -206,6 +209,7 @@ function OpenMotionStudio({
   const [inspectionToken, setInspectionToken] = useState('');
   const [uploadName, setUploadName] = useState(''),
     [uploadFacing, setUploadFacing] = useState('right');
+  const [uploadIdentity, setUploadIdentity] = useState('');
   const [remoteId, setRemoteId] = useState('');
   const [adjustmentOpen,setAdjustmentOpen]=useState(false);
   const structureDraftSaver = useRef<(() => void) | null>(null);
@@ -517,18 +521,14 @@ function OpenMotionStudio({
     <div className="motion-studio" data-sprite-editor>
       <header className="motion-header">
         <EditorWorkbenchMenu />
-        <strong>角色动作</strong>
-        <span className="motion-divider" />
-        <span className="motion-title">
-          {work?.plan?.title || '让角色完成你描述的动作'}
-        </span>
+        <WorkbenchBreadcrumb compact projectName={work?.plan?.title || '新动作'} />
         <span className="motion-save">
           {work ? `版本 ${work.revision} · 已保存本机` : '准备阶段不创建任务'}
         </span>
         <details className="motion-popover">
           <summary>
             <History size={16} />
-            制作记录
+            最近动作
           </summary>
           <div className="motion-popover-body">
             <button onClick={() => void wb.navigate('/tools/sprite-generator')}>
@@ -563,7 +563,7 @@ function OpenMotionStudio({
           />
         </details>
       </header>
-      <nav className="motion-steps" aria-label="角色动作制作阶段">
+      <nav className="motion-steps" aria-label="角色动画制作阶段">
         {motionSteps.map((name, i) => (
           <button
             key={name}
@@ -643,7 +643,7 @@ function OpenMotionStudio({
                     <select
                       value={spec.character_id}
                       disabled={readOnly}
-                      onChange={(e) => edit({ character_id: e.target.value })}
+                      onChange={(e) => { edit({ character_id: e.target.value }); setUploadIdentity(''); }}
                     >
                       <option value="">请选择角色</option>
                       {characters.map((c) => (
@@ -679,6 +679,7 @@ function OpenMotionStudio({
                           <option value="left">向左</option>
                         </select>
                       </label>
+                      <CharacterIdentityField value={uploadIdentity} onChange={setUploadIdentity} maxLength={uploadedIdentityLimit} disabled={busy || readOnly} />
                       <label className="motion-upload">
                         <Upload size={16} />
                         选择 PNG
@@ -713,12 +714,14 @@ function OpenMotionStudio({
                               }>('open-motion/references', {
                                 display_name: uploadName,
                                 facing: uploadFacing,
+                                identity_description: uploadedReferenceIdentity(uploadIdentity),
                                 png_base64: data,
                               });
                               await refreshLists();
                               edit({
                                 character_id: value.character.character_id,
                               });
+                              setUploadIdentity('');
                             });
                             e.target.value = '';
                           }}

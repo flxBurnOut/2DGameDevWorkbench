@@ -32,6 +32,7 @@ assert.deepEqual(
 );
 const p = createProject();
 p.objects = ['inspect', 'toggle', 'pickup', 'sequence'].map(createObject);
+p.objects[2].solid.enabled = true;
 p.objects.forEach((o, i) => {
   o.definitionId = `test-${o.behavior.kind}`;
   o.displayName = `中文 "物件" ${i}\n第二行`;

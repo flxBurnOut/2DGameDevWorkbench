@@ -3,7 +3,7 @@
 ## 入口分工
 
 - 根 [AGENTS.md](../../AGENTS.md) 负责项目任务导航和少量跨模块事实。
-- 两份 `SKILL.md` 负责各自能力的选择、核心操作和相关主题路由。
+- 项目 `.agents/skills/` 下的 `SKILL.md` 负责各自能力的选择、核心操作和相关主题路由；`grill-me` 提供用户明确要求的方案追问流程。
 - [conversation-guide.md](../conversation-guide.md) 提供简短共用决策方式，并作为 MCP 默认指南。
 - 主题正文放在 `workbench/guides/`、Skill 的 `references/` 或现有 `docs/`。每项知识选一个维护位置；其他入口只说明何时读取。
 - 专家指南负责视觉判断；MCP 初始化说明负责发现入口；工具 schema 负责字段和数值范围。
@@ -20,7 +20,7 @@
 
 `workbench_get_guidance({topic})`、CLI `agent guidance --input <json-file>` 和 HTTP `POST /v1/agent/guidance` 共用 `getConversationGuidance`。省略 topic 返回简短 overview；请求主题才读取其正文。MCP-only 客户端同样能获得正文。
 
-旧 `agentAssets.skill`、`engineering.skill`、`expert` 和 `conversationGuide` 路径保留兼容。两份 Skill 的 UI 元数据描述用户任务；自动发现策略保持原设置。根 AGENTS 是共享导航，其他本地宿主指导和工作记录继续按 `.gitignore` 管理。
+旧 `agentAssets.skill`、`engineering.skill`、`expert` 和 `conversationGuide` 路径保留兼容。Skill 的 UI 元数据描述用户任务；自动发现策略保持原设置，`grill-me` 保留仅显式调用。根 AGENTS 是共享导航，其他本地宿主指导和工作记录继续按 `.gitignore` 管理。
 
 ## 验证
 

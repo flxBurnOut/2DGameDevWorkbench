@@ -1,67 +1,16 @@
 'use client';
 import { useState } from 'react';
 import {
-  ChevronDown,
-  CircleHelp,
   Layers3,
   LoaderCircle,
   Save,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { useWorkbench } from './workbench-provider';
-import { WorkbenchBrandIcon } from './workbench-brand';
-import { workbenchBrand } from '@/lib/workbench/brand';
-import { ThemeToggle } from './theme-toggle';
+import { SharedWorkbenchNavigation } from './shared-navigation';
 
 export function EditorWorkbenchMenu() {
-  const wb = useWorkbench();
-  return (
-    <><ThemeToggle compact /><DropdownMenu>
-      <DropdownMenuTrigger
-        render={<Button variant="ghost" size="sm" aria-label={`${workbenchBrand.name} · 工作台导航`} />}
-      >
-        <WorkbenchBrandIcon size={24} className="map-workbench-mark" />
-        <ChevronDown size={14} />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="map-compact-menu">
-        <DropdownMenuItem onClick={() => void wb.navigate('/')}>
-          工作台开始页
-        </DropdownMenuItem>
-        {wb.lines.map((line) => (
-          <DropdownMenuItem
-            key={line.id}
-            onClick={() => void wb.navigate(line.href)}
-          >
-            {line.name}
-          </DropdownMenuItem>
-        ))}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => wb.setQueueOpen(true)}>
-          <Layers3 />
-          制作记录
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => void wb.navigate('/advanced')}>
-          工作台管理
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => {
-            window.dispatchEvent(new Event('workbench:restart-guide'));
-            wb.setGuideOpen(true);
-          }}
-        >
-          <CircleHelp />
-          新手引导
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu></>
-  );
+  return <SharedWorkbenchNavigation compact />;
 }
 
 export function EditorDraftControl({ capabilityId }: { capabilityId: string }) {

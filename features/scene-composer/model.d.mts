@@ -1,5 +1,6 @@
 import type { InteractableProject } from '../interactable-editor/contract.mjs';
 import type { SceneLink } from './links.mjs';
+import type { MapSplit } from './map-split.mjs';
 export type Point = { x: number; y: number };
 export type Flags = { locked: boolean; hidden: boolean; included: boolean };
 export type SceneLayer = Flags & {
@@ -15,6 +16,7 @@ export type SceneMap = {
   offset: Point;
   layers: SceneLayer[];
   collisions: Point[][];
+  collisionOverride?: { sourceCollisions: Point[][] };
   source: string;
   warnings: string[];
 };
@@ -40,6 +42,7 @@ export type Scene = {
   name: string;
   revision: number;
   map: SceneMap | null;
+  mapSplit?: MapSplit;
   materials: Material[];
   instances: Instance[];
   order: string[];
@@ -57,7 +60,8 @@ export type Scene = {
   };
 };
 export function createScene(name?: string): Scene;
-export function validateScene(input: unknown): Scene;
+export const wholeMapSplitHint: string;
+export function validateScene(input: unknown, options?: { allowPackageReferences?: boolean }): Scene;
 export function materialFor(
   scene: Scene,
   instance: Instance,
@@ -66,12 +70,15 @@ export function addMaterial(
   scene: Scene,
   project: InteractableProject,
   definitionId: string,
+  materialId?: string,
 ): Material;
+export function sceneMaterialProject(project: InteractableProject, definitionId: string): InteractableProject;
 export function addInstance(
   scene: Scene,
   materialId: string,
   x: number,
   y: number,
+  instanceId?: string,
 ): Instance;
 export function reorder(
   scene: Scene,

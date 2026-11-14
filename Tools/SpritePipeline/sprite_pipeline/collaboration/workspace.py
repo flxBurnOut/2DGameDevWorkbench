@@ -330,12 +330,14 @@ class OpenMotionWorkspace:
                 except ConflictError:
                     pass  # Another process owns this planning request.
 
-    def start(self, work_id, expected_revision, plan_sha256, *, allow_unsupported_motion=False):
+    def start(self, work_id, expected_revision, plan_sha256, *, allow_unsupported_motion=False, expected_targets=None):
         from ..models import GenerationRequest, utc_now
         with self.lock(work_id):
             work = self.load(work_id)
             if work.revision != expected_revision or work.plan_sha256 != plan_sha256:
                 raise ConflictError("方案版本已改变，请查看最新方案")
+            from .targets import check_target_set, verified_target
+            check_target_set(work.end_targets, expected_targets)
             if work.job_id:
                 # Repair a crash between binding the job and enabling it. A
                 # previously started/paused job must never be re-enabled here.
@@ -357,6 +359,8 @@ class OpenMotionWorkspace:
             unsupported = prop and prop.motion_type == 'occluded_rigid_translation'
             if unsupported and not allow_unsupported_motion:
                 raise ValidationHarnessError('当前生成器不适合带遮挡的刚体平移，请确认是否仍要尝试')
+            for target in work.end_targets:
+                verified_target(self.directory(work_id) / target.filename, target.sha256)
             binding = PlanBinding(prop_structure_policy=1 if prop and work.frame_budget is not None else None,
                                   unsupported_motion_acknowledged=True if unsupported else None, work_id=work.id, revision=work.revision, plan_sha256=work.plan_sha256,
                                   reference_sha256=work.reference_sha256, spec=work.spec, plan=work.plan,
@@ -404,6 +408,8 @@ class OpenMotionWorkspace:
         if revision is not None and revision != work.revision:
             work = self.load(work_id, revision)
         result = work.model_dump(mode="json")
+        from .targets import target_set_hash
+        result["target_set_sha256"] = target_set_hash(work.end_targets)
         result["latest_revision"] = latest_revision
         job = self.store.load(work.job_id) if work.job_id else None
         result["job"] = job.model_dump(mode="json") if job else None

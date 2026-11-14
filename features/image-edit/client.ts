@@ -4,6 +4,7 @@ import { appearanceAnimation, type Interactable } from '../interactable-editor/c
 
 export type ImageTargetRef =
   | { kind: 'interactable'; documentId: string; definitionId: string; slot?: 'visual' | 'toggle-state' | 'sequence-entry'; index?: number }
+  | { kind: 'motion-frame'; workId:string; workRevision:number; candidateIndex:number; stageIndex?:number; frameIndex:number }
   | { kind: 'image-task'; taskId: string };
 export interface ImageTargetInfo {
   targetId: string; targetRef: ImageTargetRef; revision: number | string; sha256: string; rgbaSha256: string;

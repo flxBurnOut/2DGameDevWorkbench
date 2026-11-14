@@ -18,6 +18,7 @@ from .contracts import Contract, TaskSpec, digest
 from .workspace import OpenMotionWorkspace
 from .model_config import ModelRegistry, ModelConfiguration
 from .adjustments import Adjustments, AdjustmentInput
+from .local_frame_edits import LocalFrameEdit, create_local
 from .structure_contracts import StructureProposal
 from .tracking_corrections import TrackingCorrection
 
@@ -37,12 +38,17 @@ class Revise(Create, Revision):
     pass
 
 
-class Generate(Revision):
+class TargetRevision(Revision):
+    expected_targets: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+
+
+class Generate(TargetRevision):
     allow_unsupported_motion: bool = False
     plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class Review(Revision):
+    human_seconds: int | None = Field(default=None,ge=0,le=86400)
     candidate_index: int = Field(ge=1, le=8)
     candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     note: str = Field(min_length=4, max_length=2000)
@@ -54,6 +60,7 @@ class Export(Revision):
 
 
 class StageReview(Export):
+    human_seconds: int | None = Field(default=None,ge=0,le=86400)
     stage_index: int = Field(ge=0, le=3)
     token: str = Field(pattern=r'^[0-9a-f]{64}$')
     note: str = Field(min_length=4, max_length=2000)
@@ -67,7 +74,7 @@ class Recover(Export):
     provider_job_id: str | None = Field(default=None, min_length=6, max_length=200)
 
 
-class Target(Revision):
+class Target(TargetRevision):
     stage_index: int = Field(ge=0, le=3)
     png_base64: str | None = Field(default=None, max_length=2_000_000)
     note: str = Field(min_length=4, max_length=1000)
@@ -93,6 +100,7 @@ class RepairReview(Export):
 
 
 class AdjustmentDecision(Contract):
+    human_seconds: int | None = Field(default=None,ge=0,le=86400)
     token: str = Field(pattern=r'^[0-9a-f]{64}$')
     decision: Literal['accept','reject']
     note: str = Field(default='',max_length=2000)
@@ -325,7 +333,7 @@ def create_router(service):
 
     @router.post("/{work_id}/generate")
     def generate(work_id: str, body: Generate):
-        workspace.start(work_id, body.expected_revision, body.plan_sha256, allow_unsupported_motion=body.allow_unsupported_motion)
+        workspace.start(work_id, body.expected_revision, body.plan_sha256, allow_unsupported_motion=body.allow_unsupported_motion, expected_targets=body.expected_targets)
         return view(work_id)
 
     @router.post('/{work_id}/target')
@@ -334,7 +342,7 @@ def create_router(service):
         try:
             data = base64.b64decode(body.png_base64,validate=True) if body.png_base64 is not None else None
         except (ValueError,binascii.Error): raise ValidationHarnessError('目标图片编码无效') from None
-        save_target(workspace,work_id,body.expected_revision,body.stage_index,data,body.note)
+        save_target(workspace,work_id,body.expected_revision,body.stage_index,data,body.note,expected_targets=body.expected_targets)
         return view(work_id)
 
     @router.get('/{work_id}/targets/{stage}')
@@ -342,9 +350,8 @@ def create_router(service):
         work = workspace.load(work_id,revision)
         item = next((t for t in work.end_targets if t.stage == stage),None)
         if not item: raise ValidationHarnessError('尚未绑定目标姿势图片')
-        data = (workspace.directory(work_id)/item.filename).read_bytes()
-        import hashlib
-        if hashlib.sha256(data).hexdigest() != item.sha256: raise ConflictError('目标图片已改变')
+        from .targets import verified_target
+        data = verified_target(workspace.directory(work_id) / item.filename, item.sha256)
         return Response(data,media_type='image/png',headers={'Cache-Control':'no-store'})
 
     @router.post("/{work_id}/pause")
@@ -362,7 +369,7 @@ def create_router(service):
         with workspace.lock(work_id):
             work = current(work_id, body.expected_revision)
             service.approve_candidate(work.job_id, body.candidate_index, reviewer="open-motion-user",
-                acknowledge_warnings=body.acknowledge_warnings, expected_frames=body.candidate_sha256, review_note=body.note)
+                acknowledge_warnings=body.acknowledge_warnings, expected_frames=body.candidate_sha256, review_note=body.note,human_seconds=body.human_seconds)
         return view(work_id)
 
     @router.get('/{work_id}/candidates/{candidate}/stages/{stage}')
@@ -387,7 +394,7 @@ def create_router(service):
             work = current(work_id,body.expected_revision)
             Checkpoints(service).decide(work.job_id,body.candidate_index,body.stage_index,
                 token=body.token,note=body.note,decision=body.decision,acknowledge=body.acknowledge_warnings,
-                anchor_frame=body.anchor_frame,acknowledge_trim=body.acknowledge_trim)
+                anchor_frame=body.anchor_frame,acknowledge_trim=body.acknowledge_trim,human_seconds=body.human_seconds)
         return view(work_id)
 
     @router.get('/{work_id}/candidates/{candidate}/stages/{stage}/state-image')
@@ -439,6 +446,16 @@ def create_router(service):
             service.recover_completed_candidate(work.job_id, body.candidate_index)
         return view(work_id)
 
+    @router.get('/{work_id}/edit-source/{frame}')
+    def edit_source(work_id: str, frame: int, revision: int, candidate: int, token: str, stage: int | None = None):
+        *_, data, _reference, _report, actual = adjustments.source(work_id,revision,candidate,stage)
+        if token!=actual or not 0<=frame<len(data):raise ConflictError('帧来源已改变')
+        return Response(data[frame],media_type='image/png',headers={'Cache-Control':'no-store'})
+
+    @router.post('/{work_id}/local-frame-edits')
+    def local_frame_edit(work_id: str, body: LocalFrameEdit):
+        return {'adjustment':create_local(adjustments,work_id,body)}
+
     @router.get('/{work_id}/adjustments')
     def adjustment_context(work_id: str, revision: int, candidate: int = 1, stage: int | None = None):
         return adjustments.context(work_id,revision,candidate,stage)
@@ -457,7 +474,7 @@ def create_router(service):
 
     @router.post('/{work_id}/adjustments/{adjustment_id}/decision')
     def decide_adjustment(work_id: str, adjustment_id: str, body: AdjustmentDecision):
-        task=adjustments.decide(work_id,adjustment_id,token=body.token,decision=body.decision,note=body.note,acknowledge=body.acknowledge_warnings)
+        task=adjustments.decide(work_id,adjustment_id,token=body.token,decision=body.decision,note=body.note,acknowledge=body.acknowledge_warnings,human_seconds=body.human_seconds)
         return {'adjustment':task,'work':view(work_id)}
 
     @router.get("/{work_id}/progress-image")

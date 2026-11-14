@@ -28,6 +28,7 @@ const region=await request('image-resolve',{...guards,region:rect(102,80,64,48)}
 const common={...guards,editId:edit.editId,expectedEditRevision:edit.revision,baseCandidateVersion:'source',regionRef:region.regionRef};
 const instruction='Replace the lower badge with a blue gem. Preserve its frame.';
 const contextInput={...common,instruction,preserveAlpha:true,commandId:'context'};
+process.env.SPRITE_PIPELINE_VISION_PROVIDER='openai';
 process.env.OPENAI_API_KEY='mock-planning-fixture';
 process.env.SCENE_EXPERT_OPENAI_URL='http://127.0.0.1:9081/v1/responses';
 let calls=0, expectedViews;

@@ -7,6 +7,7 @@ const manifest = JSON.parse(await readFile(new URL('../../workbench/manifest.jso
 const refs = [
   { kind: 'interactable', documentId: 'prop-a', definitionId: 'door-a', slot: 'visual' },
   { kind: 'image-task', taskId: 'source-a' },
+  {kind:'motion-frame',workId:'a'.repeat(32),workRevision:2,candidateIndex:1,stageIndex:0,frameIndex:3},
 ];
 for (const target of refs) {
   const view = imageEditViewPath(manifest, target, 'edit-a', '2');

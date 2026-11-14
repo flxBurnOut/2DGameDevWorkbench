@@ -243,20 +243,6 @@
         "reservedReferenceSlots": 2,
         "qualityValidated": false
       },
-      "visualReviewer": {
-        "provider": "openai",
-        "model": "gpt-5.4-2026-03-05",
-        "maxOutputTokens": 2048,
-        "timeoutSeconds": 90,
-        "reasoningEffort": "low"
-      },
-      "partPlanner": {
-        "provider": "openai",
-        "model": "gpt-5.4-2026-03-05",
-        "maxOutputTokens": 2048,
-        "timeoutSeconds": 90,
-        "reasoningEffort": "low"
-      },
       "placementComparison": true,
       "aiEditing": true,
       "localRequiresPython": false,
@@ -756,6 +742,7 @@
               "review-motion-repair",
               "get-motion-adjustment",
               "create-motion-adjustment",
+              "edit-motion-frames",
               "review-motion-adjustment",
               "create",
               "create-and-generate",
@@ -783,6 +770,11 @@
           "allowUnsupportedMotion": {
             "type": "boolean",
             "description": "仅用于 generate-motion。用户看过当前方案并决定仍尝试带遮挡的刚体平移时传 true。"
+          },
+          "targetSetSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "绑定、清除末帧或开始生成时，传入最后检查的作品 target_set_sha256；不一致时拒绝修改和生成。"
           },
           "planSha256": {
             "type": "string",
@@ -1013,6 +1005,20 @@
             "minimum": 0,
             "maximum": 63,
             "description": "零基结束帧，包含此帧。按上下文的模型帧数限制校验，不合适就先解释，不能多改未选帧。"
+          },
+          "humanSeconds": {
+            "type":"integer","minimum":0,"maximum":86400,
+            "description":"人工实际检查用时。未测量时省略，不能把未知填为 0。"
+          },
+          "adjustmentMethod": {
+            "type":"string","enum":["appearance","transition"],
+            "description":"可选，显式选择外观修改或动作重画；不支持所选范围时拒绝，不自动扩大。"
+          },
+          "motionPalette": {
+            "type":"array","minItems":1,"maxItems":64,
+            "items":{"type":"object","additionalProperties":false,"required":["from","to"],
+              "properties":{"from":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},"to":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"}}},
+            "description":"仅 edit-motion-frames：对明确给出的 adjustmentRegions 中每个帧应用同一精确 RGB 色表；Alpha、其他像素和锁定帧保留。零模型调用，返回待播放确认的备选。"
           },
           "adjustmentRequest": {
             "type": "string",

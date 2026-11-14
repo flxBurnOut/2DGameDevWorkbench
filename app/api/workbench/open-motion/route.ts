@@ -11,7 +11,7 @@ const read = new RegExp(
   `^(?:open-motion(?:/(?:settings|references(?:/[a-z0-9_]+)?|${work}(?:/reference|/targets/[0-3]|/progress-image|/adjustments(?:/${work}(?:/(?:source|proposed)/[0-9]{1,2})?)?|/candidates/[1-8]/stages/[0-3](?:/state-image|/frames/[0-9]{1,2}|/repairs/[0-1]/frames/[0-9]{1,2})?)?))?|jobs/${job}(?:/candidates/[1-8]/frames/[0-9]{1,2}/image|/exports/(?:sheet|preview|godot))?)$`,
 );
 const write = new RegExp(
-  `^open-motion(?:/(?:settings|references|${work}/(?:revise|generate|pause|resume|review|review-stage|target|repair-stage|review-repair|export|recover|adjustments(?:/${work}/decision)?)))?$`,
+  `^open-motion(?:/(?:settings|references|${work}/(?:revise|generate|pause|resume|review|review-stage|target|repair-stage|review-repair|export|recover|local-frame-edits|adjustments(?:/${work}/decision)?)))?$`,
 );
 
 async function proxy(request: Request) {

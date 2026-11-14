@@ -5,6 +5,7 @@ import hashlib
 import re
 import uuid
 from pathlib import Path
+from typing import Literal
 from pydantic import Field, create_model
 from .contracts import Contract, digest, review_calls_per_check
 from .model_config import ModelRegistry
@@ -28,7 +29,7 @@ FROZEN=('work_id','revision','candidate','stage','source_job','source_token','so
 
 def frozen_inputs(task):
     # Old task hashes remain byte-equivalent; new structure is separately frozen.
-    return {**{k:task[k] for k in FROZEN},**{k:task[k] for k in ('interactable','visual_structure','structure_context_version','intent_format_version','range_policy','stage_definition','preserve_motion','edit_regions','spatial_policy','comparison_protocol','visibility_review_version') if k in task}}
+    return {**{k:task[k] for k in FROZEN},**{k:task[k] for k in ('requested_method','local_frames','interactable','visual_structure','structure_context_version','intent_format_version','range_policy','stage_definition','preserve_motion','edit_regions','spatial_policy','comparison_protocol','visibility_review_version') if k in task}}
 
 
 class AdjustmentInput(Contract):
@@ -39,6 +40,7 @@ class AdjustmentInput(Contract):
     start: int = Field(ge=0,le=63)
     end: int = Field(ge=0,le=63)
     user_request: str = Field(default='',max_length=1800)
+    requested_method: Literal['appearance','transition'] | None = None
     preserve_motion: bool | None = None
     edit_regions: list[FrameEditRegion] | None = Field(default=None,min_length=1,max_length=64)
     request_key: str = Field(min_length=8,max_length=128,pattern=r'^[A-Za-z0-9._:-]+$')
@@ -181,6 +183,7 @@ class Adjustments:
         if not body.authorized:raise ValidationHarnessError('生成备选包含需求理解、绘图和复核，请先授权本次上限')
         raw=body.model_dump(mode='json');key=digest({'request_key':body.request_key})
         # Omitted new options must not change old idempotency receipts.
+        if body.requested_method is None:raw.pop('requested_method')
         if body.preserve_motion is None:raw.pop('preserve_motion')
         if body.edit_regions is None:raw.pop('edit_regions')
         with self.ws.lock(work_id):
@@ -196,6 +199,9 @@ class Adjustments:
                 if 'appearance' not in methods:
                     raise ValidationHarnessError(f"保留原动作的外观编辑一次最多支持 {context['appearance_max']} 个偶数帧。请缩小范围；不会改用动作重生成，也不会自动拆成多次收费请求。")
                 methods=['appearance']
+            if body.requested_method is not None:
+                if body.requested_method not in methods:raise ValidationHarnessError('所选工具不支持当前范围')
+                methods=[body.requested_method]
             if any(t['state'] in ACTIVE for t in context['tasks']):raise ConflictError('先处理当前备选或未知请求，不会同时生成多个版本')
             require_drawing_slot(context,body.start,body.end)
             user=body.user_request.strip()
@@ -217,6 +223,7 @@ class Adjustments:
                 'message':'已保存修改任务，原版保持不变','source_goal':work.spec.description}
             from .review_inputs import prop_review_context
             task.update(prop_review_context(job.request.open_plan, body.stage_index))
+            if body.requested_method:task['requested_method']=body.requested_method
             task['intent_format_version']=4
             task['comparison_protocol']=1
             # Keep the source work's frozen reviewer policy; a newer deployment
@@ -261,11 +268,11 @@ class Adjustments:
                     'frames':task['proposed_frames'],'fps':task['fps'],'models':task['models'],'protocol':task['protocol']}):raise ConflictError('备选与检查版本不一致')
             for i,f in enumerate(task['proposed_frames']):
                 if hashlib.sha256(inside(folder,folder/f['file']).read_bytes()).hexdigest()!=f['sha256']:raise ConflictError('备选图片已改变')
-                if not task['start']<=i<=task['end'] and f['sha256']!=task['source_frames'][i]['sha256']:raise ConflictError('备选改动了未选择的帧，禁止采用')
+                if (not task['start']<=i<=task['end'] or ('local_frames' in task and i not in task['local_frames'])) and f['sha256']!=task['source_frames'][i]['sha256']:raise ConflictError('备选改动了未选择的帧，禁止采用')
             for region in task.get('edit_regions',[]):
                 i=region['frame']
                 verify_protection((folder/'source'/f'{i:03d}.png').read_bytes(),
-                                  inside(folder,folder/task['proposed_frames'][i]['file']).read_bytes(),region)
+                                  inside(folder,folder/task['proposed_frames'][i]['file']).read_bytes(),region,allow_full='local_frames' in task)
             if task.get('edit_regions') and (not task.get('spatial_protection') or digest(task['spatial_protection'])!=task.get('protection_digest')):
                 raise ConflictError('区域外像素保护记录缺失或改变')
         if task.get('comparison_digest') and digest(task['review'].get('comparison'))!=task['comparison_digest']:
@@ -380,6 +387,9 @@ class Adjustments:
             goal=task['user_request'] or task['expert_suggestions'][0]['text']
             intent=AdjustmentIntent(goal=goal,preserve='保持其他帧、时长和首尾衔接',method=task['methods'][0],provider_prompt=goal[:700])
         else:intent=self.model_call(task,'coordinator','intent',[{'type':'input_text','text':prompt+json.dumps(data,ensure_ascii=False)},*pictures],schema,len(task['source_frames']))
+        editable={i for i in range(len(task['source_frames'])) if i not in self.context(task['work_id'],task['revision'],task['candidate'],task['stage'])['locked_frames']}
+        whole=editable==set(range(task['start'],task['end']+1))
+        task['repair_level']='restricted_generation' if intent.method=='appearance' else 'stage_redraw' if whole and task['stage'] is not None else 'window_redraw'
         task['intent']=intent.model_dump(mode='json');task['intent_sha256']=digest(task['intent']);self.save(task)
         if intent.conflict:task.update(state='needs_input',message=intent.conflict);self.save(task);return False
         if intent.method not in task['methods']:raise ValidationHarnessError('建议方法不支持当前选帧；不会扩展范围或提交绘图')
@@ -492,7 +502,7 @@ class Adjustments:
         if kind=='proposed' and not task.get('proposed_frames'):raise NotFoundError('备选尚未保存')
         return (self.folder(task)/kind/f'{index:03d}.png').read_bytes()
 
-    def decide(self, work_id, task_id, *, token, decision, note, acknowledge=False):
+    def decide(self, work_id, task_id, *, token, decision, note, acknowledge=False,human_seconds=None):
         if decision not in {'accept','reject'} or (decision=='accept' and len(note.strip())<4):raise ValidationHarnessError('采用前请填写实际播放结论')
         with self.store.global_lock('adjustment-'+task_id,timeout_seconds=.2), self.ws.lock(work_id):
             task=self.load(work_id,task_id)
@@ -500,7 +510,7 @@ class Adjustments:
             if task['state']==('adopted' if decision=='accept' else 'rejected'):return task
             if decision=='reject':
                 if task['state'] in {'queued','planning','submitting','pending','reviewing','adopting'}:raise ConflictError('请求仍在处理，请等待结果；不会再提交新请求')
-                task.update(state='rejected',decision_note=note.strip(),message='保留原版；本次备选与费用记录仍可查看');self.save(task);return task
+                task.update(state='rejected',human_seconds=human_seconds,decision_note=note.strip(),message='保留原版；本次备选与费用记录仍可查看');self.save(task);return task
             if task['state'] not in {'ready','adopting'}:raise ConflictError('备选尚未完成检查')
             # Recover a crash after an atomic native adoption, without reapplying it.
             current=self.ws.load(work_id)
@@ -511,9 +521,12 @@ class Adjustments:
                 if any(x['id']==task_id for x in run.adjustment_history):
                     task.update(state='adopted',message='已采用备选，请确认本段后继续');self.save(task);return task
             self.verify(task,live=True)
+            if 'local_frames' in task:
+                from .local_frame_edits import required_locks
+                required_locks(self,task)
             if task.get('qa',{}).get('hard_failures'):raise ValidationHarnessError('备选存在技术阻断，不能采用')
             if (task.get('review',{}).get('verdict')!='pass' or task.get('qa',{}).get('warnings')) and not acknowledge:raise ValidationHarnessError('请实际检查并确认尚未解决的视觉或技术提醒')
-            task.update(state='adopting',decision_note=note.strip(),acknowledge=acknowledge);self.save(task)
+            task.update(state='adopting',human_seconds=human_seconds,decision_note=note.strip(),acknowledge=acknowledge);self.save(task)
             from .adjustment_delivery import adopt_stage, adopt_clip
             if task['stage'] is not None:adopt_stage(self,task)
             else:adopt_clip(self,task)

@@ -1,5 +1,6 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
+import {imageEditRequest} from '../../lib/workbench/image-edits.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, readFile } from 'node:fs/promises';
@@ -70,9 +71,11 @@ try {
   assert.ok(validateInput(capability,{operation:'generate-motion',openWorkId:workId}).length);
   assert.ok(validateInput(capability,{operation:'target-motion-stage',openWorkId:workId,expectedRevision:1,stageIndex:0,reviewNote:'已检查目标'}).length);
   const targetPng=await readFile(path.join(root,'target-fixture','frame_002.png'));
-  await runConnector(manifest,capability,{operation:'target-motion-stage',openWorkId:workId,expectedRevision:1,stageIndex:0,targetImageBase64:targetPng.toString('base64'),reviewNote:'真实诊断 PNG 用于末图传输检查，不代表美术效果'});
+  await runConnector(manifest,capability,{operation:'target-motion-stage',openWorkId:workId,expectedRevision:1,stageIndex:0,targetSetSha256:work.target_set_sha256,targetImageBase64:targetPng.toString('base64'),reviewNote:'真实诊断 PNG 用于末图传输检查，不代表美术效果'});
   const withTarget=await request(`/v1/open-motion/${workId}`);assert.equal(withTarget.end_targets.length,1);
-  const generated=await runConnector(manifest,capability,{operation:'generate-motion',openWorkId:workId,expectedRevision:1,planSha256:work.plan_sha256});
+  assert.notEqual(withTarget.target_set_sha256,work.target_set_sha256);
+  await assert.rejects(runConnector(manifest,capability,{operation:'generate-motion',openWorkId:workId,expectedRevision:1,planSha256:work.plan_sha256,targetSetSha256:work.target_set_sha256}),/409/);
+  const generated=await runConnector(manifest,capability,{operation:'generate-motion',openWorkId:workId,expectedRevision:1,planSha256:work.plan_sha256,targetSetSha256:withTarget.target_set_sha256});
   assert.ok(generated.task.id);
   for (let candidateIndex=1;candidateIndex<=2;candidateIndex++) for(let stageIndex=0;stageIndex<2;stageIndex++) {
     for(let n=0;n<150;n++) {
@@ -117,6 +120,23 @@ try {
   assert.ok(complete.job.candidates.every(c=>c.quality_review.protocol==='experts_v1'&&c.quality_review.expert_review.calls_used===5));
   const reviewCalls=complete.job.candidates.reduce((sum,c)=>sum+c.quality_review.requests.length+c.plan_execution.stages.reduce((n,s)=>n+s.review.requests.length+s.review_history.reduce((n,r)=>n+r.requests.length,0),0),0);
   assert.equal(reviewCalls,35);
+  // Local image workspace -> bounded animation alternative -> new version; keep the other tests on candidate 1.
+  const editReq=(op,input)=>imageEditRequest(process.cwd(),manifest,op,input);
+  const frameRef={kind:'motion-frame',workId,workRevision:1,candidateIndex:2,frameIndex:1};
+  const fi=(await editReq('image-inspect',{target:frameRef})).target;
+  const guards={targetId:fi.targetId,expectedRevision:1,expectedSha256:fi.sha256};
+  const locked=(await editReq('image-inspect',{target:{...frameRef,frameIndex:0}})).target;
+  assert.equal(locked.locked,true);assert.equal(fi.aiEdit.supported,false);
+  const {edit:ses}=await editReq('image-session-create',{...guards,commandId:'local-frame-session'});
+  const reg=await editReq('image-resolve',{...guards,region:{type:'rectangle',x:16,y:16,width:16,height:16}});
+  assert.equal(reg.frameEditRegion.spans.length,16);
+  const made=await editReq('image-edit',{...guards,editId:ses.editId,expectedEditRevision:ses.revision,baseCandidateVersion:'source',regionRef:reg.regionRef,operation:{type:'erase'},commandId:'local-frame-erase'});
+  assert.equal(made.status,'completed');
+  const receipt=await editReq('image-apply',{editId:ses.editId,candidateVersion:made.candidateVersion,expectedRevision:1,expectedSha256:fi.sha256,commandId:'local-frame-adoption'});
+  const local=(await request('/v1/open-motion/'+workId+'/adjustments/'+receipt.adoption.adjustmentId)).adjustment;
+  assert.equal(local.repair_level,'deterministic');assert.equal(local.generation_calls.length,0);assert.equal(local.spatial_protection.frames[0].protected_changed_pixels,0);
+  assert.equal(local.proposed_frames[0].sha256,local.source_frames[0].sha256);
+  await request('/v1/open-motion/'+workId+'/adjustments/'+local.id+'/decision',{token:local.preview_token,decision:'reject',note:'验证保留原版的路径'});
   const attempts=complete.job.candidates.map(c=>c.submission_attempts);
   await request(`/v1/open-motion/${workId}/generate`,{expected_revision:1,plan_sha256:work.plan_sha256});
   assert.deepEqual((await request(`/v1/open-motion/${workId}`)).job.candidates.map(c=>c.submission_attempts),attempts);
@@ -198,6 +218,21 @@ try {
   assert.equal(adopted.task.status,'completed');
   const after=await request(`/v1/open-motion/${workId}`);assert.equal(after.revision,2);assert.notEqual(after.job.job_id,before.job.job_id);
   assert.equal(after.job.candidates[0].status,'approved');
+  const ctx=await request('/v1/open-motion/'+workId+'/adjustments?revision=2&candidate=1');
+  const selected=ctx.frames.map((_,i)=>i).filter(i=>!ctx.locked_frames.includes(i));
+  assert.ok(selected.length>=2);
+  const localBody={expected_revision:2,candidate_index:1,token:ctx.token,request_key:'cross-stage-palette',description:'Exercise archive preservation across two segments',
+    palette:[{source:'#808080',target:'#808081'}],frames:selected.map(frame=>({region:{frame,source_sha256:ctx.frames[frame].sha256,spans:[{start:0,length:ctx.width*ctx.height}]}}))};
+  const localInput={operation:'edit-motion-frames',openWorkId:workId,expectedRevision:2,candidateIndex:1,
+    adjustmentToken:ctx.token,requestKey:localBody.request_key,adjustmentRequest:localBody.description,
+    adjustmentRegions:localBody.frames.map(f=>f.region),motionPalette:[{from:'#808080',to:'#808081'}]};
+  assert.deepEqual(validateInput(capability,localInput),[]);
+  assert.ok(validateInput(capability,{...localInput,adjustmentRegions:[]}).length);
+  const localRun=await runConnector(manifest,capability,localInput);
+  const pal=JSON.parse(await readFile(localRun.task.outputs.find(p=>p.endsWith('/result.json')),'utf8')).adjustment;
+  const rev3=(await request('/v1/open-motion/'+workId+'/adjustments/'+pal.id+'/decision',{token:pal.preview_token,decision:'accept',acknowledge_warnings:true,note:'Full simulated playback for version preservation test'})).work;
+  assert.equal(rev3.revision,3);assert.equal(rev3.job.candidates[0].submission_attempts,0);
+  assert.ok(rev3.job.candidates[0].plan_execution.stages.every(r=>r.adjustment_history.at(-1).id===pal.id));
   const old=await request(`/v1/open-motion/${workId}?revision=1`);assert.equal(old.job.job_id,before.job.job_id);
   console.log('Open motion: nested input rejection, real Python API + shared adapter planning/generation, exact preview, candidate completion, idempotency and bounded frontend proxy passed; paid calls=0.');
 } finally {

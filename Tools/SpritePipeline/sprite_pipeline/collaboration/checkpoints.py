@@ -217,7 +217,7 @@ class Checkpoints:
             with self.s.store.locked_job(job_id) as current:
                 self.run_record(current,index,stage).review['requests'][-1] = request
 
-    def decide(self, job_id, index, stage, *, token, note, decision, acknowledge=False, reviewer='user', anchor_frame=None, acknowledge_trim=False):
+    def decide(self, job_id, index, stage, *, token, note, decision, acknowledge=False, reviewer='user', anchor_frame=None, acknowledge_trim=False,human_seconds=None):
         if decision not in {'accept','reject','accept_state'} or len(note.strip()) < 4:
             raise ValidationHarnessError('请填写实际检查结论并选择确认或不合格')
         with self.s.store.operation_lock(job_id,'open_plan',timeout_seconds=0.2):
@@ -269,7 +269,7 @@ class Checkpoints:
                     self.run_record(current,index,stage).state_checkpoint = {
                         **frame, 'frame': end, 'token': token,
                         'path': path.relative_to(self.s.store.job_dir(job_id)).as_posix(), 'note': note.strip(),
-                        'reviewer': reviewer, 'accepted_at': utc_now(), 'acknowledge_warnings': acknowledge}
+                        'human_seconds':human_seconds,'reviewer': reviewer, 'accepted_at': utc_now(), 'acknowledge_warnings': acknowledge}
                     current.plan_control.enabled = False
                     current.plan_control.message = '状态帧已锁定，过渡仍待修复或确认'
                     current.touch('open_motion_state_frame_accepted', candidate_index=index, stage=stage, frame=end)
@@ -294,7 +294,7 @@ class Checkpoints:
             with self.s.store.locked_job(job_id) as current:
                 r = self.run_record(current,index,stage)
                 r.state = 'accepted' if snapshot else 'rejected'; r.accepted = snapshot
-                r.review['human_decision'] = {'decision':decision,'note':note.strip(),'reviewer':reviewer,'token':token,'anchor_frame':end if snapshot else None}
+                r.review['human_decision'] = {'decision':decision,'human_seconds':human_seconds,'note':note.strip(),'reviewer':reviewer,'token':token,'anchor_frame':end if snapshot else None}
                 current.plan_control.enabled = bool(snapshot)
                 current.plan_control.message = '实际姿势已锁定，继续已授权制作' if snapshot else '当前片段不合格，已停止后续制作；原始结果保留'
                 if not snapshot:self.s._candidate(current,index).status = CandidateStatus.rejected

@@ -1,4 +1,6 @@
 'use client';
+import { ImageEditWorkspace } from '../image-edit/image-edit-workspace';
+import type { ImageTargetRef } from '@/features/image-edit/client';
 import { MotionTargets } from './motion-targets';
 import { CharacterIdentityField } from './character-identity-field';
 import { uploadedIdentityLimit, uploadedReferenceIdentity } from './character-identity';
@@ -171,6 +173,9 @@ export function SpriteStudioEntry({ module }: { module: WorkbenchModule }) {
       version={Number(params.get('version')) || resolved?.revision}
       objectId={params.get('object') || params.get('character') || ''}
       initialCandidate={Number(params.get('candidate')) || 1}
+      initialImage={params.has('imageFrame')&&/^(?:[0-9]|[1-5][0-9]|6[0-3])$/.test(params.get('imageFrame')||'')&&(!params.has('imageStage')||/^[0-3]$/.test(params.get('imageStage')||''))?{
+        frameIndex:Number(params.get('imageFrame')),...(params.has('imageStage')?{stageIndex:Number(params.get('imageStage'))}:{}),
+        editId:params.get('imageEdit')||undefined,candidateVersion:params.get('imageCandidate')||undefined}:undefined}
     />
   );
 }
@@ -180,11 +185,13 @@ function OpenMotionStudio({
   version,
   objectId,
   initialCandidate,
+  initialImage,
 }: {
   workId: string;
   version?: number;
   objectId: string;
   initialCandidate: number;
+  initialImage?:{frameIndex:number;stageIndex?:number;editId?:string;candidateVersion?:string};
 }) {
   const wb = useWorkbench();
   const [work, setWork] = useState<MotionWork | null>(null);
@@ -205,11 +212,15 @@ function OpenMotionStudio({
   const [note, setNote] = useState(''),
     [acknowledge, setAcknowledge] = useState(false),
     [watched, setWatched] = useState(false);
+  const [reviewSeconds,setReviewSeconds]=useState('');
   const [inspectionToken, setInspectionToken] = useState('');
   const [uploadName, setUploadName] = useState(''),
     [uploadFacing, setUploadFacing] = useState('right');
   const [uploadIdentity, setUploadIdentity] = useState('');
   const [remoteId, setRemoteId] = useState('');
+  const [pixelTarget,setPixelTarget]=useState<ImageTargetRef|null>(initialImage&&workId&&version?{kind:'motion-frame',workId,workRevision:version,candidateIndex:initialCandidate,frameIndex:initialImage.frameIndex,...(initialImage.stageIndex!==undefined?{stageIndex:initialImage.stageIndex}:{})}:null);
+  const [pixelInitial,setPixelInitial]=useState(initialImage);
+  const [localVersion,setLocalVersion]=useState(0);
   const [adjustmentOpen,setAdjustmentOpen]=useState(false);
   const structureDraftSaver = useRef<(() => void) | null>(null);
   const registerStructureDraftSaver = useCallback((save: (() => void) | null) => { structureDraftSaver.current = save; }, []);
@@ -1082,7 +1093,9 @@ function OpenMotionStudio({
             )}
             {step === 2 && work && (
               <div className={`motion-grid${checkpoint?' motion-review-grid':''}`}>
-                {checkpoint ? <MotionStageReview key={`${work.id}:${work.revision}:${checkpoint.candidate}:${checkpoint.stage}`} work={work} candidate={checkpoint.candidate} stage={checkpoint.stage} readOnly={readOnly} onSaved={applyWork} expertRecord={<ExpertRecord work={work}/>} /> : <section className="motion-card">
+                {checkpoint&&pixelTarget&&<ImageEditWorkspace target={pixelTarget} initialEditId={pixelInitial?.editId} initialCandidateVersion={pixelInitial?.candidateVersion}
+                  readOnly={readOnly} onClose={()=>setPixelTarget(null)} onAdopt={async()=>{setPixelTarget(null);setLocalVersion(v=>v+1);applyWork(await motionRequest<MotionWork>('open-motion/'+work.id));}}/>}
+                {checkpoint ? <MotionStageReview key={`${work.id}:${work.revision}:${checkpoint.candidate}:${checkpoint.stage}:${localVersion}`} work={work} candidate={checkpoint.candidate} stage={checkpoint.stage} readOnly={readOnly} onSaved={applyWork} expertRecord={<ExpertRecord work={work}/>} /> : <section className="motion-card">
                   <h2>{work.job?.plan_control.message || work.message}</h2>
                   <div className="motion-canvas motion-large">
                     {work.job && (
@@ -1221,8 +1234,11 @@ function OpenMotionStudio({
                       candidate={candidate}
                       work={work}
                       readOnly={readOnly}
+                      onEditFrame={frameIndex=>{setPixelInitial(undefined);setPixelTarget({kind:'motion-frame',workId:work.id,workRevision:work.revision,candidateIndex,frameIndex});}}
                     />
                   )}
+                  {pixelTarget&&<ImageEditWorkspace target={pixelTarget} initialEditId={pixelInitial?.editId} initialCandidateVersion={pixelInitial?.candidateVersion}
+                    readOnly={readOnly} onClose={()=>setPixelTarget(null)} onAdopt={async()=>{setPixelTarget(null);setLocalVersion(v=>v+1);applyWork(await motionRequest<MotionWork>('open-motion/'+work.id));}}/>}
                   {candidate && <StateImages work={work} candidate={candidate} />}
                   {work.diagnostic_only && (
                     <div className="motion-notice">
@@ -1288,6 +1304,7 @@ function OpenMotionStudio({
                             />
                             我已播放完整动作并检查衔接、外观与结束姿势
                           </label>
+<label>人工检查用时（秒，可留空）<input aria-label="人工检查用时" type="number" min={0} max={86400} step={1} value={reviewSeconds} onChange={e=>setReviewSeconds(e.target.value)}/></label>
                           <label>
                             检查结论（至少 4 个字）
                             <textarea
@@ -1322,7 +1339,7 @@ function OpenMotionStudio({
                         </>
                       )}
                       </>}
-                      <MotionAdjustment key={`${work.id}:${work.revision}:${candidateIndex}`} work={work} candidate={candidateIndex} readOnly={readOnly} onOpenChange={setAdjustmentOpen} onSaved={value=>{
+                      <MotionAdjustment key={`${work.id}:${work.revision}:${candidateIndex}:${localVersion}`} work={work} candidate={candidateIndex} readOnly={readOnly} onOpenChange={setAdjustmentOpen} onSaved={value=>{
                         applyWork(value);
                         if(value.revision!==work.revision){
                           setCandidateIndex(1);
@@ -1503,6 +1520,7 @@ function OpenMotionStudio({
                       }
                       await mutate('generate', {
                         plan_sha256: work?.plan_sha256,
+                        expected_targets: work?.target_set_sha256,
                         allow_unsupported_motion: work?.plan?.quality?.interactable?.motion_type === 'occluded_rigid_translation',
                       });
                     })
@@ -1543,6 +1561,7 @@ function OpenMotionStudio({
                       await mutate('review', {
                         candidate_index: candidateIndex,
                         candidate_sha256: candidate?.review_token,
+                        ...(reviewSeconds===''?{}:{human_seconds:Number(reviewSeconds)}),
                         note,
                         acknowledge_warnings: acknowledge,
                       });
@@ -1621,11 +1640,13 @@ function FramePlayer({
   candidate,
   work,
   readOnly,
+  onEditFrame,
 }: {
   job: MotionJob;
   candidate: MotionCandidate;
   work: MotionWork;
   readOnly: boolean;
+  onEditFrame:(frame:number)=>void;
 }) {
   const [frame, setFrame] = useState(0),
     [playing, setPlaying] = useState(false),
@@ -1730,6 +1751,8 @@ function FramePlayer({
           <option value={2}>2×</option>
         </select>
       </div>
+      <button disabled={readOnly||playing||imageError||frame===0||frame===count-1||candidate.plan_execution.timeline.some(s=>frame===s.start||frame>=s.start+s.count-1-(s.hold_frames??0)&&frame<s.start+s.count)}
+        onClick={()=>onEditFrame(frame)}>局部调整当前帧</button>
       <p className="motion-muted">
         {stage?.name} · {job.action.fps} FPS ·{' '}
         {job.action.loop ? '循环播放' : '播放到末帧停止'}

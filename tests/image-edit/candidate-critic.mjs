@@ -4,6 +4,7 @@ import {readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 
 export async function verifyCandidateCritic(request, editId, candidate, directory) {
+process.env.SPRITE_PIPELINE_VISION_PROVIDER='openai';
   const originalFetch=globalThis.fetch,originalEndpoint=process.env.SCENE_EXPERT_OPENAI_URL;
   const originalKey=process.env.OPENAI_API_KEY;
   process.env.SCENE_EXPERT_OPENAI_URL='http://127.0.0.1:9082/v1/responses';

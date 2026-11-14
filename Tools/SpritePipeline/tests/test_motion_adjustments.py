@@ -136,7 +136,7 @@ def test_omitted_scope_keeps_legacy_receipt_and_v2_prompt(setup):
     s,ws,p,w=stage_work(setup);s.adjustment_test_reviews=True
     registry=IntentRegistry();s.open_motion_review_registry=registry;m=Adjustments(s)
     body=request(m,w,start=2,end=3);task=m.create(w.id,body)
-    raw=body.model_dump(mode='json');raw.pop('preserve_motion');raw.pop('edit_regions')
+    raw=body.model_dump(mode='json');raw.pop('preserve_motion');raw.pop('edit_regions');raw.pop('requested_method')
     assert task['request_identity']==digest(raw) and 'preserve_motion' not in task
     task['intent_format_version']=2;task.pop('comparison_protocol');task['frozen_digest']=digest(frozen_inputs(task));m.save(task)
     assert m.create(w.id,body)['id']==task['id']

@@ -7,6 +7,7 @@ import { MotionVisualReview } from './motion-visual-review';
 import { MotionAdjustment } from './motion-adjustment';
 import { MotionTemporalStructure } from './motion-temporal-structure';
 import { MotionPanel } from './motion-panel';
+import { ImageEditWorkspace } from '../image-edit/image-edit-workspace';
 import type { ReactNode } from 'react';
 
 type Evidence = {
@@ -25,12 +26,15 @@ export function MotionStageReview({work, candidate, stage, readOnly, onSaved, ex
   work: MotionWork; candidate: number; stage: number; readOnly: boolean; onSaved: (w: MotionWork) => void;
   expertRecord?: ReactNode;
 }) {
+  const [reviewSeconds,setReviewSeconds]=useState('');
   const [data,setData]=useState<Evidence|null>(null), [error,setError]=useState('');
   const [frame,setFrame]=useState(0), [playing,setPlaying]=useState(false), [loadedToken,setLoadedToken]=useState('');
   const [played,setPlayed]=useState(false), [watched,setWatched]=useState(false), [slow,setSlow]=useState(false);
   const [note,setNote]=useState(''), [ack,setAck]=useState(false), [busy,setBusy]=useState(false);
   const [anchor,setAnchor]=useState<number|null>(null), [ackTrim,setAckTrim]=useState(false);
   const [adjustmentPending,setAdjustmentPending]=useState(false);
+  const [localVersion,setLocalVersion]=useState(0);
+  const [pixelFrame,setPixelFrame]=useState<number|null>(null);
   const [adjustmentOpen,setAdjustmentOpen]=useState(false);
   const [evidenceRevision,setEvidenceRevision]=useState<number|null>(null);
   const route=`open-motion/${work.id}/candidates/${candidate}/stages/${stage}`;
@@ -68,7 +72,7 @@ export function MotionStageReview({work, candidate, stage, readOnly, onSaved, ex
     if(!data)return;setBusy(true);setError('');
     try {onSaved(await motionRequest<MotionWork>(`open-motion/${work.id}/review-stage`,{
       expected_revision:work.revision,candidate_index:candidate,stage_index:stage,token:data.token,
-      note,decision,acknowledge_warnings:ack,anchor_frame:data.state_checkpoint?.frame ?? anchor,acknowledge_trim:ackTrim,
+      note,decision,...(reviewSeconds===''?{}:{human_seconds:Number(reviewSeconds)}),acknowledge_warnings:ack,anchor_frame:data.state_checkpoint?.frame ?? anchor,acknowledge_trim:ackTrim,
     }));} catch(e){setError((e as Error).message);} finally{setBusy(false);}
   }
   if(!data)return <section className="motion-card">{error||'正在读取当前片段…'}</section>;
@@ -84,11 +88,15 @@ export function MotionStageReview({work, candidate, stage, readOnly, onSaved, ex
       <img src={motionUrl(`${route}/frames/${frame}`,{...query,v:data.token})} alt={`当前片段第 ${frame+1} 帧`} onError={()=>{setLoadedToken('');setError('图片读取失败，不能确认此段。');}} />
     </div>
     <div className="motion-card-title">
+      <label>人工检查用时（秒，可留空）<input aria-label="人工检查用时" type="number" min={0} max={86400} step={1} value={reviewSeconds} onChange={e=>setReviewSeconds(e.target.value)}/></label>
       <button disabled={!loaded||playing} onClick={()=>{setFrame(0);setPlaying(true);setPlayed(false);setWatched(false);}}>播放当前完整片段</button>
       <span>{frame+1} / {data.frames.length} · {data.fps} FPS</span>
       <label><input type="checkbox" checked={slow} onChange={e=>setSlow(e.target.checked)} />半速查看</label>
     </div>
     <input aria-label="当前片段逐帧查看" type="range" min={0} max={data.frames.length-1} value={frame} disabled={playing} onChange={e=>setFrame(Number(e.target.value))} />
+    <button disabled={readOnly||!loaded||playing||frame===0||data.state_checkpoint?.frame===frame||(frame===data.frames.length-1&&(data.definition.last_frame==='original'||work.end_targets?.some(t=>t.stage===stage)))} onClick={()=>setPixelFrame(frame)}>局部调整当前帧</button>
+    {pixelFrame!==null&&<ImageEditWorkspace target={{kind:'motion-frame',workId:work.id,workRevision:work.revision,candidateIndex:candidate,stageIndex:stage,frameIndex:pixelFrame}}
+      onClose={()=>setPixelFrame(null)} onAdopt={async()=>{setReviewSeconds('');setPixelFrame(null);setLocalVersion(v=>v+1);onSaved(await motionRequest<MotionWork>('open-motion/'+work.id));}}/>}
     <MotionVisualReview report={data.review} compact />
     <div className="motion-secondary-actions">
     <MotionPanel title="检查详情">
@@ -127,6 +135,6 @@ export function MotionStageReview({work, candidate, stage, readOnly, onSaved, ex
       : <button disabled={readOnly||busy||adjustmentPending||!loaded||!played||!watched||note.trim().length<4||data.state!=='awaiting_review'} onClick={()=>void decide('accept_state')}>只确认第 {endpoint + 1} 帧，保留过渡待修复</button>)}
     <button className="motion-primary" disabled={!canAccept} onClick={()=>void decide('accept')}>确认此段，继续制作</button>
     </>}
-    <MotionAdjustment work={work} candidate={candidate} stage={stage} onSaved={onSaved} readOnly={readOnly} onPendingChange={setAdjustmentPending} onOpenChange={setAdjustmentOpen}/>
+    <MotionAdjustment key={localVersion} work={work} candidate={candidate} stage={stage} onSaved={onSaved} readOnly={readOnly} onPendingChange={setAdjustmentPending} onOpenChange={setAdjustmentOpen}/>
   </section>;
 }

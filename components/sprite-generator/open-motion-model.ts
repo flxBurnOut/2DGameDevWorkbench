@@ -116,7 +116,7 @@ export type MotionCandidate = {
       actual_frame_count: number;
       provider_job_id?: string;
     }[];
-    timeline: { name: string; start: number; count: number }[];
+    timeline: { name: string; start: number; count: number; hold_frames?:number }[];
   };
 };
 export type MotionJob = {
@@ -134,6 +134,7 @@ export type MotionWork = {
   frame_budget?: {remaining_units:number|null; max_frames_per_request:number; max_total_frames:number; estimated_units:number|null} | null;
   visual_structure?: {sha256:string;revision:number;selection:{analysis_id:string;token:string};data:{summary:string}} | null;
   adjustment_usage?: {planning:number;generation:number;review:number;tasks:{id:string;revision:number;candidate:number;stage:number|null;state:string}[]};
+  target_set_sha256?: string;
   end_targets?: {stage: number; sha256: string; note: string}[];
   id: string;
   request_key?: string;

@@ -7,6 +7,7 @@ import {imageEditRequest,type ImageCandidate} from '@/features/image-edit/client
 type Grade = 'pass'|'fail'|'uncertain';
 type Result = {
   verdict?:Grade; target?:Grade; preservation?:Grade; boundary?:Grade; placement?:Grade; summary?:string;
+  classification?:'satisfied'|'material_defect'|'preference'|'insufficient_evidence'; preference?:string|null;
   defects?:{x:number;y:number;severity:string;description:string}[];
   action?:'recompose'|'revise-plan'|'inspect'; explanation?:string; nextStep?:string;
 };
@@ -32,7 +33,7 @@ function CheckCard({value,canEdit,onRun,onAction}:{value:Check;canEdit:boolean;o
         {value.phase==='review'?'发送并复核成品（1 次视觉调用）':'发送并判断缺陷来源（1 次视觉调用）'}
       </Button></>}
     {value.error&&<output role="alert">{value.error}</output>}
-    {value.result?.verdict&&<><strong>{gradeLabel[value.result.verdict]}</strong><p>{value.result.summary}</p>
+    {value.result?.verdict&&<><strong>{value.result.classification?{satisfied:'满足',material_defect:'明确缺陷',preference:'审美偏好',insufficient_evidence:'证据不足'}[value.result.classification]:gradeLabel[value.result.verdict]}</strong><p>{value.result.summary}</p>{value.result.preference&&<p>可选偏好：{value.result.preference}</p>}
       <p>{([['目标',value.result.target],['保持',value.result.preservation],['边界',value.result.boundary],['摆放尺寸',value.result.placement]] as const).map(([label,g])=>label+' '+(g?gradeLabel[g]:'—')).join(' · ')}</p>
       {value.result.defects?.map((d,i)=><p key={i}>({d.x}, {d.y}) {d.description}</p>)}
     </>}

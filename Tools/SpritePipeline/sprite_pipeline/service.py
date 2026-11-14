@@ -2748,7 +2748,10 @@ class SpritePipelineService:
         acknowledge_warnings: bool = False,
         expected_frames: str | None = None,
         review_note: str = "",
+        human_seconds: int | None = None,
     ) -> JobRecord:
+        if human_seconds is not None and (type(human_seconds) is not int or not 0<=human_seconds<=86400):
+            raise ValidationHarnessError("人工检查用时无效")
         with self.store.locked_job(job_id) as job:
             candidate = self._candidate(job, candidate_index)
             if expected_frames is not None:
@@ -2810,7 +2813,7 @@ class SpritePipelineService:
                 frame.review_note = "warnings acknowledged" if warning_count else ""
             candidate.status = CandidateStatus.approved
             self._refresh_job_status(job)
-            job.touch("candidate_approved", candidate_index=candidate_index, reviewer=reviewer, warnings_acknowledged=bool(warning_count))
+            job.touch("candidate_approved", candidate_index=candidate_index, reviewer=reviewer, warnings_acknowledged=bool(warning_count), **({"human_seconds":human_seconds} if human_seconds is not None else {}))
             if review_note:
                 job.touch("manual_review_note", candidate_index=candidate_index, note=review_note)
         return self.store.load(job_id)

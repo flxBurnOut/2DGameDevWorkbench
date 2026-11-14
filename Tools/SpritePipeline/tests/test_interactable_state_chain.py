@@ -2,6 +2,7 @@
 from dataclasses import replace
 from hashlib import sha256
 import json
+import base64
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,12 +44,14 @@ class ArchiveProvider(FixtureProvider):
         super().__init__()
         self.inputs = []
         self.outputs = {}
+        self.end_targets = []
         self.archive = [p.read_bytes() for p in sorted((ARCHIVE/'lamp/seed-2202').glob('f*.png'))]
 
     def submit(self, request):
         receipt = super().submit(request)
         frames = [self.archive[:5], self.archive[3:8]][len(self.inputs)]
         self.inputs.append(request.reference_image)
+        self.end_targets.append(request.last_frame)
         self.outputs[receipt.provider_job_id] = frames
         return replace(receipt, diagnostic_only=False)
 
@@ -268,3 +271,86 @@ def test_archive_writeback_to_shared_document(chain):
         finally:
             server.should_exit = True
             thread.join(timeout=10)
+
+def test_external_state_target_guards_and_chain_input(tmp_path, monkeypatch):
+    service, ws = workspace_for(tmp_path, 'lamp', seed=2202)
+    ws.model = LampPlanner('lamp')
+    provider = ArchiveProvider()
+    monkeypatch.setattr('sprite_pipeline.providers.get_provider', lambda *args: provider)
+    spec = TaskSpec(object_type='interactable', object_id='lamp', provider='fixture',
+                    description='Light the lens to partial green and finish at full green.')
+    work = ws.plan(ws.create(spec, 'target-lamp-chain', planning_authorized=True).id)
+    client = TestClient(create_api(service=service), base_url='http://testserver/v1/open-motion/' + work.id + '/')
+    initial = ws.view(work.id)['target_set_sha256']
+    png = provider.archive[8]  # Distinct from both accepted endpoints.
+    bind = dict(expected_revision=work.revision, expected_targets=initial, stage_index=0,
+                png_base64=base64.b64encode(png).decode(), note='Check lamp housing and partial green state')
+    saved = client.post('target', json=bind)
+    assert saved.status_code == 200, saved.text
+    guard = saved.json()['target_set_sha256']
+    assert guard != initial and client.get('targets/0').content == png
+    assert client.post('target', json={**bind, 'png_base64': None}).status_code == 409
+    generate = dict(expected_revision=work.revision, plan_sha256=work.plan_sha256)
+    assert client.post('generate', json={**generate, 'expected_targets': initial}).status_code == 409
+    assert not ws.load(work.id).job_id
+    response = client.post('generate', json={**generate, 'expected_targets': guard})
+    assert response.status_code == 200, response.text
+    job_id = ws.load(work.id).job_id
+    engine = PlanGeneration(service)
+    engine.advance(job_id, provider, wait=True)
+    assert provider.end_targets == [png]
+    assert decide(client, 0, 'accept', 2)[-1]['sha256'] == sha256(provider.archive[3]).hexdigest()
+    engine.advance(job_id, provider, wait=True)
+    assert provider.inputs == [(ARCHIVE/'lamp/A.png').read_bytes(), provider.archive[3]]
+    assert provider.end_targets == [png, None]
+    assert client.post('target', json={**bind, 'expected_targets': guard}).status_code == 409
+
+
+def test_deterministic_palette_edit_on_archive_stage(chain):
+    service,work,engine,provider,client=chain
+    before=client.get('adjustments',params={'revision':1,'candidate':1,'stage':0}).json()
+    assert 'frames' in before,before
+    selected=[i for i in range(len(before['frames'])) if i not in before['locked_frames']]
+    assert len(selected)>1
+    body={'expected_revision':1,'candidate_index':1,'stage_index':0,'token':before['token'],'request_key':'palette-across-stages',
+          'description':'Recolor the authorized lamp pixels','palette':[{'source':'#808080','target':'#55ff99'}],
+          'frames':[{'region':{'frame':i,'source_sha256':before['frames'][i]['sha256'],'spans':[{'start':0,'length':128*128}]}} for i in selected]}
+    # Select a real visible source color so changed-pixel assertions are meaningful.
+    from PIL import Image
+    from io import BytesIO
+    first=client.get(f"edit-source/{selected[0]}",params={'revision':1,'candidate':1,'stage':0,'token':before['token']}).content
+    rgb=next(pixel[:3] for pixel in Image.open(BytesIO(first)).convert('RGBA').getdata() if pixel[3])
+    body['palette'][0]['source']='#'+bytes(rgb).hex()
+    res=client.post('local-frame-edits',json=body);assert res.status_code==200,res.text
+    task=res.json()['adjustment']
+    assert sum(x['changed_inside_pixels'] for x in task['spatial_protection']['frames'])>0
+    assert all(task['proposed_frames'][i]['sha256']==before['frames'][i]['sha256'] for i in before['locked_frames'])
+    assert client.post('local-frame-edits',json=body).json()['adjustment']['id']==task['id']
+    assert client.post('local-frame-edits',json={**body,'description':'different'}).status_code==409
+    adopted=client.post('adjustments/'+task['id']+'/decision',json={'token':task['preview_token'],'decision':'accept','note':'Verify both staged timeline segments','acknowledge_warnings':True})
+    assert adopted.status_code==200,adopted.text
+    new=adopted.json()['work']
+    assert new['revision']==1 and new['adjustment_usage']['generation']==0
+    run=new['job']['candidates'][0]['plan_execution']['stages'][0]
+    assert run['adjustment_history'][-1]['id']==task['id']
+    assert engine.saved_frames(work.job_id,1,0)==provider.archive[:5]
+
+
+def test_local_frame_edits_refuse_stale_locked_and_outside_pixels(chain):
+    service,work,engine,provider,client=chain
+    context=client.get('adjustments',params={'revision':1,'candidate':1,'stage':0}).json()
+    body={'expected_revision':1,'candidate_index':1,'stage_index':0,'token':context['token'],'request_key':'local-frame-negative',
+          'description':'One explicitly selected pixel','palette':[{'source':'#808080','target':'#00ff00'}],
+          'frames':[{'region':{'frame':1,'source_sha256':context['frames'][1]['sha256'],'spans':[{'start':0,'length':1}]}}]}
+    assert client.post('local-frame-edits',json={**body,'token':'0'*64}).status_code==409
+    locked={**body,'frames':[{'region':{**body['frames'][0]['region'],'frame':0,'source_sha256':context['frames'][0]['sha256']}}]}
+    assert client.post('local-frame-edits',json=locked).status_code==409
+    bad={**body,'frames':[{'region':{**body['frames'][0]['region'],'source_sha256':'0'*64}}]}
+    assert client.post('local-frame-edits',json=bad).status_code==409
+    from PIL import Image
+    from io import BytesIO
+    raw=client.get('edit-source/1',params={'revision':1,'candidate':1,'stage':0,'token':context['token']}).content
+    im=Image.open(BytesIO(raw)).convert('RGBA');old=im.getpixel((1,0));im.putpixel((1,0),((old[0]+1)%256,*old[1:]));buf=BytesIO();im.save(buf,'PNG')
+    outside={**body,'palette':None,'frames':[{'region':body['frames'][0]['region'],'png_base64':base64.b64encode(buf.getvalue()).decode()}]}
+    assert client.post('local-frame-edits',json=outside).status_code==409
+    assert client.get('adjustments',params={'revision':1,'candidate':1,'stage':0}).json()['tasks']==[]

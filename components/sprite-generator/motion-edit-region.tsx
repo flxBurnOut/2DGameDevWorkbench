@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Native source pixels with an annotation-only canvas. */
+import {toFrameRegion} from '../../features/image-edit/frame-region.mjs';
 import {useCallback,useEffect,useRef,useState,type PointerEvent} from 'react';
 
 export type EditRegion={frame:number;source_sha256:string;spans:{start:number;length:number}[]};
@@ -14,12 +15,6 @@ function pixels(region:EditRegion|undefined,size:number){
   }
   return result;
 }
-function encode(bits:Uint8Array){
-  const spans:EditRegion['spans']=[];
-  for(let i=0;i<bits.length;){if(!bits[i]){i++;continue;}const start=i;while(i<bits.length&&bits[i])i++;spans.push({start,length:i-start});}
-  return spans;
-}
-
 export function MotionEditRegion({start,end,width,height,frames,regions,source,onChange}:{
   start:number;end:number;width:number;height:number;frames:{sha256:string}[];regions:Record<number,EditRegion>;
   source:(frame:number)=>string;onChange:(region:EditRegion)=>void;
@@ -59,7 +54,7 @@ export function MotionEditRegion({start,end,width,height,frames,regions,source,o
   function finish(e:PointerEvent<HTMLCanvasElement>){
     const current=stroke.current;if(!current||current.id!==e.pointerId)return;
     stroke.current=null;
-    if(current.source===url)onChange({frame,source_sha256:frames[frame].sha256,spans:encode(current.bits)});
+    if(current.source===url)onChange(toFrameRegion(frame,frames[frame].sha256,current.bits,width,height));
     if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);
   }
   return <div className="motion-region-editor">

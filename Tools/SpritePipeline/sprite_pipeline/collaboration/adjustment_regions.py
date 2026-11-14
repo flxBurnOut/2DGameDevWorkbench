@@ -32,7 +32,7 @@ def rgba(data):
         return image.convert('RGBA')
 
 
-def mask_for(region, size):
+def mask_for(region, size, *, allow_full=False):
     count=size[0]*size[1]; mask=bytearray(count);end=-1
     for span in region['spans']:
         start,length=span['start'],span['length']
@@ -40,7 +40,7 @@ def mask_for(region, size):
             raise ValidationHarnessError('编辑区域越界、重叠或顺序错误；不会自动扩大或纠正')
         mask[start:start+length]=b'\xff'*length;end=start+length
     selected=sum(v==255 for v in mask)
-    if not 0<selected<count:
+    if selected==0 or (selected==count and not allow_full):
         raise ValidationHarnessError('请涂选局部编辑区域，不能为空或覆盖整张图')
     return Image.frombytes('L',size,bytes(mask))
 
@@ -99,9 +99,9 @@ def composite_region(source, generated, region):
     return data,stats
 
 
-def verify_protection(source, proposed, region):
+def verify_protection(source, proposed, region, *, allow_full=False):
     before=rgba(source);after=rgba(proposed)
     if before.size!=after.size:raise ConflictError('受保护备选尺寸已改变')
-    bits=mask_for(region,before.size).tobytes();a=before.tobytes();b=after.tobytes()
+    bits=mask_for(region,before.size,allow_full=allow_full).tobytes();a=before.tobytes();b=after.tobytes()
     if any(a[i*4:i*4+4]!=b[i*4:i*4+4] for i,v in enumerate(bits) if not v):
         raise ConflictError('备选改变了区域外的受保护像素，不能采用')

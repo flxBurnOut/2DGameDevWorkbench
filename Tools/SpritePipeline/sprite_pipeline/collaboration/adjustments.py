@@ -202,6 +202,8 @@ class Adjustments:
             if body.requested_method is not None:
                 if body.requested_method not in methods:raise ValidationHarnessError('所选工具不支持当前范围')
                 methods=[body.requested_method]
+            from .experiment_policy import require_redraw_scope
+            methods=require_redraw_scope(self.s,work_id,body,context,methods)
             if any(t['state'] in ACTIVE for t in context['tasks']):raise ConflictError('先处理当前备选或未知请求，不会同时生成多个版本')
             require_drawing_slot(context,body.start,body.end)
             user=body.user_request.strip()

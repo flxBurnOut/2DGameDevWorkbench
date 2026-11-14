@@ -579,10 +579,13 @@ class OpenWork(Contract):
     visual_structure: dict[str,Any] | None = None
     generation_policy_version: Literal[1, 2, 3, 4, 5] | None = None
     visibility_review_version: Literal[1, 2, 3, 4] | None = None
+    # Set only on copies made for paper experiments; ordinary works omit it.
+    experiment: dict[str, Any] | None = None
 
     @model_serializer(mode='wrap')
     def preserve_structure_free_work(self,handler):
         data=handler(self)
+        if self.experiment is None:data.pop('experiment',None)
         if self.visual_structure is None:data.pop('visual_structure',None)
         if self.planning_format_version is None:data.pop('planning_format_version',None)
         if self.generation_policy_version is None:data.pop('generation_policy_version',None)

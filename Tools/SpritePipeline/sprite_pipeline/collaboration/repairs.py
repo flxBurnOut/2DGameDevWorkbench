@@ -11,6 +11,10 @@ from ..models import CandidateStatus, utc_now
 from ..providers.base import ProviderRequest, PollStatus
 
 
+# Same tiers as motion alternatives, so tool usage can be counted in one place.
+REPAIR_LEVELS = {'appearance': 'restricted_generation', 'transition': 'window_redraw'}
+
+
 def generation_calls(job):
     return sum(r.submission_attempts + len(r.repairs) for c in job.candidates for r in c.plan_execution.stages)
 
@@ -61,6 +65,8 @@ class LocalRepairs:
                     if attempt['identity']!=identity:raise ConflictError('同一修复请求编号的内容不同')
                     return attempt
             candidate=self.s._candidate(job,index)
+            from .experiment_policy import require_tool
+            require_tool(self.s,job,REPAIR_LEVELS[mode])
             from .adjustments import pending_adjustment
             if pending_adjustment(self.s,job,index,stage):raise ConflictError('请先处理当前修改备选')
             if any(a['state'] in {'submitting','pending','unknown','awaiting_review'} for a in run.repairs):raise ConflictError('先处理已有修复，不创建重复请求')
@@ -84,13 +90,14 @@ class LocalRepairs:
                 raise ValidationHarnessError('视觉预算不足以重新检查当前片段、后续片段及整段；不会跳过检查')
             base=self.read_frames(job_id,evidence['frames']);reference=(self.store.job_dir(job_id)/'input/reference.png').read_bytes()
             if hashlib.sha256(reference).hexdigest()!=job.reference_sha256:raise ConflictError('参考图已改变')
-            seed=(candidate.seed+stage*104729)%(2**31-1) if candidate.seed is not None else None
+            from .execution import stage_seed
+            seed=stage_seed(candidate.seed,stage)
             request=repair_request(reference,base[start:end+1],base[end+1],note.strip(),seed,mode)
             self.s._check_submission_quota(job_id,index,provider,phase_frame_count=request.frame_count)
             number=len(run.repairs);folder=self.store.job_dir(job_id)/'repairs'/f'c{index}s{stage}r{number}'
             folder.mkdir(parents=True,exist_ok=True)
             attempt={'number':number,'request_key':request_key,'identity':identity,'base_token':token,'base_frames':evidence['frames'],
-                'start':start,'end':end,'mode':mode,'note':note.strip(),'seed':seed,'state':'submitting','folder':folder.relative_to(self.store.job_dir(job_id)).as_posix(),
+                'start':start,'end':end,'mode':mode,'repair_level':REPAIR_LEVELS[mode],'note':note.strip(),'seed':seed,'state':'submitting','folder':folder.relative_to(self.store.job_dir(job_id)).as_posix(),
                 'input_count':request.frame_count,'created_at':utc_now().isoformat(),'requests':1,'source_preserved':True}
             atomic_write_json(folder/'intent.json',{**attempt,'prompt':request.prompt,'input_hashes':[hashlib.sha256(b).hexdigest() for b in (request.edit_frames or (request.reference_image,request.last_frame))]})
             with self.store.locked_job(job_id) as current:

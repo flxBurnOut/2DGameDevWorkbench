@@ -27,7 +27,7 @@ v4 增加 `target-motion-stage`（制作前本地绑定真实末图）、`repair
 
 `motionSpec.object_id` 指向已有对象预设，`motionSpec.object_type` 为 `character` 或 `interactable`，省略按 character。旧 `motionSpec.character_id` 仍接受；同时提供 object_id 与 character_id 时必须相等。对象类型须与预设一致。旧 character_id-only 请求、冻结 spec 和参考快照保持原序列化，读取不迁移旧作业。新对象身份仅用于开放动作与其内部作业绑定；旧 Native create/create-and-generate 继续使用顶层 characterId/actionId，交互物不能通过它绕过开放动作。
 
-`GET /v1/presets` 新增 objects 并保留 characters/actions；`GET /v1/open-motion/references` 新增 objects 并保留 characters；`GET /v1/open-motion/references/<id>` 返回已登记对象的真实 PNG。工作与作业的快照容器仍叫 character。交互物预设固定 128×128，不含 facing/weapon_hand；目前只读取已有预设，上传接口和 reference-art transfer 仍仅创建角色参考。详见[对象身份与预设](sprite-generator.md#对象身份与预设n1)。
+`GET /v1/presets` 新增 objects 并保留 characters/actions；`GET /v1/open-motion/references` 新增 objects 并保留 characters；`GET /v1/open-motion/references/<id>` 返回已登记对象的真实 PNG。工作与作业的快照容器仍叫 character。交互物预设固定 128×128，不含 facing/weapon_hand；上传接口仍仅创建角色参考，`reference-art transfer` 则按源任务 subject 创建角色或交互物预设。物品移送只接受已完成的 128×128 PixelLab 物品原图，不缩放 GPT 图片。详见[对象身份与预设](sprite-generator.md#对象身份与预设n1)和[物品移送](prop-art.md#旧-pixellab-流程)。
 
 ## 2. 公共任务模型
 
@@ -202,7 +202,7 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 
 ## 角色原图连接器
 
-`reference-art` 的 `generate` 输入为 prompt、可选 name/facing/seed；`transfer` 仅接受 sourceTaskId。Node 适配器通过 SpritePipeline 的 `/v1/reference-art/jobs` 和 `/jobs/{id}` 提交与查询 PixelLab Pixflux 后台任务。`/v1/reference-art/settings` 仅返回 configured/model/size，POST 经专用网关保存 Key，不经过任务输入。`/v1/reference-art/import` 创建幂等角色预设，保持原始 PNG 字节，不生成动画。Web 单任务查询使用 `/api/workbench/tasks/{taskId}`，`refresh=true` 只刷新已有任务。具体协议和恢复边界见 [角色原图](reference-art.md)。
+`reference-art` 的 `generate` 输入为 prompt、可选 name/facing/seed/size/subject；`transfer` 使用 sourceTaskId，可附 identityDescription。Node 适配器通过 SpritePipeline 的 `/v1/reference-art/jobs` 和 `/jobs/{id}` 提交与查询 PixelLab Pixflux 后台任务。`/v1/reference-art/settings` 返回公开配置状态，POST 经专用网关保存 Key，不经过任务输入。角色移送使用 `/v1/reference-art/import`，物品移送使用 `/v1/reference-art/transfer-prop`，均验证源任务、PNG 与哈希，幂等创建对应类型预设，不生成动画。Web 单任务查询使用 `/api/workbench/tasks/{taskId}`，`refresh=true` 只刷新已有任务。具体协议和恢复边界见[角色原图](reference-art.md)与[物品原图](prop-art.md)。
 
 ## Agent 共享操作
 
@@ -213,7 +213,9 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 - 发现与结果：guidance、environment、start、frontend、presets、interactable-template、tasks、assets、asset、asset-manifest、result、artifact。
 - 展示与项目交付：present、frontend-context、game-exports、game-export、export-to-game、install-game-export、complete-game-export。
 - 共享文档：documents、document-get、document-create、document-save、document-apply、document-restore、document-validate、document-simulate、document-adopt-image。
-- 图片局部编辑：image-inspect、image-resolve、image-edit、image-apply、image-session-get；内部 image-session-create 复用同一会话服务，不是第六个 MCP 工具。
+- 图片局部编辑：image-inspect、image-resolve、image-edit、image-apply、image-session-get；内部 image-session-create 复用同一会话服务，不单独注册 MCP 工具。
+- 部件与属性计划：image-part-context、image-part-suggest、image-part-get、image-plan-prepare、image-plan-get。
+- 图片判断与复核：image-review-record、image-critic-prepare、image-critic-run、image-critic-get。完整操作与保证边界见[属性计划与独立复核](../workbench/guides/image-attribute-editing.md#接口与恢复)。
 
 参数均通过 JSON 传递，未知字段和越界产物被拒绝。文档操作从 MCP / CLI 转发至长驻 Bridge，保持网页与 Agent 共用唯一写入端，不在各客户端进程直接写文档文件。artifact 在 HTTP/CLI 返回预览 base64，MCP 返回原生 image 内容。原始产物不被修改。具体工具名见 [Agent 客户端接入](agent-clients.md)。
 
@@ -231,9 +233,9 @@ image-assets 的外部操作为 generate-prop、edit-image，使用gpt-image-2.6
 
 ### 已有图片会话（7A）
 
-五个注册工具分别是 `workbench_inspect_image_target`、`workbench_resolve_image_region`、`workbench_edit_image_region`、`workbench_apply_image_candidate` 和 `workbench_get_image_edit`。前四个是主流程，第五个读取会话、候选与原任务身份。MCP/CLI 的全部 `image-*` 操作经 `POST /v1/agent/<operation>` 转发 canonical Bridge；刷新读取也可能保存候选状态，不能在另一个进程执行。Bridge 离线时明确失败，无直写 fallback；同一数据目录仅支持一个权威 Bridge。
+核心会话工具为 `workbench_inspect_image_target`、`workbench_resolve_image_region`、`workbench_edit_image_region`、`workbench_apply_image_candidate` 和 `workbench_get_image_edit`。前四个是主流程，第五个读取会话、候选与原任务身份；部件定位、计划、判断记录与独立复核另有注册工具，见[工具索引](agent-client-tools.md#工具索引)。MCP/CLI 的全部 `image-*` 操作经 `POST /v1/agent/<operation>` 转发 canonical Bridge；刷新读取也可能保存候选状态，不能在另一个进程执行。Bridge 离线时明确失败，无直写 fallback；同一数据目录仅支持一个权威 Bridge。
 
-精确目标来自既有图片任务，或共享交互物的 definitionId＋静态外观槽位。resolve 不建立生成任务；显式命名区域需 commandId。edit 使用 expectedRevision、expectedSha256 和 regionRef；继续会话另需 expectedEditRevision 与明确的 baseCandidateVersion。候选完成不自动采用，apply 再检查目标版本、真实图片、尺寸和锁，并保留非目标源图与工程结构。
+精确目标来自既有图片任务、共享交互物的 definitionId＋静态外观槽位，或 `motion-frame` 的 workId/workRevision/candidateIndex/stageIndex/frameIndex；省略 stageIndex 表示完整候选。resolve 不建立生成任务；显式命名区域需 commandId。edit 使用 expectedRevision、expectedSha256 和 regionRef；继续会话另需 expectedEditRevision 与明确的 baseCandidateVersion。候选完成不自动采用，apply 再检查目标版本、真实图片、尺寸和锁，并保留非目标源图与工程结构。动画帧 apply 只保存本地像素动画备选，回执为 `saved_variant`，不立即改动画；须返回完整播放对比后再采用备选。64/128 像素动画帧不进入 GPT Image 生成编辑，生成式帧修改沿用 PixelLab 流程。见[确定性帧编辑](motion-adjustments.md#确定性帧编辑)。
 
 同 commandId 同载荷读取持久记录，不同载荷报冲突。执行前保存提交意图，在适配器执行前记录 taskId；响应丢失或重启后先读取原会话与任务。未知提交不会自动新建任务，也不能改 commandId 掩盖未知状态。源 PNG/JPEG/WebP 的文件字节与 sha256 保留；规范 sRGB/RGBA8 straight-alpha 字节另有 rgbaSha256，二者不能互换。手工 pixel-patch 另校验其基准 RGBA 哈希及 before 字节。内部选区 1 可改、0 保护；图片编辑 PNG 蒙版则 Alpha=0 可改，其余保护，二者不可混用。
 

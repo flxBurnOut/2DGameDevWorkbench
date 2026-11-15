@@ -2,7 +2,7 @@
 
 `reference-art` 是工作台独立能力。它使用 PixelLab Pixflux 生成 64×64 或 128×128 透明背景像素角色，供现有序列帧工作区直接使用。输入和输出以 `workbench/manifest.json` 为准。
 
-物品原图复用本适配器的 `generate`，传入 `subject: prop`，从交互物编辑器制作与采用，不能执行角色 transfer。角色请求省略 subject 保持原行为。详见[物品原图](prop-art.md)。
+物品原图复用本适配器的 `generate`，传入 `subject: prop`，从交互物编辑器制作与采用。`transfer` 按已保存源任务的 subject 分派：角色创建角色预设，128×128 PixelLab 物品创建交互物预设。角色请求省略 subject 保持原行为。详见[物品原图](prop-art.md)。
 
 ## 使用流程
 

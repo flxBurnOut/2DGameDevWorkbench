@@ -41,26 +41,19 @@
 .wb-app .wb-theme-toggle:hover { color: var(--theme-accent); background: var(--theme-accent-soft); }
 .wb-app .wb-theme-toggle:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
 @media (max-width: 700px) { .wb-header .wb-theme-toggle span { display: none; } }
-/* The map editor provides its own compact project bar and shared task summary.
+/* The sprite editor provides its own compact project bar and shared task summary.
    Scope by the mounted surface so SSR and client navigation agree, and leave
    other capability pages and the shared dialogs intact. */
-.wb-app:has([data-map-editor]) > .wb-header,
 .wb-app:has([data-sprite-editor]) > .wb-header,
 .wb-app:has([data-sprite-editor]) > .wb-tool-context,
-.wb-app:has([data-sprite-editor]) > .wb-status,
-.wb-app:has([data-map-editor]) > .wb-tool-context,
-.wb-app:has([data-map-editor]) > .wb-status {
+.wb-app:has([data-sprite-editor]) > .wb-status {
   display: none;
-}
-.wb-app:has([data-map-editor]) > .wb-route {
-  overflow: hidden;
-  background: none;
 }
 .wb-app:has([data-sprite-editor]) > .wb-route {
   overflow: hidden;
   background: none;
 }
-.sc-workspace .map-task-summary, [data-sprite-editor] .map-task-summary {
+[data-sprite-editor] .map-task-summary {
   display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px;
   border: 1px solid var(--wb-line); border-radius: 6px; font-size: 12px;
   white-space: nowrap; color: var(--wb-muted);
@@ -291,10 +284,6 @@
   background-image: none;
 }
 .wb-route .ie-workspace {
-  height: 100%;
-  min-height: 0;
-}
-.wb-route .map-workspace {
   height: 100%;
   min-height: 0;
 }
@@ -579,24 +568,6 @@
   margin: 10px 0 22px;
   color: var(--wb-muted);
   font-size: 16px;
-}
-.wb-scene-handoff {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 20px;
-  border-top: 1px solid var(--wb-line);
-  margin-top: 32px;
-  padding-top: 22px;
-}
-.wb-scene-handoff h2 {
-  font-size: 16px;
-  font-weight: 500;
-}
-.wb-scene-handoff p {
-  color: var(--wb-muted);
-  margin-top: 6px;
 }
 .wb-tool-context {
   display: flex;
@@ -1189,7 +1160,6 @@
     transition: none;
   }
 }
-.wb-route .map-workspace,
 .wb-route .ie-workspace {
   position: relative;
 }
@@ -1203,22 +1173,6 @@
   color: light-dark(var(--theme-light-text), #c4cadd);
   font-size: 14px;
 }
-.wb-map-draft-error {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 40px;
-  z-index: 35;
-  padding: 12px;
-  background: light-dark(var(--theme-light-danger-soft), #302319);
-  color: light-dark(var(--theme-light-danger), #f1c890);
-  border: 1px solid light-dark(var(--theme-light-danger), #775535);
-  border-radius: 5px;
-  font-size: 14px;
-}
-
-.wb-scene-entry-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-
 .wb-history-settings { margin: 24px 0; padding: 20px; border: 1px solid var(--wb-line); border-radius: 12px; background: var(--wb-panel); }
 .wb-history-settings h2 { font-size: 16px; font-weight: 600; }
 .wb-history-settings p { margin: 10px 0 16px; color: var(--wb-muted); max-width: 800px; line-height: 1.7; }

@@ -16,7 +16,7 @@ The workbench's `sprite-pipeline` adapter communicates with this component throu
 
 - Upstream: <https://github.com/systemchester/FrameRonin.git>
 - Website behavior reference: <https://frameronin.com/>
-- No FrameRonin source is included in the tracked workbench. The map editor is a modular compatibility implementation built around the public Pixelwork v2 state shape and observed user-facing behavior.
+- No FrameRonin source is included in the tracked workbench. The map editor on the archived `new-arch` branch was a modular compatibility implementation built around the public Pixelwork v2 state shape and observed user-facing behavior. That editor is not included in `paper-vbyc`.
 - Any local reference clone under ignored runtime directories is research material only and must not be packaged or published.
 
 ## copyWorms interaction reference
@@ -46,14 +46,14 @@ JavaScript and Python dependencies retain their own licenses and notices. Exact 
 
 ## External API services
 
-Optional map original-image and layer generation can call Google Gemini (`gemini-3.1-flash-image`), OpenAI Images (`gpt-image-2`) or Tencent TokenHub Hunyuan Image 3.0 (`hy-image-v3`). Those services and their model outputs are not incorporated source dependencies; use is subject to the account owner's provider terms, configuration, usage limits, and content rights. No provider credential is distributed with this repository.
+The current `image-assets` adapter uses OpenAI Images through the configured GPT Image 2.6 provider (`gpt-image-2.6-sunburst`) for transparent props and image editing. Map original-image and layer generation, including its Gemini and Hunyuan providers, belongs to the archived `new-arch` branch. External services and their model outputs are not incorporated source dependencies; use is subject to the account owner's provider terms, configuration, usage limits, and content rights. No provider credential is distributed with this repository.
 
 SpritePipeline can use providers configured within that component. Its provider-specific behavior and terms are documented by the upstream component and service; the workbench does not redistribute provider credentials.
 
 ## CopyWorms engineering reference
 
 - Reference revision: `bb1581d12c9626e294e403a01db5f3cffb229cd8` of <https://github.com/flxBurnOut/copyWorms>.
-- `.agents/skills/forge-game-engineering/` documents the project's actual architecture and asset contracts. Its small visual adapter and map mount helper adapt `PlayerModule/Formal/Player_Warrior.gd` playback/facing and `LevelModule/Formal/Level_02_SceneBuilder.gd` map re-entry behavior. It does not package game art, full player controllers, global managers or Pixelwork/plugin runtime code.
+- `.agents/skills/forge-game-engineering/` documents the project's actual architecture and asset contracts. Its small visual adapter adapts `PlayerModule/Formal/Player_Warrior.gd` playback/facing, and its SpriteFrames merge helper preserves unselected clips. The former map mount helper and map-specific reference remain on `new-arch`, outside `paper-vbyc`. The Skill does not package game art, full player controllers, global managers or Pixelwork/plugin runtime code.
 - The inspected game README states learning and competition use; this notice does not imply an MIT grant for that game or its third-party components. Any future source extraction must preserve provenance and applicable terms.
 
 The workbench-integrated SpritePipeline additionally includes a local Godot SpriteFrames package exporter (`processing/godot_export.py`) and its UI/API/artifact integration. These changes are local integration work beyond the recorded upstream synchronization baseline; they do not imply that the independent upstream repository has been updated.

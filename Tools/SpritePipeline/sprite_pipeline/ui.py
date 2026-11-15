@@ -2200,7 +2200,7 @@ def build_ui(
         from .vision_review import VisionReviewer
         reviewer=VisionReviewer(service.settings)
         configured=reviewer.configured
-        note=("可复用服务端 TOKENHUB_API_KEY；若密钥只填在地图页面，请在此保存一次。" if reviewer.provider=="hunyuan" else "使用独立的 OpenAI API Key。")
+        note=("可复用服务端 TOKENHUB_API_KEY，或在此保存 TokenHub Key。" if reviewer.provider=="hunyuan" else "使用独立的 OpenAI API Key。")
         return _notice("ok" if configured else "warn", "视觉检查已配置" if configured else "视觉检查待配置",
             f"请求模型 {reviewer.info['model']}，检查全部实际帧（1–64 帧）；初检加至多一次复核，按 API 用量计费。TokenHub Key 是访问凭据，不会自动选择 Image V3；Image V3 用于生图，本页使用图片理解模型。" + note)
 

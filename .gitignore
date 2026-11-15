@@ -42,6 +42,9 @@ next-env.d.ts
 /work/
 /tmp/
 
+# Local nested checkout; never stage it as an unconfigured gitlink.
+/2dgamedevworkbench/
+
 # local Python sprite pipeline runtime
 /Tools/SpritePipeline/.venv/
 /Tools/SpritePipeline/**/__pycache__/

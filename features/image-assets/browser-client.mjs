@@ -42,15 +42,6 @@ export function imageBytesDataUrl(bytes, mime = 'image/png') {
   return `data:${mime};base64,${btoa(binary)}`;
 }
 
-export function readImageGeneration(value) {
-  if (value === undefined) return undefined;
-  if (!value || typeof value !== 'object' ||
-    typeof value.sourceTaskId !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,199}$/i.test(value.sourceTaskId) ||
-    typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256))
-    throw new Error('图片来源记录无效。');
-  return { sourceTaskId: value.sourceTaskId, sha256: value.sha256 };
-}
-
 // Adoption always re-reads the durable task, result and exact PNG bytes.
 export async function readImageAsset(taskId, kind, request = fetch) {
   const { task } = await imageAssetJson(`/api/workbench/tasks/${encodeURIComponent(taskId)}`, undefined, request);

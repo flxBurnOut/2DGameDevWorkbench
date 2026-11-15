@@ -24,12 +24,14 @@ Node 版本要求见 `package.json`；SpritePipeline 使用自己的 `.venv`。P
 
 ```powershell
 $env:PYTHONPATH = Join-Path (Get-Location) 'Tools/SpritePipeline'
-& 'Tools/SpritePipeline/.venv/Scripts/python.exe' -m pytest -q Tools/SpritePipeline/tests/<相关测试>.py
+& 'Tools/SpritePipeline/.venv/Scripts/python.exe' -X utf8 -m pytest -q Tools/SpritePipeline/tests/<相关测试>.py
 ```
 
 临时目录受限时，给 pytest 指定 `work/test-runs/` 下本次新建的唯一 `--basetemp`，并按需禁用缓存插件。系统 Python 缺少 validator 依赖时可复用项目 venv；Windows UTF-8 文件可用 `python -X utf8` 读取。
 
 Node 集成测试通过 `tests/helpers/runtime-workspace.mjs` 创建独立 WORKBENCH_TEST_RUN；新测试沿用该入口。使用 fixture 或模拟提供方验证流程。真实生成只有在任务确实包含相应费用授权时执行，流程测试不代替生成品质判断。
+
+Windows 上运行会启动 Python 子进程的 Node 回归前，设置 `$env:PYTHONUTF8 = '1'`，使子进程按 UTF-8 读取协议和归档 JSON。通常让各测试进程自行生成 `WORKBENCH_TEST_RUN`；不要给多个独立测试共用同一个目录，否则历史计数和媒体数量会相互污染。需要回环连接的集成测试应在允许本地 socket 的执行环境中运行。
 
 工作台导出与 helper 回归基线是 Godot 4.7.x，使用 `GODOT_47_BIN` 并核对 `--version`。目标游戏使用它自己的实际版本；兼容性不符时报告具体差异。缺少引擎可完成其他检查并标明未运行的项目。
 

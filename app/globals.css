@@ -51,7 +51,6 @@
 }
 
 :root {
-  --workbench-nav-height: 3.5rem;
   --background: var(--theme-bg);
   --foreground: var(--theme-text);
   --card: var(--theme-panel);
@@ -119,60 +118,5 @@
 
   ::selection {
     background: light-dark(var(--theme-light-panel), oklch(0.65 0.2 265 / 45%));
-  }
-}
-
-@layer utilities {
-  .nav-item {
-    @apply relative flex h-8 items-center gap-2 rounded-lg px-2 text-left text-[13px] transition-colors hover:bg-muted hover:text-foreground;
-  }
-
-  .pixel-thumb {
-    background-image:
-      linear-gradient(45deg, light-dark(var(--theme-light-surface), oklch(0.67 0.18 285 / 6%)) 25%, transparent 25%),
-      linear-gradient(-45deg, light-dark(var(--theme-light-surface), oklch(0.67 0.18 285 / 6%)) 25%, transparent 25%),
-      linear-gradient(45deg, transparent 75%, light-dark(var(--theme-light-surface), oklch(0.67 0.18 285 / 6%)) 75%),
-      linear-gradient(-45deg, transparent 75%, light-dark(var(--theme-light-surface), oklch(0.67 0.18 285 / 6%)) 75%);
-    background-position:
-      0 0,
-      0 4px,
-      4px -4px,
-      -4px 0;
-    background-size: 8px 8px;
-  }
-
-  .panel-highlight {
-    box-shadow:
-      inset 0 1px 0 light-dark(var(--theme-light-shadow), oklch(1 0 0 / 6%)),
-      0 24px 80px light-dark(var(--theme-light-shadow), oklch(0.05 0.03 275 / 24%));
-  }
-
-  .workbench-app-shell {
-    isolation: isolate;
-  }
-
-  .workbench-navigation {
-    box-shadow: 0 1px 0 light-dark(var(--theme-light-shadow), oklch(1 0 0 / 2%));
-  }
-
-  .pixel-grid {
-    background-image:
-      linear-gradient(light-dark(var(--theme-light-surface), oklch(0.75 0.16 267 / 12%)) 1px, transparent 1px),
-      linear-gradient(90deg, light-dark(var(--theme-light-surface), oklch(0.75 0.16 267 / 12%)) 1px, transparent 1px);
-    background-size: 16px 16px;
-  }
-
-  .sprite-frame-placeholder {
-    background-image:
-      linear-gradient(45deg, light-dark(var(--theme-light-surface), oklch(0.78 0.05 275 / 4%)) 25%, transparent 25%),
-      linear-gradient(-45deg, light-dark(var(--theme-light-surface), oklch(0.78 0.05 275 / 4%)) 25%, transparent 25%),
-      linear-gradient(45deg, transparent 75%, light-dark(var(--theme-light-surface), oklch(0.78 0.05 275 / 4%)) 75%),
-      linear-gradient(-45deg, transparent 75%, light-dark(var(--theme-light-surface), oklch(0.78 0.05 275 / 4%)) 75%);
-    background-position:
-      0 0,
-      0 6px,
-      6px -6px,
-      -6px 0;
-    background-size: 12px 12px;
   }
 }

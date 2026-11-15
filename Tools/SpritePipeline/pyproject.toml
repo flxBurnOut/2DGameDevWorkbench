@@ -22,8 +22,8 @@ dev = ["pytest>=8,<10"]
 [project.scripts]
 sprite-harness = "sprite_pipeline.cli:main"
 
-[tool.setuptools]
-packages = ["sprite_pipeline", "sprite_pipeline.providers", "sprite_pipeline.processing"]
+[tool.setuptools.packages.find]
+include = ["sprite_pipeline", "sprite_pipeline.*"]
 
 [tool.setuptools.package-data]
 sprite_pipeline = ["static/*"]

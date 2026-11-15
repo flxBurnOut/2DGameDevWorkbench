@@ -74,7 +74,7 @@ npm run workbench -- status <task-id> --json
 
 具体样例文件以 `examples/requests/` 当前内容为准。CLI 与 MCP 共享任务目录、状态机、适配器和输出验证，不是另一套实现。
 
-共享工程使用 `npm run workbench -- agent documents --json` 发现，再以 `agent document-get|document-apply|document-observe|document-simulate|document-adopt-image|document-export` 配合 `--input <json-file>` 操作。文档 CLI 与 MCP 都转发长驻 Runtime Bridge，Bridge 离线时明确失败，不回退为另一进程直接写文件。HTTP 等价为 `POST /v1/agent/<operation>`；网页使用 `/api/workbench/documents` 同源代理。
+共享工程使用 `npm run workbench -- agent documents --json` 发现，再以 `agent document-get|document-create|document-save|document-apply|document-restore|document-validate|document-simulate|document-adopt-image` 配合 `--input <json-file>` 操作。文档 CLI 与 MCP 都转发长驻 Runtime Bridge，Bridge 离线时明确失败，不回退为另一进程直接写文件。HTTP 等价为 `POST /v1/agent/<operation>`；网页使用 `/api/workbench/documents` 同源代理。引擎导出使用 `interactable-editor` 能力的 `export-godot`，见[交互物编辑器](interactable-editor.md)。
 
 
 ## 浏览器与部署

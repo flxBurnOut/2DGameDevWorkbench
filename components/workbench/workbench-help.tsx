@@ -60,7 +60,7 @@ export function ContextHelp() {
       <div className="wb-guide-materials"><div><Save size={21} /><div><strong>当前保存状态</strong><p>{saveState}</p></div></div></div>
       <dl className="wb-save-locations">
         <dt>本机草稿</dt><dd>保存在当前浏览器，保存成功后可从制作记录恢复；下载源文件可另存备份。</dd>
-        <dt>服务端工程</dt><dd>共享地图、场景、交互物工程和动作任务由本机服务保存，按工程版本恢复。</dd>
+        <dt>服务端工程</dt><dd>共享交互物工程和动作任务由本机服务保存，按工程版本恢复。</dd>
         <dt>资产库素材</dt><dd>登记已有素材和导入文件，供其他工具选用；浏览器草稿不会自动入库。</dd>
         <dt>Godot 导出</dt><dd>导出是该次工程的交付快照；继续修改后需要重新导出。</dd>
       </dl>

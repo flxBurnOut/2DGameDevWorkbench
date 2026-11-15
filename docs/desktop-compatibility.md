@@ -6,9 +6,9 @@
 
 | 范围 | 当前行为 |
 | --- | --- |
-| 图片 API | 钥匙串保管随机加密密钥，本地配置使用 AES-256-GCM；重启恢复，旧本地格式读取时迁移 |
-| 原图、序列帧与视觉服务凭据 | 原生 Keychain 保存凭据，配置文件保存引用；替换/清除后清理旧引用，保存失败保留旧值 |
-| 独立 SpritePipeline 数据 | 新安装使用 `~/Library/Application Support/SpritePipeline`；旧 `.local/share/SpritePipeline` 仍优先兼容，显式目录配置继续有效；工作台继续使用 `work/sprite-pipeline` |
+| 图片 API | Windows 使用当前用户 DPAPI；macOS 用钥匙串保管随机加密密钥，本地配置使用 AES-256-GCM。均支持重启恢复；macOS 读取旧本地格式时迁移 |
+| 原图、序列帧与视觉服务凭据 | Windows 使用当前用户 DPAPI；macOS 用原生 Keychain 保存凭据，配置文件保存引用，替换/清除后清理旧引用。保存失败保留旧值 |
+| 独立 SpritePipeline 数据 | Windows 默认 `%LOCALAPPDATA%/SpritePipeline`；macOS 新安装默认 `~/Library/Application Support/SpritePipeline`，仅旧目录存在时兼容 `~/.local/share/SpritePipeline`。显式目录配置继续有效；工作台两平台均使用 `work/sprite-pipeline` |
 | 编辑器键盘 | 先处理明确支持的组合键，再屏蔽单键操作；中文输入法组合输入不触发编辑操作 |
 | 字体 | 系统字体、PingFang SC 与 SFMono 回退，保留 Windows 字体 |
 | 双平台验证 | 在 Windows/macOS 本机分别运行图片、HTTP、交互物、壳层、凭据、lint、typecheck 和 build（CI 不再运行功能测试） |

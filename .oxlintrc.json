@@ -23,6 +23,7 @@
     "typeCheck": true
   },
   "ignorePatterns": [
+    "2dgamedevworkbench/**",
     ".next/**",
     ".vinext/**",
     "out/**",

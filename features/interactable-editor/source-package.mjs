@@ -1,8 +1,9 @@
-import JSZip from 'jszip';
 import { normalizeProject } from './contract.mjs';
 
 // Shared by the browser importer and round-trip tests; no filesystem or engine required.
 export async function readSourcePackage(bytes) {
+  // Loaded on use so the ZIP reader stays out of the editor's first download.
+  const { default: JSZip } = await import('jszip');
   const zip = await JSZip.loadAsync(bytes);
   const candidates = Object.keys(zip.files).filter((p) =>
     p.endsWith('/interactable-project.json'),

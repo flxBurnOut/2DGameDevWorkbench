@@ -1,5 +1,6 @@
 /* oxlint-disable next/no-img-element -- User-uploaded local data URLs must retain their original bytes. */
 'use client';
+import { NativeSelect, NativeSelectOption, NativeSelectOptGroup } from '@/components/ui/native-select';
 import {offerGodotExport} from '@/lib/workbench/godot-export';
 import {
   useCallback,
@@ -10,7 +11,8 @@ import {
   useState,
   type SetStateAction,
 } from 'react';
-import { Box, Plus, Copy, Download, Upload, Save, Trash2 } from 'lucide-react';
+import { Box, Plus, Copy, Download, FolderOpen, Save, Trash2, ChevronDown, Upload } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import {
   createProject,
   createObject,
@@ -43,7 +45,7 @@ import {
   markEditorSaved,
 } from '@/lib/workbench/editor-session';
 import { listWorkItems, readWorkspaceDraft } from '@/lib/workbench/browser-store';
-import { AssetImportPicker } from '@/components/workbench/asset-import-picker';
+import { AssetImportPicker } from '@/components/workbench/lazy-dialogs';
 import { clearImportQuery, libraryAnimationTiming, readEditorHandoff, type ImportBundle, type ImportPurpose, type LibraryAsset } from '@/lib/workbench/asset-import';
 import { normalizeProject } from '@/features/interactable-editor/contract.mjs';
 import { projectSchema } from '@/features/interactable-editor/contract.mjs';
@@ -51,7 +53,7 @@ import { portableProject } from '@/features/interactable-editor/portable-project
 import { applyDocument, readDocument } from '@/features/editor-documents/client';
 import { useSharedDocument } from '@/features/editor-documents/use-shared-document';
 import { documentFingerprint, type DocumentSavedSnapshot } from '@/features/editor-documents/sync-controller.mjs';
-import { ImageEditWorkspace } from '@/components/image-edit/image-edit-workspace';
+import { ImageEditWorkspace } from '@/components/image-edit/lazy-image-edit-workspace';
 import type { ImageTargetRef } from '@/features/image-edit/client';
 import { imageTargetEquals, readImageEdit } from '@/features/image-edit/client';
 import { clearImageEditNavigation, readImageEditNavigation, writeImageEditNavigation, type ImageEditNavigation } from '@/features/image-edit/navigation';
@@ -61,7 +63,7 @@ import { sharedDocumentHref } from '@/features/editor-documents/library';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import type { WorkItem } from '@/lib/workbench/work-items';
-import { useWorkbench } from '@/components/workbench/workbench-provider';
+import { useWorkbenchActions } from '@/components/workbench/workbench-provider';
 import { isUntouchedStarterProject } from '@/features/interactable-editor/draft-activity';
 import { Field, Numeric, Check, BehaviorPanel } from './property-panels';
 import { VisualPanel } from './visual-panel';
@@ -83,7 +85,7 @@ async function flushPendingDrafts(pass: () => Promise<boolean>) {
   }
 }
 export function InteractableEditor() {
-  const { navigate } = useWorkbench();
+  const { navigate } = useWorkbenchActions();
   type MotionTarget = {target: 'toggle-state' | 'sequence-entry'; index: number; definitionId: string;
     source: 'state' | 'transition'; guard: DocumentSavedSnapshot<InteractableProject>};
   const [library, setLibrary] = useState<{purposes: ImportPurpose[]; assetId?: string; motion?: MotionTarget} | null>(null);
@@ -584,21 +586,40 @@ export function InteractableEditor() {
             : '原草稿保留，请保存源文件；打开工程可恢复自动保存'}
         </span>
         <span className="ie-spacer" />
-        <button disabled={busy || !ready} onClick={()=>setLibrary({purposes:['interactable']})}>从资产库选用交互物项目</button>
-        <button disabled={busy || !ready || !draftWritable} onClick={()=>void run(async()=>{await saveProjectToLibrary(latest.current.project);await persist(true);setMessage('交互物源项目已保存到资产库；尚未导出 Godot。');})}>保存到资产库</button>
-        <button disabled={busy || !ready || imageOpening || Boolean(imageEdit)} onClick={() => setOpenProject(true)}>
-          <Upload size={16} />
-          打开工程
-        </button>
-        <button
-          onClick={() => {
-            downloadJson(project);
-            void persist(true).catch(() => undefined);
-          }}
-        >
-          <Save size={16} />
-          保存源文件
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<button type="button" aria-label="打开" disabled={busy || !ready} />}>
+            <FolderOpen size={16} />
+            打开
+            <ChevronDown size={14} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="ie-menu">
+            <DropdownMenuItem disabled={imageOpening || Boolean(imageEdit)} onClick={() => setOpenProject(true)}>
+              <span><strong>打开工程</strong><small>选择本机草稿、共享工程或导出的源文件。</small></span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setLibrary({ purposes: ['interactable'] })}>
+              <span><strong>从资产库选用</strong><small>打开资产库中已保存的交互物项目。</small></span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {/* Three different destinations: browser draft, runtime asset library and a downloaded file. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<button type="button" aria-label="保存" disabled={!ready} />}>
+            <Save size={16} />
+            保存
+            <ChevronDown size={14} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="ie-menu">
+            <DropdownMenuItem disabled={!draftWritable} onClick={() => void persist(true).then(() => setMessage('草稿已保存在当前浏览器。'), (e: Error) => setMessage(e.message))}>
+              <span><strong>保存草稿</strong><small>保存在当前浏览器，编辑时也会自动保存。从制作记录继续。</small></span>
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled={busy || !draftWritable} onClick={() => void run(async () => { await saveProjectToLibrary(latest.current.project); await persist(true); setMessage('交互物源项目已保存到资产库；尚未导出 Godot。'); })}>
+              <span><strong>保存到资产库</strong><small>交给本机服务登记，其他工具和其他浏览器都能选用；不导出 Godot。</small></span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { downloadJson(project); void persist(true).catch(() => undefined); }}>
+              <span><strong>下载源文件</strong><small>下载工程 JSON 到本机，用于备份或在其他电脑上打开。</small></span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button
           className="ie-primary"
           disabled={busy || !ready}
@@ -721,7 +742,7 @@ export function InteractableEditor() {
               </button>
             ))}
           </div>
-          <div className="ie-row" style={{ marginTop: 14 }}>
+          <div className="ie-row mt-3.5">
             <button onClick={clone}>
               <Copy size={14} />
               复制
@@ -738,19 +759,19 @@ export function InteractableEditor() {
               <Upload size={14} />
               导入图片 / 音效
             </button>
-            {!!slotEntries.length && <label>导入位置<select value={importDestination} onChange={e => setImportDestination(e.target.value)}>
-              <option value="default">默认外观 / 动画</option>
-              {slotEntries.map((entry, index) => <optgroup key={index} label={`${index+1} · ${entry.name}`}>
-                <option value={`state:${index}`}>{entry.name} · 状态图</option>
-                <option value={`transition:${index}`}>{entry.name} · 进入过渡</option>
-              </optgroup>)}
-            </select></label>}
+            {!!slotEntries.length && <label>导入位置<NativeSelect value={importDestination} onChange={e => setImportDestination(e.target.value)}>
+              <NativeSelectOption value="default">默认外观 / 动画</NativeSelectOption>
+              {slotEntries.map((entry, index) => <NativeSelectOptGroup key={index} label={`${index+1} · ${entry.name}`}>
+                <NativeSelectOption value={`state:${index}`}>{entry.name} · 状态图</NativeSelectOption>
+                <NativeSelectOption value={`transition:${index}`}>{entry.name} · 进入过渡</NativeSelectOption>
+              </NativeSelectOptGroup>)}
+            </NativeSelect></label>}
             <button disabled={busy || !ready || !draftWritable} onClick={()=>void openLibrary()}>从资产库选用原图 / 动画</button>
             <div className="ie-asset-list">
               {project.assets.map((a) => (
                 <div key={a.id}>
                   {a.mime.startsWith('image') ? (
-                    <img src={assetUrl(a)} alt="" />
+                    <img loading="lazy" decoding="async" src={assetUrl(a)} alt="" />
                   ) : (
                     <span>♫</span>
                   )}
@@ -853,7 +874,7 @@ export function InteractableEditor() {
           {tab === 'trigger' && (
             <div className="ie-tab-content">
               <Field label="触发方式">
-                <select
+                <NativeSelect
                   value={current.activation.mode}
                   onChange={(e) =>
                     edit((o) => {
@@ -863,11 +884,11 @@ export function InteractableEditor() {
                   }
                 >
                   {TRIGGERS.map((t) => (
-                    <option key={t} value={t}>
+                    <NativeSelectOption key={t} value={t}>
                       {triggerLabels[t]}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </select>
+                </NativeSelect>
               </Field>
               <Check
                 label="初始启用"
@@ -990,7 +1011,7 @@ export function InteractableEditor() {
           {tab === 'memory' && (
             <div className="ie-tab-content">
               <Field label="记忆范围">
-                <select
+                <NativeSelect
                   value={current.memory.scope}
                   onChange={(e) =>
                     edit((o) => {
@@ -999,10 +1020,10 @@ export function InteractableEditor() {
                     })
                   }
                 >
-                  <option value="instance">当前实例（重载重置）</option>
-                  <option value="session">同一局跨场景</option>
-                  <option value="persistent">保存到存档</option>
-                </select>
+                  <NativeSelectOption value="instance">当前实例（重载重置）</NativeSelectOption>
+                  <NativeSelectOption value="session">同一局跨场景</NativeSelectOption>
+                  <NativeSelectOption value="persistent">保存到存档</NativeSelectOption>
+                </NativeSelect>
               </Field>
               {current.memory.scope !== 'instance' && (
                 <>
@@ -1038,7 +1059,7 @@ export function InteractableEditor() {
               )}
               <details>
                 <summary>模板身份</summary>
-                <code style={{ overflowWrap: 'anywhere' }}>
+                <code className="[overflow-wrap:anywhere]">
                   {current.definitionId}
                 </code>
                 <p className="ie-note">
@@ -1051,7 +1072,7 @@ export function InteractableEditor() {
       </div>
     </main>
     <Dialog open={openProject} onOpenChange={setOpenProject}>
-      <DialogContent style={{ maxHeight: '85dvh', overflowY: 'auto' }}>
+      <DialogContent className="max-h-[85dvh] overflow-y-auto">
         <DialogHeader><DialogTitle>打开交互物工程</DialogTitle><DialogDescription>选择本机草稿、服务端共享工程、源文件或资产库项目。当前草稿沿用保存与冲突保护。</DialogDescription></DialogHeader>
         <Button disabled={busy || !ready} onClick={() => { setOpenProject(false); setSharedOpen(true); }}>浏览服务端共享工程</Button>
         <Button variant="outline" disabled={busy || !ready} onClick={() => { setOpenProject(false); projectInput.current?.click(); }}>从源文件打开</Button>
@@ -1060,7 +1081,7 @@ export function InteractableEditor() {
         {localProjectsLoading && <output>正在读取本机草稿…</output>}
         {localProjectsError && <p role="alert">{localProjectsError} 仍可通过上方其他入口打开工程。</p>}
         {!localProjectsLoading && !localProjectsError && !localProjects.length && <p>当前浏览器没有已保存的交互物草稿。</p>}
-        {localProjects.map(item => <Button variant="outline" key={item.id} disabled={busy || !ready} onClick={() => { setOpenProject(false); void navigate(item.href); }} style={{ height: 'auto', whiteSpace: 'normal', display: 'block', textAlign: 'left' }}><strong>{item.title}</strong><br /><small>{item.detail}</small></Button>)}
+        {localProjects.map(item => <Button variant="outline" key={item.id} disabled={busy || !ready} onClick={() => { setOpenProject(false); void navigate(item.href); }} className="block h-auto whitespace-normal text-left"><strong>{item.title}</strong><br /><small>{item.detail}</small></Button>)}
       </DialogContent>
     </Dialog>
     <SharedDocumentPicker open={sharedOpen} kind="interactable" currentId={project.projectId} disabled={busy || !ready || imageOpening || Boolean(imageEdit)} onClose={() => setSharedOpen(false)} onOpen={async document => {

@@ -3,11 +3,12 @@
 /* oxlint-disable next/no-html-link-for-pages -- Native links use the workbench draft guard. */
 import { useEffect, useRef, useState } from 'react';
 import { assetLocationHref, readAssetLocation, type AssetLocation } from '@/lib/workbench/asset-navigation';
-import { AssetPackageImport } from './asset-package-import';
+import { AssetPackageImport } from './lazy-dialogs';
 import {offerGodotExport} from '@/lib/workbench/godot-export';
 import { importLink } from '@/lib/workbench/asset-import';
 import { operationLabel } from '@/lib/workbench/work-items';
-import { ImageEditWorkspace } from '@/components/image-edit/image-edit-workspace';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import { ImageEditWorkspace } from '@/components/image-edit/lazy-image-edit-workspace';
 import { clearImageEditNavigation, readImageEditNavigation, writeImageEditNavigation, type ImageEditNavigation } from '@/features/image-edit/navigation';
 
 type Asset = {
@@ -220,31 +221,27 @@ export function AssetLibrary() {
         alt={
           a.candidateIndex ? `${a.title} · 候选 ${a.candidateIndex}` : a.title
         }
+        className="wb-asset-preview"
+        data-detail={Boolean(assetId) || undefined}
         loading="lazy"
+        decoding="async"
         onError={() => setFailedPreviews((keys) => keys.includes(previewKey) ? keys : [...keys, previewKey])}
-        style={{
-          width: '100%',
-          height: assetId ? 350 : 170,
-          maxHeight: assetId ? 420 : undefined,
-          objectFit: 'contain',
-          imageRendering: 'pixelated',
-          background: 'var(--theme-canvas)',
-          borderRadius: 12,
-        }}
       />
     ) : (
-      <div style={{ minHeight: 120, display: 'grid', placeItems: 'center' }}>
+      <div className="wb-asset-placeholder">
         {a.availability === 'missing'
           ? '文件暂不可读取'
           : '交互逻辑 · 在编辑器查看'}
       </div>
     );
   }
+  // A library with nothing saved shows one explanation and one action.
+  const emptyLibrary = Boolean(catalog && !assetId && catalog.total === 0 && scope === 'active' && !search && !kind);
+  const paged = Boolean(catalog && (page.offset > 0 || catalog.nextOffset !== null));
   return (
     <main ref={pageElement} className="wb-page">
       <div className="wb-page-heading">
         <div>
-          <div className="wb-eyebrow">FORGE / ASSETS</div>
           <h1>{assetId ? '资产详情' : scope === 'trashed' ? '资产回收站' : '资产库'}</h1>
           <p>查找已经保存的素材，整理后交接给游戏项目。</p>
         </div>
@@ -252,7 +249,7 @@ export function AssetLibrary() {
           <a className="wb-button" href={listHref}>
             返回资产库
           </a>
-        ) : (
+        ) : !emptyLibrary && (
           <div className="wb-tool-links">
           <button className="wb-button wb-primary" onClick={() => setPackageOpen(true)}>导入 Forge 素材包</button>
           <button
@@ -269,10 +266,10 @@ export function AssetLibrary() {
         )}
       </div>
       {pending && (
-        <dialog ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={(event) => { event.preventDefault(); if (!managing) setPending(null); }} aria-labelledby="asset-management-title" style={{ margin: 'auto', inset: 0, maxHeight: '85vh', overflow: 'auto', maxWidth: 560, width: '90vw', padding: 24, borderRadius: 16, background: 'var(--wb-panel)', color: 'var(--wb-text)', border: '1px solid var(--wb-line)' }}>
-          <h2 id="asset-management-title" style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>{pending.operation === 'trash' ? '移入回收站' : '恢复素材'} · {pending.assets.length} 件</h2>
+        <dialog className="wb-asset-dialog" ref={(node) => { if (node && !node.open) node.showModal(); }} onCancel={(event) => { event.preventDefault(); if (!managing) setPending(null); }} aria-labelledby="asset-management-title">
+          <h2 id="asset-management-title">{pending.operation === 'trash' ? '移入回收站' : '恢复素材'} · {pending.assets.length} 件</h2>
           <p>{pending.operation === 'trash' ? '所选素材将从资产库隐藏，可在回收站恢复。源文件、制作记录和已有场景引用保留，不释放磁盘空间。' : '所选素材将重新出现在资产库。来源离线或文件缺失时，恢复不会修复源文件。'}</p>
-          <ul style={{ maxHeight: 260, overflow: 'auto', margin: '16px 0', lineHeight: 1.8 }}>{pending.assets.map((a) => <li key={a.id}>{a.title}{a.candidateIndex ? ` · 候选 ${a.candidateIndex}` : ''} · {labels[a.kind]}<small style={{ display: 'block', overflowWrap: 'anywhere' }}>{a.id}</small></li>)}</ul>
+          <ul>{pending.assets.map((a) => <li key={a.id}>{a.title}{a.candidateIndex ? ` · 候选 ${a.candidateIndex}` : ''} · {labels[a.kind]}<small>{a.id}</small></li>)}</ul>
           {notice && <output>{notice}</output>}
           <div className="wb-tool-links">
             <button className="wb-button" disabled={managing} onClick={() => setPending(null)}>取消</button>
@@ -286,12 +283,7 @@ export function AssetLibrary() {
         </p>
       )}
       {notice && (
-        <output
-          className="wb-notice"
-          style={{ display: 'block', margin: '16px 0' }}
-        >
-          {notice}
-        </output>
+        <output className="wb-notice wb-block-notice">{notice}</output>
       )}
       {assetId ? (
         asset && !error ? (
@@ -335,13 +327,13 @@ export function AssetLibrary() {
               </button>
             </div>
             {(asset.origin !== 'imported-package' || asset.readiness?.godotPackageAvailable) && ['interactable','animation'].includes(asset.kind) && asset.revision && <button className="wb-button wb-primary" onClick={()=>offerGodotExport({name:asset.title,assetId:asset.id,revision:asset.revision})}>导出到游戏项目</button>}
-            <details style={{ marginTop: 20 }}>
+            <details className="wb-asset-sources">
               <summary>来源文件与版本</summary>
               <p>创建时间：{asset.createdAt ? new Date(asset.createdAt).toLocaleString() : '未知'}</p>
               <p>版本指纹：{asset.revision}</p>
               {asset.files?.map((f) => (
                 <p key={f.key}>
-                  <code style={{ overflowWrap: 'anywhere' }}>{f.path}</code> ·{' '}
+                  <code>{f.path}</code> ·{' '}
                   {f.available ? '已校验' : '缺失'}
                 </p>
               ))}
@@ -361,13 +353,20 @@ export function AssetLibrary() {
           !error && <p>正在读取这件资产…</p>
         )
       ) : (
+        emptyLibrary ? (
+          <div className="wb-empty-state">
+            <p>资产库还没有素材。保存的角色原图、动画和交互物会出现在这里，也可以导入已有的 Forge 素材包。</p>
+            <button className="wb-button wb-primary" onClick={() => setPackageOpen(true)}>导入 Forge 素材包</button>
+            <button className="wb-text-button" onClick={() => updateListing({ scope: 'trashed', offset: 0, snapshot: '' })}>查看回收站</button>
+          </div>
+        ) : (
         <>
-          <nav className="wb-tool-links" aria-label="资产范围" style={{ marginBottom: 16 }}>
+          <nav className="wb-tool-links wb-asset-scope" aria-label="资产范围">
             {(['active', 'trashed'] as const).map((value) => <button key={value} className="wb-button" aria-pressed={scope === value} onClick={() => { updateListing({ scope: value, offset: 0, snapshot: '' }); }}>{value === 'active' ? '已保存素材' : '回收站'}</button>)}
           </nav>
           {scope === 'trashed' && <p className="wb-notice">这里的素材可以恢复。源文件仍保留在原处，不释放磁盘空间。</p>}
           <form
-            className="wb-tool-links"
+            className="wb-tool-links wb-asset-filters"
             onSubmit={(e) => {
               e.preventDefault();
               updateListing({ query: query.trim(), offset: 0, snapshot: '' });
@@ -375,76 +374,58 @@ export function AssetLibrary() {
           >
             <input
               aria-label="搜索资产"
+              className="wb-input"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="搜索角色、动作或作品名称"
-              style={{
-                padding: '10px 14px',
-                background: 'var(--wb-panel)',
-                color: 'var(--wb-text)',
-                border: '1px solid var(--theme-control-border)',
-                borderRadius: 8,
-                minWidth: 250,
-              }}
             />
-            <select
+            <NativeSelect
               aria-label="资产类型"
-              className="wb-button"
+              className="wb-select"
               value={kind}
               onChange={(e) => {
                 updateListing({ kind: e.target.value, offset: 0, snapshot: '' });
               }}
             >
-              <option value="">全部类型</option>
+              <NativeSelectOption value="">全部类型</NativeSelectOption>
               {Object.entries(labels).map(([id, label]) => (
-                <option key={id} value={id}>
+                <NativeSelectOption key={id} value={id}>
                   {label}
-                </option>
+                </NativeSelectOption>
               ))}
-            </select>
+            </NativeSelect>
             <button className="wb-button" type="submit">
               查找
             </button>
-            <button
-              className="wb-button"
-              type="button"
-              disabled={!selected.length || exporting}
-              onClick={() => void downloadAssets(selected.map((a) => a.id))}
-            >
-              {exporting ? '正在打包…' : `下载所选素材（${selected.length}）`}
-            </button>
-            <button type="button" className="wb-button" disabled={!selected.length || managing || exporting} onClick={() => { setNotice(''); setPending({ operation: scope === 'trashed' ? 'restore' : 'trash', assets: [...selected] }); }}>{scope === 'trashed' ? '恢复所选' : '移入回收站'}（{selected.length}）</button>
-            {!!selected.length && <button type="button" className="wb-button" onClick={() => setSelected([])}>取消选择</button>}
+            {!!selected.length && <>
+              <button
+                className="wb-button"
+                type="button"
+                disabled={exporting}
+                onClick={() => void downloadAssets(selected.map((a) => a.id))}
+              >
+                {exporting ? '正在打包…' : `下载所选素材（${selected.length}）`}
+              </button>
+              <button type="button" className="wb-button" disabled={managing || exporting} onClick={() => { setNotice(''); setPending({ operation: scope === 'trashed' ? 'restore' : 'trash', assets: [...selected] }); }}>{scope === 'trashed' ? '恢复所选' : '移入回收站'}（{selected.length}）</button>
+              <button type="button" className="wb-button wb-ghost" onClick={() => setSelected([])}>取消选择</button>
+            </>}
           </form>
-          <p className="wb-muted">
-            地图工程提供编辑源文件；原图与历史素材仍可查找和下载。动画与完整场景保留实际素材及已有 Godot 包。
-          </p>
           {catalog && (
             <>
               <p className="wb-muted">
-                {catalog.total} 件资产 · 按创建时间排序；动画每个候选分别列出。
+                {catalog.total} 件资产，按创建时间排序；动画的每个候选单独列出。交互物可回到编辑器继续修改，其他素材可下载或导出到游戏项目。
+                {catalog.coverage.complete && ` ${catalog.coverage.note}`}
               </p>
-              <p className="wb-notice">{catalog.coverage.note}</p>
+              {!catalog.coverage.complete && <p className="wb-notice">{catalog.coverage.note}</p>}
               {catalog.coverage.issues.map((i, index) => (
                 <output key={index}>{i.message}</output>
               ))}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
-                  gap: 16,
-                }}
-              >
+              <div className="wb-asset-grid">
                 {catalog.assets.map((a) => (
                   <article
                     key={a.id}
+                    className="wb-asset-card"
                     data-imported={importedIds.includes(a.id) || undefined}
-                    style={{
-                      border: '1px solid var(--wb-line)',
-                      background: 'var(--wb-panel)',
-                      borderRadius: 14,
-                      padding: 16,
-                    }}
                   >
                     <a
                       href={assetLocationHref({ ...locationState, asset: a.id })}
@@ -453,7 +434,7 @@ export function AssetLibrary() {
                     >
                       {preview(a)}
                     </a>
-                    <h2 style={{ fontSize: 16, marginTop: 12 }}>
+                    <h2>
                       {a.title}{importedIds.includes(a.id) && <small> · 本次导入</small>}
                       {a.candidateIndex ? ` · 候选 ${a.candidateIndex}` : ''}
                     </h2>
@@ -492,12 +473,11 @@ export function AssetLibrary() {
                 ))}
               </div>
               {!catalog.assets.length && (
-                <p>
-                  当前范围没有匹配的已保存资产。可更换条件，或导入已有素材包。
-                  <button className="wb-button" onClick={() => setPackageOpen(true)}>导入 Forge 素材包</button>
+                <p className="wb-empty-state">
+                  {scope === 'trashed' ? '回收站是空的。' : '没有匹配的素材，可以更换搜索条件或类型。'}
                 </p>
               )}
-              <div className="wb-tool-links" style={{ marginTop: 24 }}>
+              {paged && <div className="wb-tool-links wb-asset-pages">
                 <button
                   className="wb-button"
                   disabled={!page.offset}
@@ -522,11 +502,12 @@ export function AssetLibrary() {
                 >
                   下一页
                 </button>
-              </div>
+              </div>}
             </>
           )}
           {!catalog && !error && <p>正在读取已保存资产…</p>}
         </>
+        )
       )}
       {packageOpen && <AssetPackageImport onClose={closePackages} onImported={(ids) => {
         setImportedIds(ids); updateListing({ query: '', kind: '', scope: 'active', offset: 0, snapshot: '' });

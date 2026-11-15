@@ -30,6 +30,8 @@
     "schema:interactable": "node scripts/sync-interactable-schema.mjs",
     "theme:sync": "node scripts/sync-theme.mjs",
     "theme:check": "node scripts/sync-theme.mjs --check",
+    "ui-manifest:sync": "node scripts/sync-ui-manifest.mjs",
+    "ui-manifest:check": "node scripts/sync-ui-manifest.mjs --check",
     "typecheck": "tsc --noEmit --incremental false",
     "test:task-isolation": "node tests/task-isolation/run.mjs",
     "test:adapters": "node tests/workbench-adapters/run.mjs",

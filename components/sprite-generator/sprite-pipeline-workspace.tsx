@@ -17,7 +17,6 @@ import { Button } from '@/components/ui/button';
 import type { WorkbenchModule } from '@/lib/workbench/modules';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
 import { publishEditorSession, removeEditorSession } from '@/lib/workbench/editor-session';
-import { EditorWorkbenchMenu, EditorTaskSummary } from '@/components/workbench/editor-chrome';
 import { useWorkbenchTheme } from '@/components/workbench/theme-toggle';
 import { getTheme } from '@/lib/workbench/theme';
 
@@ -180,7 +179,6 @@ export function SpritePipelineWorkspace({
     <main data-sprite-editor className="flex h-full min-h-0 flex-col bg-background">
       <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-border bg-background px-3 py-2 sm:px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
-          <EditorWorkbenchMenu />
           <span className="flex size-8 shrink-0 items-center justify-center rounded-xl border border-[var(--theme-accent)] bg-[var(--theme-accent-soft)] text-[var(--theme-accent)]">
             <Server className="size-4" />
           </span>
@@ -212,7 +210,6 @@ export function SpritePipelineWorkspace({
         </div>
 
         <div className="flex items-center gap-1.5">
-          <EditorTaskSummary compact />
           <Button
             type="button"
             variant="ghost"

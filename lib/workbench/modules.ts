@@ -1,4 +1,4 @@
-import manifest from '@/workbench/manifest.json';
+import manifest from './ui-manifest.json';
 
 export type WorkbenchModuleIcon =
   | 'frames'
@@ -28,12 +28,9 @@ export type WorkbenchModule = {
  * The web shell and Agent runner both derive capabilities from the same
  * machine-readable manifest. Tool logic stays behind adapters/connectors.
  */
-export const workbenchModules: readonly WorkbenchModule[] = [
-  ...manifest.capabilities,
-  ...manifest.editorModules,
-].filter((capability) => !('embedded' in capability.ui && capability.ui.embedded)).map((capability) => ({
+export const workbenchModules: readonly WorkbenchModule[] = manifest.modules.filter((capability) => !('embedded' in capability.ui && capability.ui.embedded)).map((capability) => ({
   id: capability.id,
-  executable: 'connector' in capability,
+  executable: capability.executable,
   name: capability.name,
   shortName: capability.shortName,
   description: capability.description,

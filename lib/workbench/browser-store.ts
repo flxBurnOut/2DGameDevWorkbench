@@ -1,4 +1,3 @@
-import { isLegacyEmptyWorkItem } from '@/features/interactable-editor/draft-activity';
 import type { WorkItem } from './work-items';
 
 const DB = 'workbench-production-v1';
@@ -26,10 +25,11 @@ async function database(): Promise<IDBDatabase> {
 export async function listWorkItems(): Promise<WorkItem[]> {
   const db = await database();
   try {
-    return await new Promise((resolve, reject) => {
+    const visible: WorkItem[] = [];
+    const candidates: { items: WorkItem[]; draft: unknown }[] = [];
+    await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(['items', 'drafts']);
       const request = tx.objectStore('items').getAll();
-      const visible: WorkItem[] = [];
       request.onsuccess = () => {
         const groups = new Map<string, WorkItem[]>();
         for (const item of request.result as WorkItem[]) {
@@ -49,18 +49,21 @@ export async function listWorkItems(): Promise<WorkItem[]> {
           const draft = tx.objectStore('drafts').get(key);
           draft.onsuccess = () => {
             // Read each project once, retaining source bytes and any meaningful work.
-            visible.push(
-              ...items.filter(
-                (item) => !isLegacyEmptyWorkItem(item, draft.result),
-              ),
-            );
+            candidates.push({ items, draft: draft.result });
           };
         }
       };
-      tx.oncomplete = () => resolve(visible);
+      tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error || new Error('草稿列表读取中断。'));
     });
+    if (!candidates.length) return visible;
+    // The starter-project comparison needs the interactable schema (zod); load
+    // it only when unmarked interactable drafts exist.
+    const { isLegacyEmptyWorkItem } = await import('@/features/interactable-editor/draft-activity');
+    for (const { items, draft } of candidates)
+      visible.push(...items.filter((item) => !isLegacyEmptyWorkItem(item, draft)));
+    return visible;
   } finally {
     db.close();
   }

@@ -26,7 +26,7 @@
   touch-action: none;
 }
 .structure-mask {
-  background: #ba82ff;
+  background: var(--theme-accent);
   opacity: 0.55;
   mask-size: 100% 100%;
   mask-mode: luminance;
@@ -40,7 +40,7 @@
   margin: 0.5rem 0;
 }
 .structure-status small {
-  color: var(--theme-text-secondary, #a1a9bd);
+  color: var(--theme-muted);
 }
 .motion-studio .motion-structure .motion-checkbox {
   flex-direction: row;
@@ -95,7 +95,7 @@
   text-align: left;
 }
 .structure-message {
-  color: var(--theme-text-secondary, #a1a9bd);
+  color: var(--theme-muted);
   overflow-wrap: anywhere;
 }
 .structure-message button {

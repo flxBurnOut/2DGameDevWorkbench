@@ -1,5 +1,6 @@
 /* oxlint-disable react/react-compiler -- This clock-driven imperative simulator deliberately opts out of React memoization. */
 'use client';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import {
   useEffect,
   useMemo,
@@ -178,16 +179,16 @@ export function Preview({
         <Check label="双物件重叠" value={overlap} onChange={setOverlap} />
       </div>
       <div className="ie-row">
-        <select
+        <NativeSelect
           aria-label="画布拖动目标"
           value={mode}
           onChange={(e) => setMode(e.target.value as typeof mode)}
         >
-          <option value="actor">拖动交互来源</option>
-          <option value="detection">移动感知范围</option>
-          <option value="pointer">移动点击区域</option>
-          <option value="solid">移动实体碰撞</option>
-        </select>
+          <NativeSelectOption value="actor">拖动交互来源</NativeSelectOption>
+          <NativeSelectOption value="detection">移动感知范围</NativeSelectOption>
+          <NativeSelectOption value="pointer">移动点击区域</NativeSelectOption>
+          <NativeSelectOption value="solid">移动实体碰撞</NativeSelectOption>
+        </NativeSelect>
       </div>
       <div className="ie-canvas">
         <svg
@@ -285,7 +286,7 @@ export function Preview({
                         href={assetUrl(asset)}
                         width={dim?.width ?? o.visual.width}
                         height={dim?.height ?? o.visual.height}
-                        style={{ imageRendering: 'pixelated' }}
+                        className="[image-rendering:pixelated]"
                       />
                     </svg>
                   ) : (

@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Native source pixels with an annotation-only canvas. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import {toFrameRegion} from '../../features/image-edit/frame-region.mjs';
 import {useCallback,useEffect,useRef,useState,type PointerEvent} from 'react';
 
@@ -61,9 +62,9 @@ export function MotionEditRegion({start,end,width,height,frames,regions,source,o
     <p><b>涂选允许修改的位置</b> · 已涂选 {done} / {end-start+1} 帧</p>
     <p className="motion-muted">覆盖要改的轮廓、碎片及少量周围空间。青色区域允许变化，其余像素从原帧原样保留；每帧单独选择。</p>
     <div className="motion-region-controls">
-      <label>编辑帧<select aria-label="区域编辑帧" value={frame} onChange={e=>setPosition(Number(e.target.value))}>{Array.from({length:end-start+1},(_,i)=>i+start).map(i=><option key={i} value={i}>第 {i+1} 帧{regions[i]?.spans?.length?' · 已涂选':''}</option>)}</select></label>
-      <label>操作<select aria-label="区域画笔模式" value={erase?'erase':'paint'} onChange={e=>setErase(e.target.value==='erase')}><option value="paint">涂选</option><option value="erase">擦除选区</option></select></label>
-      <label>画笔<select aria-label="区域画笔大小" value={brush} onChange={e=>setBrush(Number(e.target.value))}>{[1,3,5,9,15].map(n=><option key={n} value={n}>{n} px</option>)}</select></label>
+      <label>编辑帧<NativeSelect aria-label="区域编辑帧" value={frame} onChange={e=>setPosition(Number(e.target.value))}>{Array.from({length:end-start+1},(_,i)=>i+start).map(i=><NativeSelectOption key={i} value={i}>第 {i+1} 帧{regions[i]?.spans?.length?' · 已涂选':''}</NativeSelectOption>)}</NativeSelect></label>
+      <label>操作<NativeSelect aria-label="区域画笔模式" value={erase?'erase':'paint'} onChange={e=>setErase(e.target.value==='erase')}><NativeSelectOption value="paint">涂选</NativeSelectOption><NativeSelectOption value="erase">擦除选区</NativeSelectOption></NativeSelect></label>
+      <label>画笔<NativeSelect aria-label="区域画笔大小" value={brush} onChange={e=>setBrush(Number(e.target.value))}>{[1,3,5,9,15].map(n=><NativeSelectOption key={n} value={n}>{n} px</NativeSelectOption>)}</NativeSelect></label>
       <button type="button" onClick={()=>onChange({frame,source_sha256:frames[frame].sha256,spans:[]})}>清空本帧选区</button>
     </div>
     <div className="motion-region-canvas" style={{aspectRatio:`${width}/${height}`}}>

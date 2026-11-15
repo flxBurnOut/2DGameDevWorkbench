@@ -130,7 +130,7 @@ try {
     region={region} prompt={instruction} references={[]} preserveAlpha disabled={false} offerPlanner onBusy={()=>{}}
     onSelectRegion={draw} onExecute={()=>{throw Error('Unexpected generation');}}/>);
   draw(maximum);
-  await until(()=>!document.querySelector('.ie-workspace') && !!document.querySelector('.ie-part-planner'));
+  await until(()=>!document.querySelector('.ie-image-edit') && !!document.querySelector('.ie-part-planner'));
   await click('准备部件定位视图（本地）');
   await click('使用核对后的框和属性');
   await until(()=>document.body.textContent!.includes('已指定影响区'));

@@ -1,37 +1,8 @@
 'use client';
-import { useEffect } from 'react';
-import { Archive, ArrowRight, Save } from 'lucide-react';
+import { ArrowRight, Save } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { currentWorkbenchPage, workbenchDestinations, workspaceGroups } from '@/lib/workbench/navigation';
+import { currentWorkbenchPage, workbenchDestinations } from '@/lib/workbench/navigation';
 import { useWorkbench } from './workbench-provider';
-import { ModuleIcon } from './module-icon';
-
-const GUIDE_KEY = 'workbench.onboarding.v1';
-function dismissGuide() {
-  try { localStorage.setItem(GUIDE_KEY, JSON.stringify({ dismissed: true })); } catch { /* Optional device preference. */ }
-}
-
-export function Onboarding() {
-  const wb = useWorkbench();
-  const { setGuideOpen } = wb;
-  useEffect(() => {
-    let dismissed = false;
-    try { dismissed = JSON.parse(localStorage.getItem(GUIDE_KEY) || 'null')?.dismissed === true; } catch { /* Use goal selection when the preference is unreadable. */ }
-    if (location.pathname === '/' && !dismissed) setGuideOpen(true);
-  }, [setGuideOpen]);
-  const close = () => { dismissGuide(); wb.setGuideOpen(false); };
-  const start = (href: string) => { close(); void wb.navigate(href); };
-  return <Dialog open={wb.guideOpen} onOpenChange={(open) => open ? wb.setGuideOpen(true) : close()}>
-    <DialogContent className="wb-dialog wb-guide-dialog">
-      <DialogHeader><div className="wb-eyebrow">START YOUR NEXT ASSET</div><DialogTitle>这次想制作什么？</DialogTitle><DialogDescription>选择目标，直接进入工具。之后可从“工作区”切换，或在“帮助”查看当前工具说明。</DialogDescription></DialogHeader>
-      {workspaceGroups.map((group) => <section key={group.id} className="wb-goal-group"><h2>{group.name}</h2><div className="wb-guide-choices">
-        {group.tools.map((tool) => <button key={tool.id} className="wb-guide-choice" data-accent={tool.accent} onClick={() => start(tool.href)}><ModuleIcon icon={tool.icon} className="size-5" /><strong>{tool.name}</strong><span>{tool.starterHint}</span><ArrowRight size={16} /></button>)}
-      </div></section>)}
-      <button className="wb-package-goal wb-button" onClick={() => start(`${workbenchDestinations.assets.href}?import=package`)}><Archive size={18} /><span><strong>导入 Forge 素材包</strong><small>已有 Forge 下载包或编辑器源文件？先识别可恢复内容，再确认入库。</small></span><ArrowRight size={16} /></button>
-      <div className="wb-guide-actions"><button className="wb-button wb-ghost" onClick={close}>稍后选择</button></div>
-    </DialogContent>
-  </Dialog>;
-}
 
 export function ContextHelp() {
   const wb = useWorkbench();
@@ -64,7 +35,7 @@ export function ContextHelp() {
         <dt>资产库素材</dt><dd>登记已有素材和导入文件，供其他工具选用；浏览器草稿不会自动入库。</dd>
         <dt>Godot 导出</dt><dd>导出是该次工程的交付快照；继续修改后需要重新导出。</dd>
       </dl>
-      <div className="wb-guide-actions"><button className="wb-button wb-primary" onClick={() => { wb.setHelpOpen(false); wb.setGuideOpen(true); }}>完整入门 · 选择制作目标<ArrowRight size={15} /></button></div>
+      <div className="wb-guide-actions"><button className="wb-button wb-primary" onClick={() => { wb.setHelpOpen(false); void wb.navigate(workbenchDestinations.home.href); }}>回到首页 · 选择制作目标<ArrowRight size={15} /></button></div>
     </DialogContent>
   </Dialog>;
 }

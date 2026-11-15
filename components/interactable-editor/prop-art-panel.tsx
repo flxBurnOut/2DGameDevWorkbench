@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Preserve original pixel-art PNGs. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Download,
@@ -366,6 +367,7 @@ export function PropArtPanel({
             <>
               <div className="ie-prop-preview">
                 <img
+                  decoding="async"
                   src={artifactUrl(png)}
                   alt="生成的物品原图"
                   width={128}
@@ -398,7 +400,7 @@ export function PropArtPanel({
           )}
           <label>
             最近物品原图
-            <select
+            <NativeSelect
               aria-label="最近物品原图"
               value={selectedId || ''}
               disabled={busy}
@@ -406,18 +408,18 @@ export function PropArtPanel({
                 if (e.target.value) void selectTask(e.target.value);
               }}
             >
-              <option value="">选择已保存的生成记录</option>
+              <NativeSelectOption value="">选择已保存的生成记录</NativeSelectOption>
               {selected && !tasks.some((t) => t.id === selected.id) && (
-                <option value={selected.id}>
+                <NativeSelectOption value={selected.id}>
                   {taskName(selected)} · {labels[selected.status]}
-                </option>
+                </NativeSelectOption>
               )}
               {tasks.filter(isPropArtTask).map((task) => (
-                <option key={task.id} value={task.id}>
+                <NativeSelectOption key={task.id} value={task.id}>
                   {taskName(task)} · {labels[task.status] || task.status}
-                </option>
+                </NativeSelectOption>
               ))}
-            </select>
+            </NativeSelect>
           </label>
           <small>
             可以离开页面，稍后从制作记录继续查看；结果不会自动覆盖物件。

@@ -1,6 +1,7 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Context layers display exact existing blob/data sources at explicit source geometry. */
 
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { screenToPixel } from '@/features/image-edit/core.mjs';
@@ -170,7 +171,7 @@ export function ImageEditCanvas({ controller, version, tool, color, alpha, brush
       <Button size="sm" variant="ghost" aria-label="放大" onClick={() => zoomTo(view.zoom * 1.5)}>+</Button>
       <label><input type="checkbox" checked={grid} onChange={event => setGrid(event.target.checked)} />网格</label>
       <label><input type="checkbox" checked={selectionVisible} onChange={event => onSelectionVisible(event.target.checked)} />显示修改范围</label>
-      <select aria-label="画布底色" value={background} onChange={event => setBackground(event.target.value)}><option value="checker">棋盘格</option><option value="dark">深色</option><option value="light">浅色</option></select>
+      <NativeSelect aria-label="画布底色" value={background} onChange={event => setBackground(event.target.value)}><NativeSelectOption value="checker">棋盘格</NativeSelectOption><NativeSelectOption value="dark">深色</NativeSelectOption><NativeSelectOption value="light">浅色</NativeSelectOption></NativeSelect>
     </div>
     <div ref={viewport} className={`ie-viewport ie-bg-${background} ${tool === 'pan' ? 'ie-pan' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={event => finishPointer(event)} onPointerCancel={event => finishPointer(event, true)}>
       <div className="ie-world" style={{ width: controller.width, height: controller.height, transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})` }}>

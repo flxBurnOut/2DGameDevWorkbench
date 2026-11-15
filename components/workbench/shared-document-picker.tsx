@@ -43,13 +43,13 @@ export function SharedDocumentPicker({ open, kind, currentId, disabled = false, 
     finally { selection.current = false; if (generation.current === request) setOpening(null); }
   }
   return <Dialog open={open} onOpenChange={value => { if (!value && !selection.current) onClose(); }}>
-    <DialogContent style={{ maxWidth: 720, maxHeight: '85dvh', overflowY: 'auto' }}>
+    <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-[720px]">
       <DialogHeader>
         <DialogTitle>打开服务端共享交互物工程</DialogTitle>
         <DialogDescription>这里列出当前连接的 Forge 服务保存的工程，同一服务中的工程可在其他浏览器打开。切换前会保存当前草稿，保留本机未同步修改并检查共享版本冲突。</DialogDescription>
       </DialogHeader>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'end' }}>
-        <label htmlFor={searchId} style={{ flex: 1 }}>搜索全部共享工程<Input id={searchId} aria-label="搜索共享工程" value={search} maxLength={200} onChange={event => { setSearch(event.target.value); setPage(0); }} placeholder="名称或工程 ID" /></label>
+      <div className="flex items-end gap-2">
+        <label htmlFor={searchId} className="flex-1">搜索全部共享工程<Input id={searchId} aria-label="搜索共享工程" value={search} maxLength={200} onChange={event => { setSearch(event.target.value); setPage(0); }} placeholder="名称或工程 ID" /></label>
         <Button variant="outline" disabled={loading || Boolean(opening)} onClick={() => setRefresh(value => value + 1)}>刷新列表</Button>
       </div>
       {loading && <output>正在读取全部分页，请稍候…</output>}
@@ -58,13 +58,13 @@ export function SharedDocumentPicker({ open, kind, currentId, disabled = false, 
       {!loading && !error && <>
         <p>{visible.total} 个匹配工程 · 第 {visible.page + 1} / {visible.pages} 页</p>
         {!visible.total && <p>{search.trim() ? '没有匹配的共享工程。' : '当前服务没有此类共享工程。浏览器独有草稿需先在原浏览器打开并同步。'}</p>}
-        <div style={{ display: 'grid', gap: 8 }}>
-          {visible.documents.map(document => <Button key={document.id} variant="outline" disabled={disabled || Boolean(opening)} onClick={() => void choose(document)} style={{ justifyContent: 'space-between', height: 'auto', minHeight: 56, whiteSpace: 'normal', textAlign: 'left' }}>
-            <span style={{ overflowWrap: 'anywhere' }}><strong>{document.name}</strong>{document.id === currentId && ' · 当前工程'}<br /><small>共享版本 {document.revision} · {document.updatedAt ? new Date(document.updatedAt).toLocaleString() : '更新时间未知'}</small></span>
+        <div className="grid gap-2">
+          {visible.documents.map(document => <Button key={document.id} variant="outline" disabled={disabled || Boolean(opening)} onClick={() => void choose(document)} className="h-auto min-h-14 justify-between whitespace-normal text-left">
+            <span className="[overflow-wrap:anywhere]"><strong>{document.name}</strong>{document.id === currentId && ' · 当前工程'}<br /><small>共享版本 {document.revision} · {document.updatedAt ? new Date(document.updatedAt).toLocaleString() : '更新时间未知'}</small></span>
             <span>{opening === document.id ? '正在保存并打开…' : '打开'}</span>
           </Button>)}
         </div>
-        <div style={{ display: 'flex', gap: 8 }}><Button variant="outline" disabled={visible.page === 0 || Boolean(opening)} onClick={() => setPage(visible.page - 1)}>上一页</Button><Button variant="outline" disabled={visible.page + 1 >= visible.pages || Boolean(opening)} onClick={() => setPage(visible.page + 1)}>下一页</Button></div>
+        <div className="flex gap-2"><Button variant="outline" disabled={visible.page === 0 || Boolean(opening)} onClick={() => setPage(visible.page - 1)}>上一页</Button><Button variant="outline" disabled={visible.page + 1 >= visible.pages || Boolean(opening)} onClick={() => setPage(visible.page + 1)}>下一页</Button></div>
         <p>列表读取期间其他页面的保存可能改变排序。需要最新内容时刷新；打开后以工程实际版本为准。</p>
       </>}
     </DialogContent>

@@ -176,7 +176,7 @@ export function AssetImportPicker({
               {asset.previewUrl &&
                 asset.previewKind !== 'none' &&
                 asset.availability === 'available' && (
-                  <img src={asset.previewUrl} alt={asset.title} />
+                  <img loading="lazy" decoding="async" src={asset.previewUrl} alt={asset.title} />
                 )}
               <strong>{asset.title}</strong>
               <small>{asset.statusLabel}</small>

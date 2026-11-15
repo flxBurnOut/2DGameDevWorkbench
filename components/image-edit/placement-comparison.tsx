@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Pixel evidence is rendered at its measured dimensions. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { imageEditRequest, type ImageEditSession } from '@/features/image-edit/client';
@@ -27,9 +28,9 @@ export function PlacementComparison({ session, version }: { session: ImageEditSe
   return <section className="ie-placement">
     <Button size="sm" variant="outline" aria-expanded={open} onClick={() => { setResult(undefined); setError(''); setOpen(value => !value); }}>按摆放尺寸比较</Button>
     {open && <>
-      {!placed && <label>预览宽度 <select value={width} onChange={event => { setResult(undefined); setError(''); setWidth(Number(event.target.value)); }}>
-        {[32, 64, 128, 256, 512].map(size => <option key={size} value={size}>{size} px</option>)}
-      </select></label>}
+      {!placed && <label>预览宽度 <NativeSelect value={width} onChange={event => { setResult(undefined); setError(''); setWidth(Number(event.target.value)); }}>
+        {[32, 64, 128, 256, 512].map(size => <NativeSelectOption key={size} value={size}>{size} px</NativeSelectOption>)}
+      </NativeSelect></label>}
       {error && <output>{error}</output>}
       {!result && !error && <p>读取本步对照…</p>}
       {result && <><p>{placed ? '会话保存时的摆放尺寸' : '指定预览尺寸'} {result.width} × {result.height} px · 单图原色</p>

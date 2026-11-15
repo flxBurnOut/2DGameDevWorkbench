@@ -1,4 +1,5 @@
 'use client';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import type { ReactNode } from 'react';
 import { appearanceAnimation } from '@/features/interactable-editor/contract.mjs';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
@@ -109,16 +110,16 @@ export function AssetSelect({
 }) {
   return (
     <Field label={label}>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">未设置</option>
+      <NativeSelect value={value} onChange={(e) => onChange(e.target.value)}>
+        <NativeSelectOption value="">未设置</NativeSelectOption>
         {assets
           .filter((a) => a.mime.startsWith(media))
           .map((a) => (
-            <option key={a.id} value={a.id}>
+            <NativeSelectOption key={a.id} value={a.id}>
               {a.name}
-            </option>
+            </NativeSelectOption>
           ))}
-      </select>
+      </NativeSelect>
     </Field>
   );
 }
@@ -135,14 +136,14 @@ export function ClipSelect({
 }) {
   return (
     <Field label={label}>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">未设置</option>
+      <NativeSelect value={value} onChange={(e) => onChange(e.target.value)}>
+        <NativeSelectOption value="">未设置</NativeSelectOption>
         {object.visual.clips.map((c) => (
-          <option key={c.name} value={c.name}>
+          <NativeSelectOption key={c.name} value={c.name}>
             {c.name}
-          </option>
+          </NativeSelectOption>
         ))}
-      </select>
+      </NativeSelect>
     </Field>
   );
 }
@@ -157,14 +158,14 @@ export function ShapeFields({
   return (
     <>
       <Field label="形状">
-        <select
+        <NativeSelect
           value={value.type}
           onChange={(e) => patch({ type: e.target.value as Shape['type'] })}
         >
-          <option value="rectangle">矩形</option>
-          <option value="circle">圆形</option>
-          <option value="capsule">胶囊</option>
-        </select>
+          <NativeSelectOption value="rectangle">矩形</NativeSelectOption>
+          <NativeSelectOption value="circle">圆形</NativeSelectOption>
+          <NativeSelectOption value="capsule">胶囊</NativeSelectOption>
+        </NativeSelect>
       </Field>
       <div className="ie-row">
         {value.type === 'circle' ? (
@@ -231,7 +232,7 @@ export function FeedbackFields({
     <>
       <div className="ie-row">
         <strong>反馈步骤</strong>
-        <select
+        <NativeSelect
           aria-label="添加反馈步骤"
           value=""
           onChange={(e) => {
@@ -252,12 +253,12 @@ export function FeedbackFields({
             onChange([...value, step]);
           }}
         >
-          <option value="">＋ 添加步骤</option>
-          <option value="show_text">文本</option>
-          <option value="play_animation">动画</option>
-          <option value="play_audio">音效</option>
-          <option value="wait">等待</option>
-        </select>
+          <NativeSelectOption value="">＋ 添加步骤</NativeSelectOption>
+          <NativeSelectOption value="show_text">文本</NativeSelectOption>
+          <NativeSelectOption value="play_animation">动画</NativeSelectOption>
+          <NativeSelectOption value="play_audio">音效</NativeSelectOption>
+          <NativeSelectOption value="wait">等待</NativeSelectOption>
+        </NativeSelect>
       </div>
       {value.map((s, i) => (
         <div className="ie-card" key={i}>
@@ -541,7 +542,7 @@ export function BehaviorPanel({
       {b.kind === 'sequence' && (
         <>
           <Field label="最后一步之后">
-            <select
+            <NativeSelect
               value={b.onEnd}
               onChange={(e) =>
                 edit((o) => {
@@ -549,10 +550,10 @@ export function BehaviorPanel({
                 })
               }
             >
-              <option value="stop">完成并停止</option>
-              <option value="loop">循环到第一步</option>
-              <option value="stay_last">继续显示最后一步</option>
-            </select>
+              <NativeSelectOption value="stop">完成并停止</NativeSelectOption>
+              <NativeSelectOption value="loop">循环到第一步</NativeSelectOption>
+              <NativeSelectOption value="stay_last">继续显示最后一步</NativeSelectOption>
+            </NativeSelect>
           </Field>
           {b.entries.map((s, i) => (
             <details key={i} open>
@@ -634,7 +635,7 @@ export function BehaviorPanel({
         (b.kind === 'inspect' && !b.repeat) ||
         (b.kind === 'sequence' && b.onEnd === 'stop')) && (
         <Field label="最终完成后">
-          <select
+          <NativeSelect
             value={object.completion}
             onChange={(e) =>
               edit((o) => {
@@ -642,10 +643,10 @@ export function BehaviorPanel({
               })
             }
           >
-            <option value="remain">保留外观</option>
-            <option value="hide">隐藏</option>
-            <option value="free">释放节点</option>
-          </select>
+            <NativeSelectOption value="remain">保留外观</NativeSelectOption>
+            <NativeSelectOption value="hide">隐藏</NativeSelectOption>
+            <NativeSelectOption value="free">释放节点</NativeSelectOption>
+          </NativeSelect>
         </Field>
       )}
     </>

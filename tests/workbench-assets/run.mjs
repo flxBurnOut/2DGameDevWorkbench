@@ -519,6 +519,12 @@ try {
   const httpPage = await (await fetch(base + '/v1/tasks?limit=200')).json();
   const httpOlder = await (await fetch(base + `/v1/tasks?limit=200&offset=${httpPage.nextOffset}&snapshot=${httpPage.snapshot}`)).json();
   assert.equal(httpPage.tasks.length + httpOlder.tasks.length, httpPage.total);
+  // Pages polling an unchanged history receive only its revision.
+  const httpSame = await (await fetch(base + `/v1/tasks?limit=200&since=${httpPage.revision}`)).json();
+  assert.deepEqual([httpSame.unchanged, httpSame.tasks.length, httpSame.revision, httpSame.total], [true, 0, httpPage.revision, httpPage.total]);
+  const httpStale = await (await fetch(base + '/v1/tasks?limit=200&since=stale')).json();
+  assert.equal(httpStale.unchanged, undefined);
+  assert.equal(httpStale.tasks.length, httpPage.tasks.length);
   const httpSearch = await (await fetch(base + `/v1/tasks?limit=1&query=${encodeURIComponent('"id":"reference-original"')}`)).json();
   assert.equal(httpSearch.tasks[0].id, original.id);
   await assert.rejects(listTaskPage(manifest, { offset: -1 }), /pagination/);

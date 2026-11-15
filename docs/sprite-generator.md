@@ -119,7 +119,7 @@ Key 保存于当前数据目录的 `config/credentials.json`，Windows 使用当
 - 外部 Agent 通过仓库 STDIO MCP 或 CLI 调用结构化任务，任务记录进入 `work/`，交付副本进入 `outputs/<task-id>/`。
 - 人通过五阶段主工作区描述动作、确认方案、播放检查和导出；旧版嵌入工作区保留预设及逐帧修补。Web 不包含主 Agent 对话。
 
-二者连接同一个 SpritePipeline 服务，但浏览器内部草稿/原生 job 与仓库任务记录仍是不同数据来源，由工作台状态栏按已知身份合并展示。
+二者连接同一个 SpritePipeline 服务，但浏览器内部草稿/原生 job 与仓库任务记录仍是不同数据来源，由工作台制作记录按已知身份合并展示。
 
 ## 本地启动
 

@@ -255,7 +255,7 @@ image-assets 的外部操作为 generate-prop、edit-image，使用gpt-image-2.6
 
 资产 kind 包含 character、prop、animation、interactable。共享保存、读取和资产查询不触发生图；浏览器独有草稿不自动收录。图片或动画的来源、候选、采用与导出分别记录。
 
-`tasks` 支持 query、capabilityId、status、limit（1–200）、offset（非负整数）、snapshot。搜索在全部未归档记录上执行，返回 totalTasks、totalNativeJobs、searchedTasks、nextOffset 和 snapshot；各来源独立分页，带回相同 snapshot 和 nextOffset 直到 null。Web `GET /v1/tasks` 使用本地记录分页，另支持 refresh，返回 tasks、total、nextOffset、snapshot。历史变化时拒绝旧快照，客户端从第一页重新查询。已归档记录仅从执行列表隐藏，资产与原始产物仍可读。
+`tasks` 支持 query、capabilityId、status、limit（1–200）、offset（非负整数）、snapshot。搜索在全部未归档记录上执行，返回 totalTasks、totalNativeJobs、searchedTasks、nextOffset 和 snapshot；各来源独立分页，带回相同 snapshot 和 nextOffset 直到 null。Web `GET /v1/tasks` 使用本地记录分页，另支持 refresh 与 since，返回 tasks、total、nextOffset、snapshot 和 revision（还覆盖临时 refreshError）。第一页带上次的 revision 作为 since 且历史未变时，只返回 `unchanged: true`、空 tasks 与当前 revision、snapshot、total；不认识 since 的旧 runtime 照常返回完整页。历史变化时拒绝旧快照，客户端从第一页重新查询。已归档记录仅从执行列表隐藏，资产与原始产物仍可读。
 
 ### 序列帧 Godot 交付
 

@@ -1,0 +1,189 @@
+{
+  "workspace": {
+    "name": "Forge — 2D game dev workbench",
+    "brand": {
+      "name": "Forge",
+      "tagline": "2D game dev workbench",
+      "icon": "/favicon.svg?v=forge-play"
+    }
+  },
+  "productionLines": [
+    {
+      "id": "player",
+      "name": "角色制作总览",
+      "eyebrow": "CHARACTER / MOTION",
+      "description": "让角色动起来。",
+      "accent": "violet",
+      "href": "/player",
+      "summary": [
+        "角色原图",
+        "动作序列帧",
+        "导出"
+      ]
+    },
+    {
+      "id": "interactable",
+      "name": "交互物制作",
+      "eyebrow": "INTERACTABLE / BEHAVIOR",
+      "description": "制作物件外观，配置行为并导出交互物。",
+      "accent": "cyan",
+      "href": "/tools/interactable-editor",
+      "summary": [
+        "物品原图",
+        "交互行为",
+        "导出"
+      ]
+    }
+  ],
+  "assetImports": [
+    {
+      "id": "interactable",
+      "label": "交互物项目",
+      "kinds": [
+        "interactable"
+      ],
+      "targets": [
+        "interactable-editor"
+      ]
+    },
+    {
+      "id": "image",
+      "label": "外观原图",
+      "kinds": [
+        "prop",
+        "character"
+      ],
+      "targets": [
+        "interactable-editor"
+      ]
+    },
+    {
+      "id": "animation",
+      "label": "动画帧",
+      "kinds": [
+        "animation"
+      ],
+      "targets": [
+        "interactable-editor"
+      ]
+    }
+  ],
+  "assetCatalogRoute": "/assets",
+  "modules": [
+    {
+      "id": "image-assets",
+      "name": "图片生成",
+      "shortName": "图片生成",
+      "description": "使用 GPT Image 2.6 生成或编辑图片；蒙版外像素由本地合成保留。process-image 使用现有素材做无费用局部合成与透明噪点清理。原图、派生图和来源分别保存，预览后单独采用。",
+      "executable": true,
+      "ui": {
+        "icon": "reference",
+        "productionLine": "interactable",
+        "entryTitle": "生成物品素材",
+        "starterHint": "生成透明物品原图，检查后采用到交互物编辑器。",
+        "stages": [
+          "描述与参考图",
+          "生成并检查",
+          "采用到交互物"
+        ],
+        "accent": "cyan",
+        "status": "ready",
+        "route": "/tools/interactable-editor",
+        "surface": "editor",
+        "embedded": true,
+        "capabilities": [
+          "GPT Image 2.6",
+          "透明 PNG 物件",
+          "多参考图与蒙版编辑",
+          "原图与来源记录"
+        ]
+      }
+    },
+    {
+      "id": "reference-art",
+      "name": "角色原图",
+      "shortName": "角色原图",
+      "description": "使用 PixelLab 生成透明背景的角色或交互物原图，两者都可移送为对应类型的动画参考。物品也可在交互物编辑器预览并采用。",
+      "executable": true,
+      "ui": {
+        "icon": "reference",
+        "productionLine": "player",
+        "entryTitle": "角色原图",
+        "starterHint": "描述角色外观，生成透明像素原图后直接用于制作动作。",
+        "stages": [
+          "描述角色",
+          "生成并选择",
+          "制作序列帧"
+        ],
+        "accent": "violet",
+        "status": "ready",
+        "route": "/tools/reference-art",
+        "surface": "editor",
+        "capabilities": [
+          "PixelLab 像素生图",
+          "共享 API Key",
+          "64/128 像素透明原图",
+          "直接移送序列帧"
+        ]
+      }
+    },
+    {
+      "id": "sprite-generator",
+      "name": "角色动画",
+      "shortName": "角色动画",
+      "description": "按动作要求制作角色或交互物动画。专家制定通用分段与末姿势检查点；每段生成后须读取实际帧并明确确认，锁定末帧锚点后才继续。新任务可使用独立外观/运动专家与有界争议复核，每次检查最多五次视觉调用；模型意见不自动放行。规划、绘制与视觉调用分别受授权预算约束；旧方案保持原语义。",
+      "executable": true,
+      "ui": {
+        "icon": "frames",
+        "productionLine": "player",
+        "entryTitle": "角色动画",
+        "starterHint": "选择角色或交互物，描述动作和结束状态，查看方案后开始制作。",
+        "stages": [
+          "准备与描述",
+          "查看制作方案",
+          "自动制作",
+          "检查与调整",
+          "导出与使用"
+        ],
+        "accent": "violet",
+        "status": "ready",
+        "route": "/tools/sprite-generator",
+        "surface": "editor",
+        "capabilities": [
+          "角色与交互物动作生成",
+          "播放检查",
+          "逐帧修补",
+          "精灵表导出"
+        ]
+      }
+    },
+    {
+      "id": "interactable-editor",
+      "name": "交互物编辑",
+      "shortName": "交互物编辑",
+      "description": "使用行为模板制作查看、切换、拾取和序列物件，保存源项目并在前端继续编辑，按需导出 Godot 资源包。",
+      "executable": true,
+      "ui": {
+        "icon": "interactable",
+        "productionLine": "interactable",
+        "entryTitle": "交互物编辑",
+        "starterHint": "准备物件外观素材，在交互物工具中新建查看、切换、拾取或序列物件。",
+        "stages": [
+          "配置物件",
+          "预览并导出"
+        ],
+        "accent": "cyan",
+        "status": "ready",
+        "route": "/tools/interactable-editor",
+        "surface": "editor",
+        "capabilities": [
+          "PixelLab 物品原图生成",
+          "四类交互物",
+          "范围与碰撞",
+          "文本与动画",
+          "直接导出 Godot"
+        ]
+      }
+    }
+  ]
+}

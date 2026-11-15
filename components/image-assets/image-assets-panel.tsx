@@ -1,9 +1,10 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Display exact generated artifacts and reference uploads. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, KeyRound, LoaderCircle, RefreshCw, Sparkles, X } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
-import { ImageEditWorkspace } from '@/components/image-edit/image-edit-workspace';
+import { ImageEditWorkspace } from '@/components/image-edit/lazy-image-edit-workspace';
 import type { StoredTask } from '@/lib/workbench/work-items';
 import { validateImageAssetDimensions } from '@/lib/workbench/image-dimensions.mjs';
 import {
@@ -206,16 +207,16 @@ export function ImageAssetsPanel({
       <textarea aria-label="透明物件描述" rows={4} maxLength={12000} value={prompt} disabled={busy || running} onChange={(event) => setPrompt(event.target.value)} placeholder="侧视的废弃金属宝箱，蓝色外壳、黄色锁扣，完整轮廓。" />
     </label>
     <label>输出尺寸
-      <select aria-label="图片输出尺寸" value={size.preset} disabled={disabled || busy || running || loadingTask} onChange={(event) => {
+      <NativeSelect aria-label="图片输出尺寸" value={size.preset} disabled={disabled || busy || running || loadingTask} onChange={(event) => {
         const preset = event.target.value;
         if (preset === 'custom') setSize(current => ({ ...current, preset }));
         else { const [width, height] = preset.split('x'); setSize({ preset, width, height }); }
       }}>
-        <option value="1024x1024">1024 × 1024 · 方形</option>
-        <option value="1536x1024">1536 × 1024 · 横向</option>
-        <option value="1024x1536">1024 × 1536 · 竖向</option>
-        <option value="custom">自定义宽高</option>
-      </select>
+        <NativeSelectOption value="1024x1024">1024 × 1024 · 方形</NativeSelectOption>
+        <NativeSelectOption value="1536x1024">1536 × 1024 · 横向</NativeSelectOption>
+        <NativeSelectOption value="1024x1536">1024 × 1536 · 竖向</NativeSelectOption>
+        <NativeSelectOption value="custom">自定义宽高</NativeSelectOption>
+      </NativeSelect>
     </label>
     {size.preset === 'custom' && <div className="image-assets-actions">
       <label>宽度（像素）<input type="number" aria-label="自定义图片宽度" min={16} max={3840} step={16} value={size.width} disabled={disabled || busy || running || loadingTask} aria-invalid={!!sizeError} onChange={event => setSize(current => ({ ...current, width: event.target.value }))} /></label>
@@ -254,11 +255,11 @@ export function ImageAssetsPanel({
     </>}
     {(message || selected?.error) && <output>{message || selected?.error}</output>}
     <label>最近透明物件
-      <select aria-label="最近透明物件" value={selectedId || ''} disabled={busy} onChange={(event) => { if (event.target.value) void selectTask(event.target.value); }}>
-        <option value="">选择已保存的图片任务</option>
-        {selected && !tasks.some((task) => task.id === selected.id) && <option value={selected.id}>{taskName(selected)} · {statusLabels[selected.status] || selected.status}</option>}
-        {tasks.filter((task) => imageAssetKind(task) === kind).map((task) => <option key={task.id} value={task.id}>{taskName(task)} · {statusLabels[task.status] || task.status}</option>)}
-      </select>
+      <NativeSelect aria-label="最近透明物件" value={selectedId || ''} disabled={busy} onChange={(event) => { if (event.target.value) void selectTask(event.target.value); }}>
+        <NativeSelectOption value="">选择已保存的图片任务</NativeSelectOption>
+        {selected && !tasks.some((task) => task.id === selected.id) && <NativeSelectOption value={selected.id}>{taskName(selected)} · {statusLabels[selected.status] || selected.status}</NativeSelectOption>}
+        {tasks.filter((task) => imageAssetKind(task) === kind).map((task) => <NativeSelectOption key={task.id} value={task.id}>{taskName(task)} · {statusLabels[task.status] || task.status}</NativeSelectOption>)}
+      </NativeSelect>
     </label>
     {selectedId && <button disabled={busy} onClick={() => void selectTask(selectedId)}><RefreshCw size={14} />重新读取原任务</button>}
     {localEditTask && <ImageEditWorkspace target={{ kind: 'image-task', taskId: localEditTask }} onClose={() => { setLocalEditTask(null); onBusy?.(false); }} onAdopt={async receipt => {

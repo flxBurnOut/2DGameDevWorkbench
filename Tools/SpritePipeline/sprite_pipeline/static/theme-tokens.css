@@ -87,6 +87,9 @@
   --theme-light-blue-soft: #EAF0FF;
   --theme-dark-blue-soft: #172A49;
   --theme-blue-soft: light-dark(#EAF0FF, #172A49);
+  --theme-light-cyan-strong: #0E7490;
+  --theme-dark-cyan-strong: #145065;
+  --theme-cyan-strong: light-dark(#0E7490, #145065);
 }
 :root { color-scheme: dark; }
 :root[data-theme="light"] { color-scheme: light; }

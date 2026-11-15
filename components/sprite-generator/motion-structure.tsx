@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Pixel evidence must use original image bytes. */
+import { NativeSelect, NativeSelectOption, NativeSelectOptGroup } from '@/components/ui/native-select';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motionRequest, motionUrl } from './open-motion-model';
 import { MotionStructureHistory, StructureHistoryImage } from './motion-structure-history';
@@ -234,13 +235,17 @@ export function MotionStructure({
   useEffect(() => {
     if (!analysisId || !running) return;
     let current = true,
-      querying = false;
+      querying = false,
+      last = '';
     const timer = window.setInterval(() => {
-      if (querying) return;
+      if (querying || globalThis.document.visibilityState === 'hidden') return;
       querying = true;
       void motionRequest<Structure>(`open-motion/structures/${analysisId}`)
         .then((value) => {
-          if (current) {
+          // Re-apply (and re-render) only when the analysis changed.
+          const snapshot = JSON.stringify(value);
+          if (current && snapshot !== last) {
+            last = snapshot;
             apply(value);
             if (value.error) setMessage(value.error);
           }
@@ -535,7 +540,7 @@ export function MotionStructure({
           {visible && draft && (
             <label>
               查看部件或锚点
-              <select
+              <NativeSelect
                 aria-label="结构选择"
                 value={selection}
                 onChange={(e) => {
@@ -547,26 +552,26 @@ export function MotionStructure({
                   );
                 }}
               >
-                <optgroup label="部件">
+                <NativeSelectOptGroup label="部件">
                   {draft.parts.map((p) => (
-                    <option key={p.id} value={p.id}>
+                    <NativeSelectOption key={p.id} value={p.id}>
                       {p.name}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </optgroup>
-                <optgroup label="锚点">
+                </NativeSelectOptGroup>
+                <NativeSelectOptGroup label="锚点">
                   {draft.anchors.map((a) => (
-                    <option key={a.id} value={a.id}>
+                    <NativeSelectOption key={a.id} value={a.id}>
                       {a.name}
                       {a.state === 'unknown'
                         ? ' · 未知'
                         : a.state === 'inferred'
                           ? ' · 推断'
                           : ''}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </optgroup>
-              </select>
+                </NativeSelectOptGroup>
+              </NativeSelect>
             </label>
           )}
           <details className="structure-details" open={editing || undefined}>
@@ -750,7 +755,7 @@ export function MotionStructure({
                         </label>
                         <label>
                           部件类别
-                          <select
+                          <NativeSelect
                             value={part.kind}
                             onChange={(e) =>
                               change({
@@ -773,25 +778,25 @@ export function MotionStructure({
                               clothing: '服饰',
                               other: '其他',
                             }).map(([value, label]) => (
-                              <option key={value} value={value}>
+                              <NativeSelectOption key={value} value={value}>
                                 {label}
-                              </option>
+                              </NativeSelectOption>
                             ))}
-                          </select>
+                          </NativeSelect>
                         </label>
                         <label>
                           区域操作
-                          <select
+                          <NativeSelect
                             aria-label="区域操作"
                             value={mode === 'anchor' ? 'point' : mode}
                             onChange={(e) =>
                               setMode(e.target.value as typeof mode)
                             }
                           >
-                            <option value="point">添加保留点</option>
-                            <option value="exclude">添加排除点</option>
-                            <option value="box">拖动框选区域</option>
-                          </select>
+                            <NativeSelectOption value="point">添加保留点</NativeSelectOption>
+                            <NativeSelectOption value="exclude">添加排除点</NativeSelectOption>
+                            <NativeSelectOption value="box">拖动框选区域</NativeSelectOption>
+                          </NativeSelect>
                         </label>
                         <button
                           disabled={locked}
@@ -808,7 +813,7 @@ export function MotionStructure({
                         </button>
                         <label>
                           可见性
-                          <select
+                          <NativeSelect
                             value={part.visibility}
                             onChange={(e) =>
                               change({
@@ -825,10 +830,10 @@ export function MotionStructure({
                               })
                             }
                           >
-                            <option value="visible">可见</option>
-                            <option value="occluded">被遮挡</option>
-                            <option value="unknown">无法确定</option>
-                          </select>
+                            <NativeSelectOption value="visible">可见</NativeSelectOption>
+                            <NativeSelectOption value="occluded">被遮挡</NativeSelectOption>
+                            <NativeSelectOption value="unknown">无法确定</NativeSelectOption>
+                          </NativeSelect>
                         </label>
                       </>
                     )}
@@ -854,7 +859,7 @@ export function MotionStructure({
                         </label>
                         <label>
                           所属部件
-                          <select
+                          <NativeSelect
                             value={anchor.part_id}
                             onChange={(e) =>
                               change({
@@ -868,15 +873,15 @@ export function MotionStructure({
                             }
                           >
                             {draft.parts.map((p) => (
-                              <option key={p.id} value={p.id}>
+                              <NativeSelectOption key={p.id} value={p.id}>
                                 {p.name}
-                              </option>
+                              </NativeSelectOption>
                             ))}
-                          </select>
+                          </NativeSelect>
                         </label>
                         <label>
                           观察依据
-                          <select
+                          <NativeSelect
                             value={anchor.state}
                             onChange={(e) => {
                               const state = e.target.value as Anchor['state'];
@@ -903,11 +908,11 @@ export function MotionStructure({
                               });
                             }}
                           >
-                            <option value="visible">可见</option>
-                            <option value="inferred">推断位置</option>
-                            <option value="occluded">被遮挡</option>
-                            <option value="unknown">未知</option>
-                          </select>
+                            <NativeSelectOption value="visible">可见</NativeSelectOption>
+                            <NativeSelectOption value="inferred">推断位置</NativeSelectOption>
+                            <NativeSelectOption value="occluded">被遮挡</NativeSelectOption>
+                            <NativeSelectOption value="unknown">未知</NativeSelectOption>
+                          </NativeSelect>
                         </label>
                       </>
                     )}
@@ -917,7 +922,7 @@ export function MotionStructure({
                         <div className="structure-relation">
                           <label>
                             选择关系
-                            <select
+                            <NativeSelect
                               aria-label="选择关系"
                               value={relation.id}
                               onChange={(e) =>
@@ -925,15 +930,15 @@ export function MotionStructure({
                               }
                             >
                               {draft.relations.map((r) => (
-                                <option key={r.id} value={r.id}>
+                                <NativeSelectOption key={r.id} value={r.id}>
                                   {nodeName(r.source)} → {nodeName(r.target)}
-                                </option>
+                                </NativeSelectOption>
                               ))}
-                            </select>
+                            </NativeSelect>
                           </label>
                           <label>
                             关系类型
-                            <select
+                            <NativeSelect
                               aria-label="关系类型"
                               value={relation.type}
                               onChange={(e) =>
@@ -951,15 +956,15 @@ export function MotionStructure({
                                 axis: '轴向',
                                 contact: '接触',
                               }).map(([value, label]) => (
-                                <option key={value} value={value}>
+                                <NativeSelectOption key={value} value={value}>
                                   {label}
-                                </option>
+                                </NativeSelectOption>
                               ))}
-                            </select>
+                            </NativeSelect>
                           </label>
                           <label>
                             关系起点
-                            <select
+                            <NativeSelect
                               aria-label="关系起点"
                               value={relation.source}
                               onChange={(e) =>
@@ -970,15 +975,15 @@ export function MotionStructure({
                               }
                             >
                               {[...draft.parts, ...draft.anchors].map((p) => (
-                                <option key={p.id} value={p.id}>
+                                <NativeSelectOption key={p.id} value={p.id}>
                                   {p.name}
-                                </option>
+                                </NativeSelectOption>
                               ))}
-                            </select>
+                            </NativeSelect>
                           </label>
                           <label>
                             关系终点
-                            <select
+                            <NativeSelect
                               aria-label="关系终点"
                               value={relation.target}
                               onChange={(e) =>
@@ -989,15 +994,15 @@ export function MotionStructure({
                               }
                             >
                               {[...draft.parts, ...draft.anchors].map((p) => (
-                                <option key={p.id} value={p.id}>
+                                <NativeSelectOption key={p.id} value={p.id}>
                                   {p.name}
-                                </option>
+                                </NativeSelectOption>
                               ))}
-                            </select>
+                            </NativeSelect>
                           </label>
                           <label>
                             关系依据
-                            <select
+                            <NativeSelect
                               aria-label="关系依据"
                               value={relation.state}
                               onChange={(e) =>
@@ -1006,10 +1011,10 @@ export function MotionStructure({
                                 })
                               }
                             >
-                              <option value="visible">可见</option>
-                              <option value="inferred">推断</option>
-                              <option value="unknown">未知</option>
-                            </select>
+                              <NativeSelectOption value="visible">可见</NativeSelectOption>
+                              <NativeSelectOption value="inferred">推断</NativeSelectOption>
+                              <NativeSelectOption value="unknown">未知</NativeSelectOption>
+                            </NativeSelect>
                           </label>
                           <button
                             onClick={() => {

@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- History previews use immutable, hash-checked source images. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { motionRequest, motionUrl } from './open-motion-model';
 import { structureRestoreRequest, type StructureHistoryEntry, type StructureRestoreRequest, type StructureSnapshot } from './motion-structure-history-model';
@@ -52,10 +53,10 @@ export function MotionStructureHistory<T extends StructureSnapshot>({ current, r
   }
   return <details className="structure-history">
     <summary>结构历史版本 · 当前版本 {current.revision}</summary>
-    <label>查看历史版本<select aria-label="查看结构历史版本" value={shown?.revision || 0} disabled={restoring} onChange={(event) => void preview(Number(event.target.value))}>
-      <option value={0}>返回当前版本 {current.revision}</option>
-      {entries.map((entry) => <option key={entry.revision} value={entry.revision}>版本 {entry.revision}{entry.revision === current.revision ? '（当前）' : ''} · {entry.note || '已保存结构'}</option>)}
-    </select></label>
+    <label>查看历史版本<NativeSelect aria-label="查看结构历史版本" value={shown?.revision || 0} disabled={restoring} onChange={(event) => void preview(Number(event.target.value))}>
+      <NativeSelectOption value={0}>返回当前版本 {current.revision}</NativeSelectOption>
+      {entries.map((entry) => <NativeSelectOption key={entry.revision} value={entry.revision}>版本 {entry.revision}{entry.revision === current.revision ? '（当前）' : ''} · {entry.note || '已保存结构'}</NativeSelectOption>)}
+    </NativeSelect></label>
     {shown?.loading && <output>正在读取历史结构…</output>}
     {shown?.error && <p role="alert">{shown.error}</p>}
     {shown?.value && <section aria-label="历史结构预览">
@@ -78,9 +79,9 @@ export function StructureHistoryImage({ image, width, height, parts, anchors = [
   const [selected, setSelected] = useState('');
   const part = parts.find((entry) => entry.id === selected) || parts[0];
   return <div className="structure-history-preview">
-    <label>预览部件<select aria-label="历史结构预览部件" value={part?.id || ''} onChange={(event) => setSelected(event.target.value)}>{parts.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label>
+    <label>预览部件<NativeSelect aria-label="历史结构预览部件" value={part?.id || ''} onChange={(event) => setSelected(event.target.value)}>{parts.map((entry) => <NativeSelectOption key={entry.id} value={entry.id}>{entry.name}</NativeSelectOption>)}</NativeSelect></label>
     <div className="motion-canvas motion-structure"><div className="structure-image">
-      <img src={image} alt={caption} draggable={false} />
+      <img loading="lazy" decoding="async" src={image} alt={caption} draggable={false} />
       {part?.maskUrl && <div className="structure-mask" style={{ maskImage: `url("${part.maskUrl}")` }} />}
       <svg viewBox={`0 0 ${width} ${height}`} aria-label="历史结构锚点">{anchors.filter((anchor) => anchor.x !== null && anchor.y !== null).map((anchor) => <circle key={anchor.id} cx={anchor.x!} cy={anchor.y!} r={1.2} fill={anchor.state === 'inferred' ? '#ffd166' : '#62e9df'}><title>{anchor.name}</title></circle>)}</svg>
     </div></div>

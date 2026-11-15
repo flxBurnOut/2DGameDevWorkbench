@@ -13,6 +13,13 @@
   "categories": {
     "correctness": "error"
   },
+  "settings": {
+    "jsx-a11y": {
+      "components": {
+        "NativeSelect": "select"
+      }
+    }
+  },
   "env": {
     "builtin": true,
     "browser": true,

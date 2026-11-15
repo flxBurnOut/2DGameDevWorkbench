@@ -1,5 +1,4 @@
-import JSZip from 'jszip';
-import manifest from '@/workbench/manifest.json';
+import manifest from './ui-manifest.json';
 import { readWorkspaceDraft, saveWorkspaceDraft } from './browser-store';
 
 export type ImportPurpose =
@@ -64,7 +63,7 @@ export function importLink(
   purpose: ImportPurpose,
   assetId: string,
 ) {
-  const route = [...manifest.capabilities, ...manifest.editorModules].find(
+  const route = manifest.modules.find(
     (m) => m.id === target,
   )?.ui.route;
   if (
@@ -117,6 +116,7 @@ export async function loadLibraryAsset(
   const bytes = await response.arrayBuffer();
   if (bytes.byteLength > 257 * 1024 * 1024)
     throw new Error('素材包超过导入上限。');
+  const { default: JSZip } = await import('jszip');
   const zip = await JSZip.loadAsync(bytes);
   let size = 0;
   for (const entry of Object.values(zip.files)) {
@@ -190,7 +190,7 @@ export async function storeEditorHandoff(
 ) {
   const key = 'import-' + crypto.randomUUID();
   await saveWorkspaceDraft(key, { target, purpose, payload }, []);
-  const route = [...manifest.capabilities, ...manifest.editorModules].find(
+  const route = manifest.modules.find(
     (m) => m.id === target,
   )!.ui.route;
   return route + '?' + new URLSearchParams({ handoff: key });

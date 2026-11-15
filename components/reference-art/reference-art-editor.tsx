@@ -11,7 +11,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
-import { AssetImportPicker } from '@/components/workbench/asset-import-picker';
+import { AssetImportPicker } from '@/components/workbench/lazy-dialogs';
 import { clearImportQuery, type ImportBundle } from '@/lib/workbench/asset-import';
 import { CharacterIdentityField } from '@/components/sprite-generator/character-identity-field';
 import { referenceIdentityDescription, referenceIdentityLimit, referenceTransferInput } from '@/components/sprite-generator/character-identity';
@@ -289,7 +289,6 @@ export function ReferenceArtEditor() {
       <AssetImportPicker open={Boolean(library)} onClose={() => setLibrary(null)} purposes={['image']} kind="character" initialAsset={library?.assetId} onImport={importReference} />
       <header className="ra-header">
         <div>
-          <span className="ra-kicker">PIXELLAB / CHARACTER ART</span>
           <h1>角色原图</h1>
           <p>描述外观，生成像素角色，再让它动起来。</p>
         </div>
@@ -434,6 +433,7 @@ export function ReferenceArtEditor() {
           <div className="ra-canvas">
             {png ? (
               <img
+                decoding="async"
                 src={artifactUrl(png)}
                 alt={textField(selected?.input?.name, '生成的像素角色')}
                 width={selected?.input?.size === 64 ? 64 : 128}

@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Displays exact saved pixel frames. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useEffect, useState } from 'react';
 import { motionRequest, motionUrl, type MotionWork, type MotionStage, type MotionReview } from './open-motion-model';
 import { MotionLocalRepair, type RepairAttempt } from './motion-local-repair';
@@ -7,7 +8,7 @@ import { MotionVisualReview } from './motion-visual-review';
 import { MotionAdjustment } from './motion-adjustment';
 import { MotionTemporalStructure } from './motion-temporal-structure';
 import { MotionPanel } from './motion-panel';
-import { ImageEditWorkspace } from '../image-edit/image-edit-workspace';
+import { ImageEditWorkspace } from '../image-edit/lazy-image-edit-workspace';
 import type { ReactNode } from 'react';
 
 type Evidence = {
@@ -107,16 +108,16 @@ export function MotionStageReview({work, candidate, stage, readOnly, onSaved, ex
     <MotionPanel title="高级工具">
     <MotionTemporalStructure work={work} candidate={candidate} stage={stage} frame={frame} frameSha={data.frames[frame]?.sha256||''}
       playing={false} readOnly={readOnly} onFrame={value=>setFrame(Math.max(0,Math.min(data.frames.length-1,value)))} onStop={()=>setPlaying(false)}>
-      <img src={motionUrl(`${route}/frames/${frame}`,{...query,v:data.token})} alt={`结构观察第 ${frame+1} 帧`} />
+      <img src={motionUrl(`${route}/frames/${frame}`,{...query,v:data.token})} alt={`结构观察第 ${frame+1} 帧`} decoding="async" />
     </MotionTemporalStructure>
     <input aria-label="工具逐帧查看" type="range" min={0} max={data.frames.length-1} value={frame} onChange={e=>{setPlaying(false);setFrame(Number(e.target.value));}} />
     <div className="motion-small-reference">
-      <img src={motionUrl(`${route}/frames/${endpoint}`,{...query,v:data.token})} alt="待确认的实际末姿势" />
+      <img src={motionUrl(`${route}/frames/${endpoint}`,{...query,v:data.token})} alt="待确认的实际末姿势" decoding="async" />
       <div><b>目标末姿势</b><p>{data.definition.checkpoint?.endpoint}</p><p>{data.definition.checkpoint?.rhythm}</p></div>
     </div>
     <details><summary>目标姿势提前到达时，选择实际锚点</summary>
       <p>默认使用最后一帧。若末尾已越过目标，可明确选择较早的真实帧结束本段。原始尾帧保留，后段从选中图片继续。</p>
-      <label>本段结束锚点<select aria-label="本段结束锚点" value={endpoint} disabled={!!data.state_checkpoint} onChange={e=>{setAnchor(Number(e.target.value));setAckTrim(false);setWatched(false);}}>{data.frames.map((_,i)=><option key={i} value={i}>第 {i+1} 帧{i===data.frames.length-1?'（原始末帧）':''}</option>)}</select></label>
+      <label>本段结束锚点<NativeSelect aria-label="本段结束锚点" value={endpoint} disabled={!!data.state_checkpoint} onChange={e=>{setAnchor(Number(e.target.value));setAckTrim(false);setWatched(false);}}>{data.frames.map((_,i)=><NativeSelectOption key={i} value={i}>第 {i+1} 帧{i===data.frames.length-1?'（原始末帧）':''}</NativeSelectOption>)}</NativeSelect></label>
       {trimmed&&<label><input type="checkbox" checked={ackTrim} onChange={e=>setAckTrim(e.target.checked)} />确认采用第 1–{endpoint+1} 帧，其余原始帧保留在记录中</label>}
     </details>
     {!!data.repairs?.length&&<details><summary>旧版局部修复记录</summary><MotionLocalRepair work={work} candidate={candidate} stage={stage} token={data.token} count={data.frames.length} attempts={data.repairs} onSaved={onSaved} readOnly={readOnly}/></details>}

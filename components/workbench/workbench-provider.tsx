@@ -10,9 +10,9 @@ import {
   type ReactNode,
 } from 'react';
 import { workbenchModules, productionLines } from '@/lib/workbench/modules';
-import { readTaskHistory } from '@/lib/workbench/task-history';
+import { readTaskHistoryRevision, type TaskHistory } from '@/lib/workbench/task-history';
 import { AgentFollow } from './agent-follow';
-import { GodotExportDialog } from './godot-export-dialog';
+import { GodotExportHost } from './godot-export-host';
 import {
   listWorkItems,
   subscribeWorkItems,
@@ -34,12 +34,17 @@ import {
   type SpriteJob,
 } from '@/lib/workbench/work-items';
 
+// Poll quickly only while something is generating; pause in hidden tabs.
+const ACTIVE_POLL_MS = 6000;
+const IDLE_POLL_MS = 30000;
+
 function subscribePath(fn: () => void) {
   window.addEventListener('popstate', fn);
   return () => window.removeEventListener('popstate', fn);
 }
-import {workbenchContext as context} from './workbench-context';
+import {workbenchActionsContext, workbenchContext as context} from './workbench-context';
 export type WorkbenchState=ReturnType<typeof useWorkbenchState>;
+export type WorkbenchActions=Pick<WorkbenchState, 'navigate' | 'refresh' | 'setPageTitle' | 'setQueueOpen' | 'setHelpOpen' | 'setNavigationError'>;
 
 function useWorkbenchState() {
   const pathname = useSyncExternalStore(
@@ -60,10 +65,14 @@ function useWorkbenchState() {
   const [storageError, setStorageError] = useState('');
   const [navigationError, setNavigationError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const [guideOpen, setGuideOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
+  // Current work shown at the end of the header breadcrumb, set by the page.
+  const [pageTitle, setPageTitle] = useState('');
   const refreshLock = useRef(false);
+  const history = useRef<TaskHistory | undefined>(undefined);
+  const generating = useRef(false);
+  const refreshedAt = useRef(0);
   const navigating = useRef(false);
   const mounted = useRef(true);
   const refreshLocal = useCallback(async () => {
@@ -94,14 +103,20 @@ function useWorkbenchState() {
         works?: OpenMotionSummary[];
         nextOffset?: number | null;
         snapshot?: string;
+        revision?: string;
+        unchanged?: boolean;
       }>;
     };
+    let tasksRunning = generating.current;
+    let spritesRunning = generating.current;
     await Promise.allSettled([
       refreshLocal(),
-      readTaskHistory(request)
-        .then((tasks) => {
+      readTaskHistoryRevision(request, history.current)
+        .then((next) => {
+          tasksRunning = next.tasks.some((task) => task.status === 'running');
           if (mounted.current) {
-            setTasks(tasks);
+            if (next !== history.current) setTasks(next.tasks);
+            history.current = next;
             setRuntimeOnline(true);
           }
         })
@@ -114,14 +129,14 @@ function useWorkbenchState() {
           const capabilityModule = workbenchModules.find(
             (m) => m.id === 'sprite-generator',
           );
+          const next = capabilityModule
+            ? [...data.jobs.filter((job: SpriteJob) => !data.works?.some(work => work.id === job.open_work_id)).map((job: SpriteJob) =>
+                spriteWorkItem(job, capabilityModule.href),
+              ), ...(data.works || []).map(work => openMotionWorkItem(work, capabilityModule.href))]
+            : [];
+          spritesRunning = next.some((item) => item.state === 'running');
           if (mounted.current) {
-            setSprites(
-              capabilityModule
-                ? [...data.jobs.filter((job: SpriteJob) => !data.works?.some(work => work.id === job.open_work_id)).map((job: SpriteJob) =>
-                    spriteWorkItem(job, capabilityModule.href),
-                  ), ...(data.works || []).map(work => openMotionWorkItem(work, capabilityModule.href))]
-                : [],
-            );
+            setSprites(next);
             setSpriteOnline(true);
           }
         })
@@ -129,23 +144,42 @@ function useWorkbenchState() {
           if (mounted.current) setSpriteOnline(false);
         }),
     ]);
+    generating.current = tasksRunning || spritesRunning;
+    refreshedAt.current = Date.now();
     refreshLock.current = false;
     if (mounted.current) setRefreshing(false);
   }, [refreshLocal]);
   useEffect(() => {
     mounted.current = true;
     let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const tick = async () => {
-      await refresh();
-      if (!stopped) timer = setTimeout(() => void tick(), 6000);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let chain = 0;
+    const hidden = () => document.visibilityState === 'hidden';
+    // The short timer itself sends nothing while idle; it lets a task started
+    // from any editor (which calls refresh) switch to fast polling promptly.
+    const tick = async (force = false) => {
+      const turn = ++chain;
+      clearTimeout(timer);
+      if (force || generating.current || Date.now() - refreshedAt.current >= IDLE_POLL_MS)
+        await refresh();
+      if (!stopped && turn === chain && !hidden())
+        timer = setTimeout(() => void tick(), ACTIVE_POLL_MS);
     };
-    void tick();
+    // Hidden tabs stop polling; returning to the tab reads the latest state at once.
+    const onVisibility = () => {
+      if (stopped) return;
+      clearTimeout(timer);
+      if (!hidden()) void tick(true);
+      else chain++;
+    };
+    void tick(true);
+    document.addEventListener('visibilitychange', onVisibility);
     const unsubscribe = subscribeWorkItems(() => void refreshLocal());
     return () => {
       stopped = true;
       mounted.current = false;
       clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
       unsubscribe();
     };
   }, [refresh, refreshLocal]);
@@ -245,25 +279,38 @@ function useWorkbenchState() {
     refreshing,
     refresh,
     navigate,
-    guideOpen,
-    setGuideOpen,
     helpOpen,
     setHelpOpen,
     queueOpen,
     setQueueOpen,
+    pageTitle,
+    setPageTitle,
   };
 }
 
 export function WorkbenchProvider({ children }: { children: ReactNode }) {
   const value = useWorkbenchState();
-  return (
-    <context.Provider value={value}>
-      <AgentBridge />
-      <AgentFollow />
-      <GodotExportDialog />
-      {children}
-    </context.Provider>
+  const { navigate, refresh, setPageTitle, setQueueOpen, setHelpOpen, setNavigationError } = value;
+  const actions = useMemo(
+    () => ({ navigate, refresh, setPageTitle, setQueueOpen, setHelpOpen, setNavigationError }),
+    [navigate, refresh, setPageTitle, setQueueOpen, setHelpOpen, setNavigationError],
   );
+  return (
+    <workbenchActionsContext.Provider value={actions}>
+      <context.Provider value={value}>
+        <AgentBridge />
+        <AgentFollow />
+        <GodotExportHost />
+        {children}
+      </context.Provider>
+    </workbenchActionsContext.Provider>
+  );
+}
+/** Stable workbench callbacks; unlike useWorkbench it does not re-render on status polls. */
+export function useWorkbenchActions() {
+  const value = useContext(workbenchActionsContext);
+  if (!value) throw new Error('WorkbenchProvider is required');
+  return value;
 }
 export function useWorkbench() {
   const value = useContext(context);
@@ -319,7 +366,7 @@ function AgentBridge() {
       {
         name: 'start_workbench_task',
         title: '启动 2D 工作台任务',
-        description: '执行用户已授权的工作台能力，并在制作状态栏显示真实状态。',
+        description: '执行用户已授权的工作台能力，并在制作记录中显示真实状态。',
         inputSchema: {
           type: 'object',
           required: ['capabilityId', 'input'],

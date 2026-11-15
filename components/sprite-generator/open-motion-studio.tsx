@@ -1,5 +1,6 @@
 'use client';
-import { ImageEditWorkspace } from '../image-edit/image-edit-workspace';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import { ImageEditWorkspace } from '../image-edit/lazy-image-edit-workspace';
 import type { ImageTargetRef } from '@/features/image-edit/client';
 import { MotionTargets } from './motion-targets';
 import { CharacterIdentityField } from './character-identity-field';
@@ -9,6 +10,8 @@ import { uploadedIdentityLimit, uploadedReferenceIdentity } from './character-id
 import Link from 'next/link';
 
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -29,9 +32,7 @@ import {
   Upload,
   Sparkles,
 } from 'lucide-react';
-import { WorkbenchBreadcrumb } from '@/components/workbench/shared-navigation';
-import { EditorWorkbenchMenu } from '@/components/workbench/editor-chrome';
-import { useWorkbench } from '@/components/workbench/workbench-provider';
+import { useWorkbenchActions } from '@/components/workbench/workbench-provider';
 import {
   publishEditorSession,
   removeEditorSession,
@@ -39,11 +40,15 @@ import {
 } from '@/lib/workbench/editor-session';
 import { offerGodotExport } from '@/lib/workbench/godot-export';
 import type { WorkbenchModule } from '@/lib/workbench/modules';
-import { SpritePipelineWorkspace } from './sprite-pipeline-workspace';
-import {
-  MotionModelSettings,
-  type MotionConfiguration as Configuration,
-} from './motion-model-settings';
+import type { MotionConfiguration as Configuration } from './motion-model-settings';
+
+// Secondary surfaces load when opened: model settings and the legacy workspace.
+const MotionModelSettings = lazy(() =>
+  import('./motion-model-settings').then((module) => ({ default: module.MotionModelSettings })),
+);
+const SpritePipelineWorkspace = lazy(() =>
+  import('./sprite-pipeline-workspace').then((module) => ({ default: module.SpritePipelineWorkspace })),
+);
 import {
   blankSpec,
   motionSteps,
@@ -146,6 +151,7 @@ export function SpriteStudioEntry({ module }: { module: WorkbenchModule }) {
     (job && resolved?.job === job && !resolved.work)
   )
     return (
+      <Suspense fallback={null}>
       <SpritePipelineWorkspace
         module={module}
         returnToMotion={
@@ -158,6 +164,7 @@ export function SpriteStudioEntry({ module }: { module: WorkbenchModule }) {
             : undefined
         }
       />
+      </Suspense>
     );
   if (job && resolved?.job !== job)
     return (
@@ -193,8 +200,14 @@ function OpenMotionStudio({
   initialCandidate: number;
   initialImage?:{frameIndex:number;stageIndex?:number;editId?:string;candidateVersion?:string};
 }) {
-  const wb = useWorkbench();
+  const wb = useWorkbenchActions();
   const [work, setWork] = useState<MotionWork | null>(null);
+  const { setPageTitle } = wb;
+  const pageTitle = work?.plan?.title || '新动作';
+  useEffect(() => {
+    setPageTitle(pageTitle);
+    return () => setPageTitle('');
+  }, [pageTitle, setPageTitle]);
   const [spec, setSpec] = useState<MotionSpec>({
     ...blankSpec,
     object_id: objectId,
@@ -225,6 +238,7 @@ function OpenMotionStudio({
   const structureDraftSaver = useRef<(() => void) | null>(null);
   const registerStructureDraftSaver = useCallback((save: (() => void) | null) => { structureDraftSaver.current = save; }, []);
   const settingsRef = useRef<HTMLDetailsElement>(null);
+  const [settingsShown, setSettingsShown] = useState(false);
   const requestKey = useRef(''),
     lastStatus = useRef(-1),
     pollRevision = useRef(0);
@@ -283,7 +297,13 @@ function OpenMotionStudio({
   const recoverable=work?.job?.candidates.some(c=>c.plan_execution.stages.some(s=>
     s.state==='unknown'||(!work.job?.plan_control.enabled&&['submitting','pending'].includes(s.state))));
 
+  // Polls return the same work most of the time; an identical snapshot keeps
+  // the studio from re-rendering every 2.5 seconds.
+  const workSnapshot = useRef('');
   const applyWork = useCallback((value: MotionWork) => {
+    const snapshot = JSON.stringify(value);
+    if (snapshot === workSnapshot.current) return;
+    workSnapshot.current = snapshot;
     setWork(value);
     const next = motionStep(value);
     if (lastStatus.current !== next) {
@@ -372,7 +392,7 @@ function OpenMotionStudio({
     let running = false;
     const abort = new AbortController();
     const poll = async () => {
-      if (running || busy) return;
+      if (running || busy || document.visibilityState === 'hidden') return;
       running = true;
       const revision = pollRevision.current;
       try {
@@ -535,8 +555,22 @@ function OpenMotionStudio({
   return (
     <div className="motion-studio" data-sprite-editor>
       <header className="motion-header">
-        <EditorWorkbenchMenu />
-        <WorkbenchBreadcrumb compact projectName={work?.plan?.title || '新动作'} />
+        <nav className="motion-steps" aria-label="角色动画制作阶段">
+          {motionSteps.map((name, i) => (
+            <button
+              key={name}
+              aria-current={step === i ? 'step' : undefined}
+              disabled={i > maxStep || busy}
+              onClick={() => setStep(i)}
+            >
+              <span>{i < maxStep ? <Check size={14} /> : i + 1}</span>
+              {name}
+              {i < 4 && (
+                <ChevronRight size={14} className="motion-step-chevron" />
+              )}
+            </button>
+          ))}
+        </nav>
         <span className="motion-save">
           {work ? `版本 ${work.revision} · 已保存本机` : '准备阶段不创建任务'}
         </span>
@@ -567,33 +601,27 @@ function OpenMotionStudio({
             <Link href="/tools/sprite-generator?legacy=1">旧版工作区</Link>
           </div>
         </details>
-        <details className="motion-popover" ref={settingsRef}>
+        <details
+          className="motion-popover"
+          ref={settingsRef}
+          onToggle={(event) => {
+            if (event.currentTarget.open) setSettingsShown(true);
+          }}
+        >
           <summary>
             <Settings2 size={16} />
             模型设置
           </summary>
-          <MotionModelSettings
-            configuration={configuration}
-            onSaved={(value) => setConfiguration(value)}
-          />
+          {settingsShown && (
+            <Suspense fallback={<div className="motion-popover-body">正在读取模型设置…</div>}>
+              <MotionModelSettings
+                configuration={configuration}
+                onSaved={(value) => setConfiguration(value)}
+              />
+            </Suspense>
+          )}
         </details>
       </header>
-      <nav className="motion-steps" aria-label="角色动画制作阶段">
-        {motionSteps.map((name, i) => (
-          <button
-            key={name}
-            aria-current={step === i ? 'step' : undefined}
-            disabled={i > maxStep || busy}
-            onClick={() => setStep(i)}
-          >
-            <span>{i < maxStep ? <Check size={14} /> : i + 1}</span>
-            {name}
-            {i < 4 && (
-              <ChevronRight size={14} className="motion-step-chevron" />
-            )}
-          </button>
-        ))}
-      </nav>
       {error && (
         <div role="alert" className="motion-error">
           <span>{error}</span>
@@ -632,9 +660,7 @@ function OpenMotionStudio({
         ) : (
           <>
             <div className="motion-heading">
-              <small>
-                CHARACTER / MOTION · {String(step + 1).padStart(2, '0')}
-              </small>
+              <small>第 {step + 1} 步，共 {motionSteps.length} 步</small>
               <h1>{motionSteps[step]}</h1>
               <p>
                 {
@@ -655,19 +681,19 @@ function OpenMotionStudio({
                   <MotionStructure key={motionObjectId(spec)} characterId={motionObjectId(spec)} disabled={readOnly || busy} registerDraftSaver={registerStructureDraftSaver} modelConfiguration={JSON.stringify(configuration?.configuration || null)} generationStructure={spec.visual_structure} onGenerationStructure={(value)=>edit({visual_structure:value})} />
                   <label>
                     已有对象
-                    <select
+                    <NativeSelect
                       value={motionObjectId(spec)}
                       disabled={readOnly}
                       onChange={(e) => { const selected = objects.find(item => item.id === e.target.value); edit({ object_id: e.target.value, object_type: selected?.object_type ?? 'character' }); setUploadIdentity(''); }}
                     >
-                      <option value="">请选择对象</option>
+                      <NativeSelectOption value="">请选择对象</NativeSelectOption>
                       {objects.map((c) => (
-                        <option key={c.id} value={c.id}>
+                        <NativeSelectOption key={c.id} value={c.id}>
                           {c.name} · {c.object_type === 'interactable' ? '交互物' : '角色'} · {c.width}px
                           {c.object_type !== 'interactable' && c.facing ? ` · 朝${c.facing === 'left' ? '左' : '右'}` : ''}
-                        </option>
+                        </NativeSelectOption>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </label>
                   <details>
                     <summary>上传角色原图</summary>
@@ -686,13 +712,13 @@ function OpenMotionStudio({
                       </label>
                       <label>
                         原图朝向
-                        <select
+                        <NativeSelect
                           value={uploadFacing}
                           onChange={(e) => setUploadFacing(e.target.value)}
                         >
-                          <option value="right">向右</option>
-                          <option value="left">向左</option>
-                        </select>
+                          <NativeSelectOption value="right">向右</NativeSelectOption>
+                          <NativeSelectOption value="left">向左</NativeSelectOption>
+                        </NativeSelect>
                       </label>
                       <CharacterIdentityField value={uploadIdentity} onChange={setUploadIdentity} maxLength={uploadedIdentityLimit} disabled={busy || readOnly} />
                       <label className="motion-upload">
@@ -887,13 +913,13 @@ function OpenMotionStudio({
                       ))}
                       <label>
                         视觉复核方式
-                        <select aria-label="视觉复核方式" value={spec.review_protocol || 'baseline'} onChange={e=>edit({
+                        <NativeSelect aria-label="视觉复核方式" value={spec.review_protocol || 'baseline'} onChange={e=>edit({
                           review_protocol:e.target.value as 'baseline'|'experts_v1',
                           budget:{...spec.budget,max_review_calls:Math.max(spec.budget.max_review_calls||2,(e.target.value==='experts_v1'?25:10)*spec.candidate_count)},
                         })}>
-                          <option value="experts_v1">独立专家与争议复核</option>
-                          <option value="baseline">基础视觉检查</option>
-                        </select>
+                          <NativeSelectOption value="experts_v1">独立专家与争议复核</NativeSelectOption>
+                          <NativeSelectOption value="baseline">基础视觉检查</NativeSelectOption>
+                        </NativeSelect>
                       </label>
                       <label>
                         视觉验收调用上限
@@ -1026,6 +1052,7 @@ function OpenMotionStudio({
                   <h2>制作范围</h2>
                   <div className="motion-small-reference">
                     <img
+                      decoding="async"
                       src={motionUrl(`open-motion/${work.id}/reference`, {
                         revision: String(work.revision),
                       })}
@@ -1154,21 +1181,21 @@ function OpenMotionStudio({
                     </p>
                     <label>
                       候选
-                      <select
+                      <NativeSelect
                         value={candidateIndex}
                         onChange={(e) =>
                           setCandidateIndex(Number(e.target.value))
                         }
                       >
                         {work.job?.candidates.map((c) => (
-                          <option
+                          <NativeSelectOption
                             key={c.candidate_index}
                             value={c.candidate_index}
                           >
                             {c.candidate_index}
-                          </option>
+                          </NativeSelectOption>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </label>
                     <label>
                       已核对的原请求编号（可选）
@@ -1202,7 +1229,7 @@ function OpenMotionStudio({
                     <h2>{work.plan?.title}</h2>
                     <label>
                       候选
-                      <select
+                      <NativeSelect
                         value={candidateIndex}
                         onChange={(e) => {
                           setCandidateIndex(Number(e.target.value));
@@ -1212,7 +1239,7 @@ function OpenMotionStudio({
                         }}
                       >
                         {work.job.candidates.map((c) => (
-                          <option
+                          <NativeSelectOption
                             key={c.candidate_index}
                             value={c.candidate_index}
                           >
@@ -1222,9 +1249,9 @@ function OpenMotionStudio({
                               : c.frames.length
                                 ? '待检查'
                                 : '未完成'}
-                          </option>
+                          </NativeSelectOption>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </label>
                   </div>
                   {candidate && (
@@ -1741,15 +1768,15 @@ function FramePlayer({
         <span>
           {current.index + 1} / {count}
         </span>
-        <select
+        <NativeSelect
           aria-label="预览速度"
           value={speed}
           onChange={(e) => setSpeed(Number(e.target.value))}
         >
-          <option value={0.5}>0.5×</option>
-          <option value={1}>1×</option>
-          <option value={2}>2×</option>
-        </select>
+          <NativeSelectOption value={0.5}>0.5×</NativeSelectOption>
+          <NativeSelectOption value={1}>1×</NativeSelectOption>
+          <NativeSelectOption value={2}>2×</NativeSelectOption>
+        </NativeSelect>
       </div>
       <button disabled={readOnly||playing||imageError||frame===0||frame===count-1||candidate.plan_execution.timeline.some(s=>frame===s.start||frame>=s.start+s.count-1-(s.hold_frames??0)&&frame<s.start+s.count)}
         onClick={()=>onEditFrame(frame)}>局部调整当前帧</button>

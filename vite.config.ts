@@ -1,8 +1,26 @@
 import { sites } from '@openai/sites-vite-plugin';
 import tailwindcss from '@tailwindcss/postcss';
 import vinext from 'vinext';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import hostingConfig from './.openai/hosting.json';
+import { syncUiManifest } from './scripts/sync-ui-manifest.mjs';
+
+// Pages import lib/workbench/ui-manifest.json (brand, navigation, routes)
+// instead of the full capability manifest; keep it current while building.
+function workbenchUiManifest(): Plugin {
+  return {
+    name: 'workbench-ui-manifest',
+    async buildStart() {
+      await syncUiManifest();
+    },
+    configureServer(server) {
+      server.watcher.add('workbench/manifest.json');
+      server.watcher.on('change', (file) => {
+        if (/[\\/]workbench[\\/]manifest\.json$/.test(file)) void syncUiManifest();
+      });
+    },
+  };
+}
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   '00000000-0000-4000-8000-000000000000';
@@ -67,6 +85,7 @@ export default defineConfig(async () => {
       },
     },
     plugins: [
+      workbenchUiManifest(),
       vinext(),
       sites(),
       cloudflare({

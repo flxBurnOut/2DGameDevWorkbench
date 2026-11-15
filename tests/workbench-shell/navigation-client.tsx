@@ -3,8 +3,6 @@ import { createRoot } from 'react-dom/client';
 import { WorkbenchProvider } from '../../components/workbench/workbench-provider';
 import { WorkbenchChrome } from '../../components/workbench/workbench-chrome';
 import { WorkbenchShell } from '../../components/workbench/workbench-shell';
-import { EditorWorkbenchMenu } from '../../components/workbench/editor-chrome';
-import { WorkbenchBreadcrumb } from '../../components/workbench/shared-navigation';
 import { publishEditorSession, removeEditorSession } from '../../lib/workbench/editor-session';
 import '../../app/globals.css';
 import '../../components/workbench/workbench.css';
@@ -20,7 +18,6 @@ function Fixture() {
   };
   return <WorkbenchChrome>
     {location.pathname === '/' ? <WorkbenchShell /> : <div {...(compact ? { 'data-sprite-editor': true } : {})}>
-      {compact && <header className="wb-page-heading"><div className="wb-tool-links"><EditorWorkbenchMenu /><WorkbenchBreadcrumb compact projectName="导航验收工程" /></div></header>}
       <main className="wb-page"><h1>{location.pathname}</h1><p>仅测试共享导航，所有服务响应均为隔离 fixture。</p><label>离开保护<select aria-label="离开保护" value={guard} onChange={(event) => changeGuard(event.target.value)}><option value="clean">无未保存内容</option><option value="save-failed">保存失败</option><option value="busy">正在导入</option><option value="conflict">版本冲突</option></select></label></main>
     </div>}
   </WorkbenchChrome>;

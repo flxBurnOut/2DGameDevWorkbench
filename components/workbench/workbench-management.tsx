@@ -85,7 +85,6 @@ export function WorkbenchManagement() {
     <main className="wb-page wb-advanced">
       <div className="wb-page-heading">
         <div>
-          <div className="wb-eyebrow">WORKBENCH / MANAGEMENT</div>
           <h1>工作台管理</h1>
           <p>检查服务、继续制作、查看游戏交付，或整理本机数据。</p>
         </div>
@@ -182,9 +181,9 @@ export function WorkbenchManagement() {
               ))}
               <button
                 className="wb-button"
-                onClick={() => { window.dispatchEvent(new Event('workbench:restart-guide')); wb.setGuideOpen(true); }}
+                onClick={() => void wb.navigate('/')}
               >
-                查看制作引导
+                回到首页选择制作目标
               </button>
             </div>
           </>

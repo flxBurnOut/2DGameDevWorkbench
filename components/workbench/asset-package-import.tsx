@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Stage previews preserve animation and original pixels. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { publishEditorSession, removeEditorSession } from '@/lib/workbench/editor-session';
@@ -18,7 +19,7 @@ function PackageCandidatePreview({ url, frames, fps, loop, durations }: { url: s
     return () => clearTimeout(timer);
   }, [frames, fps, loop, durations, frame]);
   return <div>
-    <img src={frames > 1 ? `${url}&frame=${frame}` : url} alt="素材包内容预览" style={{ width: '100%', height: 160, objectFit: 'contain', imageRendering: 'pixelated' }} />
+    <img loading="lazy" decoding="async" src={frames > 1 ? `${url}&frame=${frame}` : url} alt="素材包内容预览" className="h-40 w-full object-contain [image-rendering:pixelated]" />
     {frames > 1 && <button type="button" className="wb-button" onClick={() => setFrame(0)}>重新播放预览</button>}
   </div>;
 }
@@ -138,7 +139,7 @@ export function AssetPackageImport({ onClose, onImported }: { onClose: () => voi
   }
   const disabled = Boolean(busy || pending);
   return <Dialog open onOpenChange={open => { if (!open && !lock.current) onClose(); }}>
-    <DialogContent className="wb-import-modal" showCloseButton={!busy} style={{ maxWidth: 880, maxHeight: '88vh', overflowY: 'auto' }}>
+    <DialogContent className="wb-import-modal sm:max-w-[880px]" showCloseButton={!busy}>
       <DialogHeader>
         <DialogTitle>导入 Forge 素材包</DialogTitle>
         <DialogDescription>选择资产库下载的 ZIP 或编辑器源文件。先检查可恢复内容，确认后保存到资产库。</DialogDescription>
@@ -151,24 +152,24 @@ export function AssetPackageImport({ onClose, onImported }: { onClose: () => voi
       </> : <>
         <label className="wb-notice">
           选择文件或拖入此处，可一次选择多个源包
-          <input type="file" multiple onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (!disabled) void inspect(Array.from(event.dataTransfer.files)); }} accept=".zip,.json,.png,.jpg,.jpeg,.webp,.gif,.psd" aria-label="选择 Forge 素材包" disabled={disabled} onChange={event => { void inspect(Array.from(event.target.files || [])); event.target.value = ''; }} style={{ display: 'block', marginTop: 12, maxWidth: '100%' }} />
+          <input type="file" multiple onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); if (!disabled) void inspect(Array.from(event.dataTransfer.files)); }} accept=".zip,.json,.png,.jpg,.jpeg,.webp,.gif,.psd" aria-label="选择 Forge 素材包" disabled={disabled} onChange={event => { void inspect(Array.from(event.target.files || [])); event.target.value = ''; }} className="mt-3 block max-w-full" />
         </label>
         {busy && <output>{busy}</output>}
         {pending && !busy && <output>上次提交结果尚未确认。重试会使用同一请求，不会重复创建素材。</output>}
-        {error && <p role="alert" style={{ whiteSpace: 'pre-wrap' }}>{error}</p>}
+        {error && <p role="alert" className="whitespace-pre-wrap">{error}</p>}
         {inspections.map(inspection => <section key={inspection.inspectionId}>
-          <h3 style={{ overflowWrap: 'anywhere' }}>{inspection.filename}</h3>
+          <h3 className="[overflow-wrap:anywhere]">{inspection.filename}</h3>
           {inspection.candidates.map(candidate => {
             const key = keyFor(inspection.inspectionId, candidate.id), value = choices[key] || {};
-            return <fieldset key={key} disabled={disabled || candidate.status === 'incomplete'} style={{ padding: '16px 0', borderBottom: '1px solid var(--wb-line)' }}>
+            return <fieldset key={key} disabled={disabled || candidate.status === 'incomplete'} className="border-b border-[var(--wb-line)] py-4">
               <label><input type="checkbox" checked={selected.includes(key)} onChange={event => toggle(key, event.target.checked)} /> {candidate.label} · {kinds[candidate.kind] || candidate.kind} · {statuses[candidate.status]}</label>
               {candidate.previewUrl && <PackageCandidatePreview key={candidate.previewUrl + String(value.fps) + String(value.loop)} url={candidate.previewUrl} frames={candidate.frameCount || candidate.metadata?.frameCount || 1} fps={value.fps} loop={value.loop} durations={candidate.metadata?.frameDurations} />}
               <p>{candidate.recoverable.join('；')}</p>
               {candidate.duplicate && <p>{candidate.duplicate.exact ? '相同素材已存在，将复用已有资产。' : '同来源存在不同内容，将保留原件并创建副本。'}</p>}
               {[...candidate.warnings, ...candidate.missing].map((message, i) => <p key={i} className="wb-muted">{message}</p>)}
               {candidate.requiredParameters.some(parameter => parameter.key === 'fps') && <label>播放帧率 <input type="number" min="1" max="120" step="1" value={value.fps ?? ''} onChange={event => updateChoice(key, { fps: event.target.value ? Number(event.target.value) : undefined })} /></label>}
-              {candidate.requiredParameters.some(parameter => parameter.key === 'loop') && <label style={{ marginLeft: 12 }}>播放方式 <select value={value.loop === undefined ? '' : String(value.loop)} onChange={event => updateChoice(key, { loop: event.target.value === '' ? undefined : event.target.value === 'true' })}><option value="">请选择</option><option value="true">循环</option><option value="false">单次</option></select></label>}
-              {candidate.requiredParameters.some(parameter => parameter.key === 'definitionIds') && <div>选择要恢复的物件：{candidate.objects?.map(object => <label key={object.definitionId} style={{ display: 'block' }}><input type="checkbox" checked={value.definitionIds?.includes(object.definitionId) || false} onChange={event => updateChoice(key, { definitionIds: event.target.checked ? [...value.definitionIds || [], object.definitionId] : value.definitionIds?.filter(id => id !== object.definitionId) })} />{object.displayName}</label>)}</div>}
+              {candidate.requiredParameters.some(parameter => parameter.key === 'loop') && <label className="ml-3">播放方式 <NativeSelect value={value.loop === undefined ? '' : String(value.loop)} onChange={event => updateChoice(key, { loop: event.target.value === '' ? undefined : event.target.value === 'true' })}><NativeSelectOption value="">请选择</NativeSelectOption><NativeSelectOption value="true">循环</NativeSelectOption><NativeSelectOption value="false">单次</NativeSelectOption></NativeSelect></label>}
+              {candidate.requiredParameters.some(parameter => parameter.key === 'definitionIds') && <div>选择要恢复的物件：{candidate.objects?.map(object => <label key={object.definitionId} className="block"><input type="checkbox" checked={value.definitionIds?.includes(object.definitionId) || false} onChange={event => updateChoice(key, { definitionIds: event.target.checked ? [...value.definitionIds || [], object.definitionId] : value.definitionIds?.filter(id => id !== object.definitionId) })} />{object.displayName}</label>)}</div>}
             </fieldset>;
           })}
         </section>)}

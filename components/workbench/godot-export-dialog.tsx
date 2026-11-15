@@ -50,7 +50,9 @@ const kinds: Record<string, string> = {
   interactable: '交互物',
   animation: '角色动画',
 };
-export function GodotExportDialog() {
+/** Loaded by GodotExportHost on the first export request, which it passes as `initialOffer`. */
+export function GodotExportDialog({ initialOffer = null }: { initialOffer?: GodotExportOffer | null } = {}) {
+  const firstOffer = useRef(initialOffer);
   const [offer, setOffer] = useState<GodotExportOffer | null>(null);
   const [project, setProject] = useState<Project | null>(null),
     [pathValue, setPathValue] = useState('');
@@ -171,6 +173,10 @@ export function GodotExportDialog() {
       })();
     };
     window.addEventListener('forge:godot-export', receive);
+    if (firstOffer.current) {
+      receive(new CustomEvent('forge:godot-export', { detail: firstOffer.current }));
+      firstOffer.current = null;
+    }
     return () => {
       window.removeEventListener('forge:godot-export', receive);
       removeEditorSession('godot-export');
@@ -255,8 +261,7 @@ export function GodotExportDialog() {
       }}
     >
       <DialogContent
-        className="max-h-[90dvh] overflow-y-auto sm:max-w-lg"
-        style={{ width: 'calc(100vw - 32px)', maxWidth: 512 }}
+        className="max-h-[90dvh] w-[calc(100vw-32px)] max-w-lg overflow-y-auto sm:max-w-lg"
         showCloseButton={!busy}
       >
         <DialogTitle>导出到 Godot 项目</DialogTitle>

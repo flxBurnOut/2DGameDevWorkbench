@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- These previews show immutable local evidence bytes. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useEffect, useRef, useState } from 'react';
 import { ImagePartPlanner, type PartSuggestion } from './image-part-planner';
 import { attributeDefaults, attributeLabels, attributeNames, type AttributePolicy } from '@/features/image-edit/attribute-plan.mjs';
@@ -68,8 +69,8 @@ export function ImageAttributePlan(props:Props){
     {props.offerPlanner && <ImagePartPlanner target={props.target} session={props.session} baseVersion={props.baseVersion} allowed={allowed??props.region} instruction={props.prompt} preserveAlpha={props.preserveAlpha} disabled={props.disabled||pending} onBusy={props.onBusy} onUse={useSuggestion}/>}
     {origin&&<p>已载入视觉建议。修正画布选区后，点「将当前选区设为目标」更新计划。{originStale&&'原建议已过期。'} <button type="button" onClick={()=>{setOrigin(null);setReady(null);}}>转为手动计划</button></p>}
     <label>目标部件<input value={part} placeholder="例如：石座下方正面的圆形徽章" onChange={e=>setPart(e.target.value)} maxLength={500}/></label>
-    <label>起始策略<select value={preset} onChange={e=>{setPreset(e.target.value);setPolicy({...attributeDefaults[e.target.value as keyof typeof attributeDefaults]});}}>{preset==='custom'&&<option value="custom">逐项指定</option>}<option value="recolor">保形换色</option><option value="material">替换材质</option><option value="part">替换部件</option></select></label>
-    {attributeNames.map(name=><label key={name}>{attributeLabels[name]}<select value={policy[name]} onChange={e=>setPolicy({...policy,[name]:e.target.value as AttributePolicy[typeof name]})}><option value="preserve">保持</option><option value="edit">修改</option><option value="recompute">允许重算</option></select></label>)}
+    <label>起始策略<NativeSelect value={preset} onChange={e=>{setPreset(e.target.value);setPolicy({...attributeDefaults[e.target.value as keyof typeof attributeDefaults]});}}>{preset==='custom'&&<NativeSelectOption value="custom">逐项指定</NativeSelectOption>}<NativeSelectOption value="recolor">保形换色</NativeSelectOption><NativeSelectOption value="material">替换材质</NativeSelectOption><NativeSelectOption value="part">替换部件</NativeSelectOption></NativeSelect></label>
+    {attributeNames.map(name=><label key={name}>{attributeLabels[name]}<NativeSelect value={policy[name]} onChange={e=>setPolicy({...policy,[name]:e.target.value as AttributePolicy[typeof name]})}><NativeSelectOption value="preserve">保持</NativeSelectOption><NativeSelectOption value="edit">修改</NativeSelectOption><NativeSelectOption value="recompute">允许重算</NativeSelectOption></NativeSelect></label>)}
     <p className="ie-hint">先在画布选择最大授权范围，再选择目标或保护部分。所有坐标沿用当前原图。</p>
     <button type="button" disabled={!props.region} onClick={()=>{setOrigin(null);setAllowed(props.region);setTargetRegion(null);setInfluence(null);setProtected([]);}}>将当前选区设为授权范围</button>
     <button type="button" disabled={!allowed||!props.region} onClick={()=>{setTargetRegion(props.region);setLastTaggedRegion(props.region);}}>将当前选区设为目标</button>
@@ -82,17 +83,17 @@ export function ImageAttributePlan(props:Props){
     <label>成功条件（每行一条）<textarea rows={3} value={criteria} onChange={e=>setCriteria(e.target.value)}/></label>
     <label><input type="checkbox" checked={changesSilhouette} onChange={e=>setChangesSilhouette(e.target.checked)}/>此任务需要改变透明轮廓</label>
     {changesSilhouette&&props.preserveAlpha&&<output>请先关闭上方“保持透明度”，或取消改变轮廓；冲突时不会生成。</output>}
-    <label>执行方式<select value={executor} onChange={e=>setExecutor(e.target.value as typeof executor)}><option value="ai-edit">生成外观</option><option value="color-map">简单换色对照</option></select></label>
+    <label>执行方式<NativeSelect value={executor} onChange={e=>setExecutor(e.target.value as typeof executor)}><NativeSelectOption value="ai-edit">生成外观</NativeSelectOption><NativeSelectOption value="color-map">简单换色对照</NativeSelectOption></NativeSelect></label>
     {executor==='ai-edit'?<>
       <label><input type="checkbox" checked={context} onChange={e=>setContext(e.target.checked)}/>发送同一基准的干净局部图，辅助定位</label>
-      {context&&<label>额外表面参考<select value={softKind} onChange={e=>setSoftKind(e.target.value as typeof softKind)}>
-        <option value="none">仅用干净局部图</option><option value="rgb">普通 RGB 局部图（对照）</option>
-      </select></label>}
+      {context&&<label>额外表面参考<NativeSelect value={softKind} onChange={e=>setSoftKind(e.target.value as typeof softKind)}>
+        <NativeSelectOption value="none">仅用干净局部图</NativeSelectOption><NativeSelectOption value="rgb">普通 RGB 局部图（对照）</NativeSelectOption>
+      </NativeSelect></label>}
       {softEnabled&&props.references.length>6&&<p>干净局部图和额外参考各占一位。请将已选参考减至六张，或取消额外参考。</p>}
     </>:<>
       <div className="ie-row"><label>原底色<input type="color" value={from} onChange={e=>setFrom(e.target.value)}/></label><label>新底色<input type="color" value={to} onChange={e=>setTo(e.target.value)}/></label></div>
       <p className="ie-hint">适用于保形、保材质的换色。保持其余属性和透明度；请核对选区，排除需要保留原色的细节。</p>
-      <label>简单换色算法<select value={mapping} onChange={e=>setMapping(e.target.value as SimpleColorMapping)}><option value="rgb">RGB 通道比例</option><option value="luminance">保留相对明暗，统一色相</option></select></label>
+      <label>简单换色算法<NativeSelect value={mapping} onChange={e=>setMapping(e.target.value as SimpleColorMapping)}><NativeSelectOption value="rgb">RGB 通道比例</NativeSelectOption><NativeSelectOption value="luminance">保留相对明暗，统一色相</NativeSelectOption></NativeSelect></label>
     </>}
     {origin&&executor!=='ai-edit'&&<label><input type="checkbox" checked={colorsConfirmed} onChange={e=>{setColorsConfirmed(e.target.checked);setReady(null);}}/>已核对原底色和目标色</label>}
     <button type="button" disabled={softBlocked||unassignedSelection||!!originStale||!!(origin&&executor!=='ai-edit'&&!colorsConfirmed)||!part.trim()||!criteria.trim()||!(allowed??props.region)||(executor==='ai-edit'&&!props.prompt.trim())} onClick={()=>void prepare()}>准备计划并预览范围</button>

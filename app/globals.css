@@ -51,6 +51,34 @@
 }
 
 :root {
+  /* Shared scales: three radii and six type sizes for every workbench surface. */
+  --ui-radius-sm: 4px;
+  --ui-radius-md: 6px;
+  --ui-radius-lg: 8px;
+  --ui-text-xs: 12px;
+  --ui-text-sm: 13px;
+  --ui-text-base: 14px;
+  --ui-text-md: 16px;
+  --ui-text-lg: 20px;
+  --ui-text-xl: 28px;
+  --ui-control-height: 34px;
+  --ui-control-padding: 6px 12px;
+}
+
+/* NativeSelect fills its container like the native selects it replaced and
+   shares the control height, radius and chevron spacing on every surface. */
+[data-slot='native-select-wrapper'] {
+  width: 100%;
+}
+[data-slot='native-select-wrapper'] > [data-slot='native-select'] {
+  height: auto;
+  min-height: var(--ui-control-height);
+  padding-block: 0;
+  padding-right: 2rem;
+  border-radius: var(--ui-radius-md);
+}
+
+:root {
   --background: var(--theme-bg);
   --foreground: var(--theme-text);
   --card: var(--theme-panel);
@@ -96,27 +124,9 @@
 
   body {
     @apply min-h-svh bg-background text-foreground antialiased;
-    background-image:
-      radial-gradient(
-        circle at 68% -10%,
-        light-dark(var(--theme-light-bg), oklch(0.48 0.2 280 / 14%)),
-        transparent 36rem
-      ),
-      radial-gradient(
-        circle at 0% 100%,
-        light-dark(var(--theme-light-bg), oklch(0.42 0.14 215 / 8%)),
-        transparent 30rem
-      ),
-      linear-gradient(light-dark(var(--theme-light-bg), oklch(0.25 0.025 275 / 8%)) 1px, transparent 1px),
-      linear-gradient(90deg, light-dark(var(--theme-light-bg), oklch(0.25 0.025 275 / 8%)) 1px, transparent 1px);
-    background-size:
-      auto,
-      auto,
-      32px 32px,
-      32px 32px;
   }
 
   ::selection {
-    background: light-dark(var(--theme-light-panel), oklch(0.65 0.2 265 / 45%));
+    background: color-mix(in srgb, var(--theme-accent) 35%, transparent);
   }
 }

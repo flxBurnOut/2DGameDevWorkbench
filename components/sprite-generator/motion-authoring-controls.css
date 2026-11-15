@@ -4,4 +4,4 @@
 .structure-history select { max-width: 100%; }
 .structure-history-preview .motion-canvas { min-height: 0; }
 .structure-history [aria-label='历史结构预览'] { margin-top: 10px; }
-.character-identity-field small { color: var(--theme-muted); font-size: 12px; line-height: 1.5; }
+.character-identity-field small { color: var(--theme-muted); font-size: var(--ui-text-xs); line-height: 1.5; }

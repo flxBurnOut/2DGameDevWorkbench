@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Displays hash-bound original/alternative PNGs. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import {useEffect,useRef,useState} from 'react';
 import {motionRequest,motionUrl,motionPlanningRequestKey,type MotionWork,type MotionReview} from './open-motion-model';
 import {MotionVisualReview} from './motion-visual-review';
@@ -138,7 +139,7 @@ export function MotionAdjustment({work,candidate,stage,readOnly,onSaved,onPendin
         <p>本次替换第 {task.start+1}–{task.end+1} 帧 · {task.user_request||task.intent?.goal||'按所选范围的专家建议'}</p>
         {task.proposed_frames&&<>
           <div className="motion-adjustment-compare">{(['source','proposed'] as const).map(kind=><figure key={kind}>
-            <figcaption>{kind==='source'?'原版':'备选'}</figcaption><div className="motion-canvas"><img alt={`${kind==='source'?'原版':'备选'}第 ${frame+1} 帧`} src={motionUrl(`${route}/${task.id}/${kind}/${frame}`,{v:task.preview_token||''})} /></div>
+            <figcaption>{kind==='source'?'原版':'备选'}</figcaption><div className="motion-canvas"><img loading="lazy" decoding="async" alt={`${kind==='source'?'原版':'备选'}第 ${frame+1} 帧`} src={motionUrl(`${route}/${task.id}/${kind}/${frame}`,{v:task.preview_token||''})} /></div>
           </figure>)}</div>
           <div className="motion-card-title"><button disabled={loaded!==task.preview_token} onClick={()=>{setFrame(0);setPlayed(false);setPlaying(true);}}>同步播放完整对比</button><span>{frame+1} / {task.proposed_frames.length} · {task.fps} FPS</span></div>
           <input aria-label="备选对比逐帧" type="range" min={0} max={task.proposed_frames.length-1} value={frame} onChange={e=>{setPlaying(false);setFrame(Number(e.target.value));}} />
@@ -167,14 +168,14 @@ export function MotionAdjustment({work,candidate,stage,readOnly,onSaved,onPendin
       </>:<>
         {task&&['failed','needs_input','rejected'].includes(task.state)&&<p className="motion-notice">{!task.intent&&!task.generation_calls.length&&task.planning_calls.length?`修改要求理解未完成，尚未绘图，没有生成备选。${task.message.replace('视觉检查','修改要求理解')}`:task.message}</p>}
         {context?<>
-          <label>修正工具<select aria-label="修正工具" value={level} onChange={e=>{setLevel(e.target.value as typeof level);setSpatial(e.target.value==='appearance');request.current=null;}}>
-            <option value="auto">按修改要求推荐</option><option value="local">确定性替色 · 免费</option><option value="appearance">受限生成 · 保留动作与选区外像素</option><option value="transition">段内重画 / 全部可编辑帧重画</option></select></label>
+          <label>修正工具<NativeSelect aria-label="修正工具" value={level} onChange={e=>{setLevel(e.target.value as typeof level);setSpatial(e.target.value==='appearance');request.current=null;}}>
+            <NativeSelectOption value="auto">按修改要求推荐</NativeSelectOption><NativeSelectOption value="local">确定性替色 · 免费</NativeSelectOption><NativeSelectOption value="appearance">受限生成 · 保留动作与选区外像素</NativeSelectOption><NativeSelectOption value="transition">段内重画 / 全部可编辑帧重画</NativeSelectOption></NativeSelect></label>
           <div className="motion-frame-selection"  aria-label="选择允许修改的帧">{context.frames.map((_,i)=><button type="button" key={i}
             aria-label={`选择第 ${i+1} 帧`} aria-pressed={start!==null&&end!==null&&i>=start&&i<=end} disabled={busy||context.locked_frames.includes(i)}
             onPointerDown={e=>{if(e.button!==0)return;drag.current=i;editSelection(i,i);}}
             onPointerEnter={()=>{if(drag.current!==null)editSelection(drag.current,i);}}
             onClick={e=>{if(e.detail===0)editSelection(start===null?i:start,i);}}>
-            <img src={original(i)} alt="" draggable={false}/><span>{i+1}{context.locked_frames.includes(i)?' · 保留':context.editable_stage_end&&i===count-1?' · 未锁定段尾':''}</span>
+            <img loading="lazy" decoding="async" src={original(i)} alt="" draggable={false}/><span>{i+1}{context.locked_frames.includes(i)?' · 保留':context.editable_stage_end&&i===count-1?' · 未锁定段尾':''}</span>
           </button>)}</div>
           <div className="motion-adjustment-range"><label>开始帧<input aria-label="修改开始帧" type="number" min={1} max={count} value={start===null?'':start+1} onChange={e=>{setStart(e.target.value?Number(e.target.value)-1:null);request.current=null;}}/></label>
           <label>结束帧<input aria-label="修改结束帧" type="number" min={1} max={count} value={end===null?'':end+1} onChange={e=>{setEnd(e.target.value?Number(e.target.value)-1:null);request.current=null;}}/></label>

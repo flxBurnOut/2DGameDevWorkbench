@@ -193,6 +193,18 @@ try {
       ['interactable-editor'],
     );
   });
+  test('pages read a current UI manifest without capability schemas', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { syncUiManifest } = await import('../../scripts/sync-ui-manifest.mjs');
+    assert.equal(await syncUiManifest({ check: true }), false);
+    const full = JSON.parse(await readFile('workbench/manifest.json', 'utf8'));
+    const text = await readFile('lib/workbench/ui-manifest.json', 'utf8');
+    assert.ok(!text.includes('inputSchema') && !text.includes('connector'));
+    assert.ok(text.length < JSON.stringify(full).length / 5);
+    const executable = full.capabilities.filter((c) => 'connector' in c).map((c) => c.id);
+    assert.deepEqual(modules.filter((m) => m.executable).map((m) => m.id).sort(),
+      executable.filter((id) => modules.some((m) => m.id === id)).sort());
+  });
   test('prepared and unconfigured tasks never appear completed or running', () => {
     for (const status of ['prepared', 'awaiting_configuration', 'failed']) {
       assert.equal(
@@ -411,6 +423,23 @@ try {
     await assert.rejects(readTaskHistory(async () => ++calls === 1
       ? { tasks: source.slice(0, 200), snapshot: 'first', nextOffset: 200 }
       : { tasks: [], snapshot: 'changed', nextOffset: null }), /历史已变化/);
+  });
+
+  test('an unchanged history revision keeps records without resending them', async () => {
+    const { readTaskHistoryRevision } = await server.ssrLoadModule('/lib/workbench/task-history.ts');
+    const first = await readTaskHistoryRevision(async (url) => {
+      assert.equal(new URL(url, 'http://localhost').searchParams.get('since'), null);
+      return { tasks: [{ id: 'a' }], snapshot: 's1', revision: 'r1', nextOffset: null };
+    });
+    assert.deepEqual(first, { tasks: [{ id: 'a' }], revision: 'r1' });
+    const same = await readTaskHistoryRevision(async (url) => {
+      assert.equal(new URL(url, 'http://localhost').searchParams.get('since'), 'r1');
+      return { tasks: [], unchanged: true, snapshot: 's1', revision: 'r1', nextOffset: null };
+    }, first);
+    assert.equal(same, first);
+    // Older bridges ignore `since` and return the full page.
+    const legacy = await readTaskHistoryRevision(async () => ({ tasks: [{ id: 'b' }], nextOffset: null }), first);
+    assert.deepEqual(legacy.tasks, [{ id: 'b' }]);
   });
 
   for (const { name, run } of tests) {

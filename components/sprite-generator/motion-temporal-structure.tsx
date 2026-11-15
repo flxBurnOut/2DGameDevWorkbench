@@ -1,4 +1,5 @@
 'use client';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import {
   useCallback,
   useEffect,
@@ -420,16 +421,16 @@ export function MotionTemporalStructure({
               </label>
               <label>
                 查看部件
-                <select
+                <NativeSelect
                   value={selected}
                   onChange={(e) => setPart(e.target.value)}
                 >
                   {doc.parts.map((p) => (
-                    <option key={p.id} value={p.id}>
+                    <NativeSelectOption key={p.id} value={p.id}>
                       {p.name}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </select>
+                </NativeSelect>
               </label>
             </div>
             <p>
@@ -526,7 +527,7 @@ export function MotionTemporalStructure({
                   )}
                   <label>
                     可见性
-                    <select
+                    <NativeSelect
                       value={draft.state}
                       disabled={!draftCurrent || !editable}
                       onChange={(e) =>
@@ -537,23 +538,23 @@ export function MotionTemporalStructure({
                         })
                       }
                     >
-                      <option value="visible">可见，点击图像放置提示点</option>
-                      <option value="unknown">身份或位置未知</option>
-                      <option value="occluded">已确认被遮挡</option>
-                    </select>
+                      <NativeSelectOption value="visible">可见，点击图像放置提示点</NativeSelectOption>
+                      <NativeSelectOption value="unknown">身份或位置未知</NativeSelectOption>
+                      <NativeSelectOption value="occluded">已确认被遮挡</NativeSelectOption>
+                    </NativeSelect>
                   </label>
                   {draft.state === 'visible' && (
                     <label>
                       点的作用
-                      <select
+                      <NativeSelect
                         value={pointLabel}
                         onChange={(e) =>
                           setPointLabel(Number(e.target.value) as 0 | 1)
                         }
                       >
-                        <option value={1}>保留部件</option>
-                        <option value={0}>排除误收部位</option>
-                      </select>
+                        <NativeSelectOption value={1}>保留部件</NativeSelectOption>
+                        <NativeSelectOption value={0}>排除误收部位</NativeSelectOption>
+                      </NativeSelect>
                     </label>
                   )}
                   <div className="structure-actions">

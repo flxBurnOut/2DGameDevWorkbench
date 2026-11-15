@@ -58,7 +58,7 @@ try {
 
   const palette = JSON.parse(await readFile('lib/workbench/theme-palette.json', 'utf8'));
   const luminance = value => value.slice(1).match(/../g).slice(0, 3).map(x => parseInt(x, 16) / 255).map(x => x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4).reduce((sum, x, index) => sum + x * [.2126, .7152, .0722][index], 0);
-  for (const [fg, bg] of [['text', 'panel'], ['muted', 'bg'], ['placeholder', 'panel'], ['on-primary', 'primary'], ['accent', 'accent-soft'], ['cyan', 'cyan-soft'], ['success', 'success-soft'], ['warning', 'warning-soft'], ['danger', 'danger-soft']]) {
+  for (const [fg, bg] of [['text', 'panel'], ['muted', 'bg'], ['placeholder', 'panel'], ['on-primary', 'primary'], ['on-primary', 'cyan-strong'], ['accent', 'accent-soft'], ['cyan', 'cyan-soft'], ['success', 'success-soft'], ['warning', 'warning-soft'], ['danger', 'danger-soft']]) {
     for (const mode of [0, 1]) {
       const [low, high] = [luminance(palette[fg][mode]), luminance(palette[bg][mode])].sort((a,b) => a-b);
       assert.ok((high+.05)/(low+.05) >= 4.5, `${fg}/${bg} mode=${mode} contrast`);

@@ -3,14 +3,11 @@
 import { ArrowRight } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
 import { ModuleIcon } from '@/components/workbench/module-icon';
-import { WorkbenchBreadcrumb } from '@/components/workbench/shared-navigation';
 
 export default function PlayerPage() {
   const { modules, lines } = useWorkbench();
   return (
     <main className="wb-page wb-scene" data-accent="violet">
-      <WorkbenchBreadcrumb />
-      <div className="wb-eyebrow">CHARACTER / MOTION</div>
       <h1>{lines.find((line) => line.id === 'player')?.name}</h1>
       <p className="wb-intro">
         先用描述制作像素原图；已有参考图，也可以直接制作序列帧。

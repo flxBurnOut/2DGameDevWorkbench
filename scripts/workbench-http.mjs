@@ -385,6 +385,7 @@ const server = http.createServer(async (request, response) => {
         capabilityId: url.searchParams.get('capabilityId') || undefined,
         status: url.searchParams.get('status') || undefined,
         snapshot: url.searchParams.get('snapshot') || undefined,
+        since: url.searchParams.get('since') || undefined,
         refresh,
       }));
       return;

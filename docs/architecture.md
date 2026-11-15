@@ -6,7 +6,7 @@
 
 `motion-vision-profile.mjs` 将序列帧同一模型配置的公开角色转换为图片部件定位与独立复核参数。`motion-vision-store.mjs` 通过 Python 已有的 OS 凭据保护读取本机密钥，密钥仅经进程管道传输，不进入 argv、任务或日志。现有图片凭据保留回退；新配置不会更改已有请求快照。
 
-`collaboration/experiment.py` 提供独立模拟策略、只读回顾性导出与匿名播放包。导出保留调用和未知费用，人工秒数来自明确填写。原始作业不被实验工具改写，匿名包的来源映射保存在包外。见[实验支撑](motion-experiments.md)。
+`collaboration/experiment.py` 把一个作品的方案冻结为实验协议，在流程外回放不经检查点的对照组，并为需要检查点的组别建立带实验标记的作品副本；另提供只读回顾性导出、作业清点与匿名播放包。`experiment_policy.py` 只对这些副本生效，用于限制可用的修正工具。导出保留调用和未知费用，人工秒数来自明确填写。原始作业不被实验工具改写，匿名包的来源映射保存在包外。见[实验支撑](motion-experiments.md)。
 
 
 规划策略 5 由 `planning_draft.py` 分离策略草案与最终执行说明，

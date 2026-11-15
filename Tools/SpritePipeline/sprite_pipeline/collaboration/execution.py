@@ -15,6 +15,11 @@ from .checkpoints import Checkpoints, checked_plan
 from .state_chain import transition
 
 
+def stage_seed(seed, stage):
+    """Per-segment drawing seed. Experiment arms reuse this exact rule."""
+    return (seed + stage * 104729) % (2**31 - 1) if seed is not None else None
+
+
 class PlanGeneration:
     def __init__(self, service):
         self.s = service
@@ -84,7 +89,7 @@ class PlanGeneration:
             if last is None: last = reference if definition.last_frame == "original" else None
             request = ProviderRequest(reference_image=first, last_frame=last, prompt=prompt,
                                       frame_count=definition.frame_count,
-                                      seed=(candidate.seed + stage * 104729) % (2**31 - 1) if candidate.seed is not None else None,
+                                      seed=stage_seed(candidate.seed, stage),
                                       transparent_background=True)
             from .generation_conditions import submission_conditions
             conditions = submission_conditions(job.request.open_plan,stage,prompt,hashlib.sha256(first).hexdigest(),

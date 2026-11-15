@@ -60,6 +60,12 @@ def evidence_panels(paths, reference, fps):
     return content
 
 
+def audit_verdict(checks):
+    """One confident defect fails; only unanimous confident passes pass."""
+    if any(c['status']=='fail' and c['confidence']>=.8 for c in checks):return 'fail'
+    return 'pass' if all(c['status']=='pass' and c['confidence']>=.85 for c in checks) else 'uncertain'
+
+
 def grounded_audit(result, count):
     checks=[]
     for item in result.checks:
@@ -68,7 +74,7 @@ def grounded_audit(result, count):
         if len(set(c['frames']))<minimum:
             c.update(status='uncertain',confidence=0,evidence='帧证据不足以支持这一时序结论；请人工核对。模型原意见：'+c['evidence'])
         checks.append(c)
-    verdict='fail' if any(c['status']=='fail' and c['confidence']>=.8 for c in checks) else 'pass' if all(c['status']=='pass' and c['confidence']>=.85 for c in checks) else 'uncertain'
+    verdict=audit_verdict(checks)
     labels={'state_frame':'状态帧可用','transition':'过渡可用','fixed_parts':'固定内容保持','completeness':'完整性','equipment':'装备一致性','rhythm':'节奏'};states={'pass':'模型判定通过','fail':'模型发现问题','uncertain':'证据不足'}
     summary='；'.join(labels[c['dimension']]+'：'+states[c['status']] for c in checks)+'。仍需结合实际播放人工确认。'
     return verdict,checks,summary

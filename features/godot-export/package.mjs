@@ -74,7 +74,7 @@ export async function prepareGodotPackage(bytes) {
     runtime = null,
     details = {};
   const objectManifest = [...files.keys()].find((p) =>
-    /^addons\/workbench_interaction(?:_copyworms)?\/packages\/[^/]+\/package-manifest.json$/.test(
+    /^addons\/workbench_interaction\/packages\/[^/]+\/package-manifest.json$/.test(
       p,
     ),
   );
@@ -175,7 +175,7 @@ export async function prepareGodotPackage(bytes) {
     )
       throw new Error('Godot 素材包不能包含项目配置、缓存或 Agent 指令。');
     if (
-      !/^(addons\/workbench_interaction(?:_copyworms)?|forge_sprites|forge_packages)\//.test(
+      !/^(addons\/workbench_interaction|forge_sprites|forge_packages)\//.test(
         name,
       )
     )

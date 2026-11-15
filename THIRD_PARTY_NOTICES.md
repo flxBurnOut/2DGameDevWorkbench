@@ -53,7 +53,7 @@ SpritePipeline can use providers configured within that component. Its provider-
 ## CopyWorms engineering reference
 
 - Reference revision: `bb1581d12c9626e294e403a01db5f3cffb229cd8` of <https://github.com/flxBurnOut/copyWorms>.
-- `.agents/skills/forge-game-engineering/` documents the project's actual architecture and asset contracts. Its small visual adapter adapts `PlayerModule/Formal/Player_Warrior.gd` playback/facing, and its SpriteFrames merge helper preserves unselected clips. The former map mount helper and map-specific reference remain on `new-arch`, outside `paper-vbyc`. The Skill does not package game art, full player controllers, global managers or Pixelwork/plugin runtime code.
+- `.agents/skills/forge-game-engineering/` no longer documents that project's architecture. Its small visual adapter still adapts `PlayerModule/Formal/Player_Warrior.gd` playback/facing, and its SpriteFrames merge helper preserves unselected clips. The former map mount helper and map-specific reference remain on `new-arch`, outside `paper-vbyc`. The Skill does not package game art, full player controllers, global managers or Pixelwork/plugin runtime code.
 - The inspected game README states learning and competition use; this notice does not imply an MIT grant for that game or its third-party components. Any future source extraction must preserve provenance and applicable terms.
 
 The workbench-integrated SpritePipeline additionally includes a local Godot SpriteFrames package exporter (`processing/godot_export.py`) and its UI/API/artifact integration. These changes are local integration work beyond the recorded upstream synchronization baseline; they do not imply that the independent upstream repository has been updated.

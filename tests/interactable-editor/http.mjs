@@ -108,8 +108,8 @@ try {
         if (page.status >= 500) serverFailures++; else serverFailures = 0;
         if (page.ok && html.includes('ie-workspace')) {
           assert(
-            html.includes('导出 copyWorms 兼容版'),
-            'Compatible export button must be rendered.',
+            !html.includes('copyWorms'),
+            'The retired compatible export must not be rendered.',
           );
           loaded = true;
           break;
@@ -193,8 +193,7 @@ try {
   project.objects[0].content.pages = ['中文 "文本"\n第二行'];
   project.objects.push(createObject('pickup'));
   const selected = project.objects[0].definitionId;
-  for (const targetProfile of ['generic', 'copyworms']) {
-    project.objects[0].copyworms.objectId = 'notice';
+  for (const targetProfile of ['generic']) {
     const response = await fetch(`${api}/tasks`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -213,17 +212,8 @@ try {
     assert.equal(task.status, 'completed');
     const output = task.outputs.find((p) => p.endsWith('.zip'));
     assert(output);
-    assert(
-      output.endsWith(
-        targetProfile === 'copyworms'
-          ? '/interactables-copyworms.zip'
-          : '/interactables.zip',
-      ),
-    );
-    const kitRoot =
-      targetProfile === 'copyworms'
-        ? 'addons/workbench_interaction_copyworms'
-        : 'addons/workbench_interaction';
+    assert(output.endsWith('/interactables.zip'));
+    const kitRoot = 'addons/workbench_interaction';
     const download = await fetch(
       `${api}/artifacts?path=${encodeURIComponent(output)}`,
     );

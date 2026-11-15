@@ -27,7 +27,7 @@
 | 展示作品、连接预览或页面跟随 | `presentation` · [预览协议](../docs/agent-preview-follow.md) |
 | 美术判断；专门研究复核准确率 | `visual-review` · [判断维度](experts/2d-production-expert.md)；`review-evaluation` · [评测](../docs/sprite-review-evaluation.md) |
 
-已有作品优先按资产查找，执行故障按任务查找。多个合理目标才需要用户选择；内部 ID 从结果中获取。角色图片可通过 `reference-art import` 导入，随后 transfer 为动画参考。普通交互物默认使用 generic；实际目标为 CopyWorms 时再用对应配置。
+已有作品优先按资产查找，执行故障按任务查找。多个合理目标才需要用户选择；内部 ID 从结果中获取。角色图片可通过 `reference-art import` 导入，随后 transfer 为动画参考。
 
 ## 执行与交付
 

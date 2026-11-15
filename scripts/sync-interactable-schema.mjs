@@ -6,6 +6,13 @@ const schema = zodToJsonSchema(projectSchema, { $refStrategy: 'none' });
 delete schema.$schema;
 schema.description =
   'InteractableProject v1. Missing optional fields use editor defaults. See docs/interactable-editor.md and examples/requests/interactable-export.json.';
+// Projects saved before the copyWorms export was removed carry this field. The
+// zod contract drops it; listing it here keeps task validation from rejecting them.
+schema.properties.objects.items.properties.copyworms = {
+  type: 'object',
+  description:
+    'Retired. Accepted in projects saved by earlier versions and ignored.',
+};
 const file = new URL('../workbench/manifest.json', import.meta.url);
 const source = await readFile(file, 'utf8');
 const start = source.indexOf('"id": "interactable-editor"');

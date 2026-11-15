@@ -216,7 +216,7 @@ try {
       capabilityId: 'interactable-editor',
       input: {
         operation: 'export-godot',
-        targetProfile: 'copyworms',
+        targetProfile: 'generic',
         project,
       },
     },
@@ -225,7 +225,7 @@ try {
   assert.equal(interaction.structuredContent?.status, 'completed');
   assert(
     interaction.structuredContent.outputs.some((output) =>
-      output.endsWith('/interactables-copyworms.zip'),
+      output.endsWith('/interactables.zip'),
     ),
   );
   const interactionTask = await client.callTool({

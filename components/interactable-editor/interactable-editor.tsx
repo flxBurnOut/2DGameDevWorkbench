@@ -424,13 +424,12 @@ export function InteractableEditor() {
       });
       setMessage(`已导入 ${imported.length} 个素材`);
     });
-  const doExport = (targetProfile: 'generic' | 'copyworms') =>
+  const doExport = () =>
     run(async () => {
       setMessage('正在生成 Godot 包…');
       const task = await exportProject(
         project,
         exportIds.length ? exportIds : [current.definitionId],
-        targetProfile,
       );
       setResult(task);
       if (latest.current.project === project) {
@@ -603,20 +602,12 @@ export function InteractableEditor() {
         <button
           className="ie-primary"
           disabled={busy || !ready}
-          onClick={() => doExport('generic')}
+          onClick={doExport}
         >
           <Download size={16} />
           {busy
             ? '处理中…'
             : `导出 Godot${exportIds.length ? ` · ${exportIds.length} 个` : ''}`}
-        </button>
-        <button
-          disabled={busy || !ready}
-          onClick={() => doExport('copyworms')}
-          title="使用 copyWorms 的人物、Enter 输入与输入锁；可选连接原事件"
-        >
-          <Download size={16} />
-          导出 copyWorms 兼容版
         </button>
       </header>
       {ready && started && <DocumentSyncStatus state={shared} disabled={busy} />}
@@ -938,21 +929,6 @@ export function InteractableEditor() {
               />
               <details open>
                 <summary>高级接入</summary>
-                <Field label="copyWorms 原事件物件 ID（可选）">
-                  <input
-                    value={current.copyworms.objectId}
-                    placeholder="例如 notice；留空仅运行当前物件行为"
-                    onChange={(e) =>
-                      edit((o) => {
-                        o.copyworms.objectId = e.target.value;
-                      })
-                    }
-                  />
-                </Field>
-                <p className="ie-note">
-                  仅兼容版生效：完成交互后触发对应原事件。原剧情仍由关卡阶段控制。
-                  兼容版自动使用 player、碰撞层 4 和 ui_accept（默认 Enter）。
-                </p>
                 <Field label="InputMap action">
                   <input
                     value={current.activation.action}

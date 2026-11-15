@@ -24,7 +24,7 @@
 2. 导入 PNG、JPEG、WebP 图片和 WAV、OGG、MP3 音效。可按自然文件名顺序导入多张动画帧，也可按单帧尺寸和帧数对规则精灵表从左上角依次切片。
 3. 在“外观、触发、行为、记忆”页签配置物件。外观、感知范围、鼠标点击区域、物件自身的实体碰撞分别编辑。
 4. 可在画布拖动来源或范围，模拟靠近、离开、按键、点击、外部调用和双物件重叠；查看文本、音效、动画、事件与状态恢复。
-5. 点击“导出 Godot”下载通用包，或点击“导出 copyWorms 兼容版”下载适配包。左侧勾选多个物件后可以批量导出。没有必做的预览、Godot 检查或验证报告。
+5. 点击“导出 Godot”下载资源包。左侧勾选多个物件后可以批量导出。没有必做的预览、Godot 检查或验证报告。
 
 本机草稿通过 IndexedDB 自动保存；开始编辑后通过 Runtime Bridge 同步共享工程，界面显示同步状态。已有 projectId 不变，共享 revision 独立管理。“保存源文件”下载可继续编辑的 JSON；“导入项目”可以打开源 JSON 或本工具导出的 ZIP。Godot 中手改的 `.tscn/.tres` 不反向写入源 JSON。任意第三方 `SpriteFrames.tres` 不属于当前导入格式；使用原始帧图或精灵表即可。
 
@@ -53,7 +53,7 @@
 
 `workbench_validate_document` 读取确切版本，检查结构与媒体。`workbench_simulate_document` 接收最多 200 个类型化输入事件，返回每个定义的状态、顺序事件及 `expectEvents` / `expectStates` 结果；单独交互物项目使用 definitionId 作为模拟 instanceId。文本可用 advance-text 推进，等待音效可用 finish-audio 完成。未设置期望时的 passed=true 不代表行为验收。模拟不会写回文档，也不执行 Godot 物理、真实音频或游戏存档。本编辑器负责目标 A/B 的图片、visible 和 solidEnabled 外观；游戏中的跨物件接线由目标工程实现。
 
-查看实际外观使用交互物编辑器预览；交付使用既有 export-godot / copyworms 流程。共享文档工具不另提供图片观察或导出操作。
+查看实际外观使用交互物编辑器预览；交付使用既有 export-godot 流程。共享文档工具不另提供图片观察或导出操作。
 
 ## 静态图片槽的局部调整（7A–7D）
 
@@ -127,18 +127,6 @@ func trigger_from_game() -> void:
 
 全部信号：`focus_entered`、`focus_exited`、`interaction_started`、`interaction_finished`、`interaction_cancelled`、`interaction_completed`、`picked_up`、`toggled`、`sequence_advanced`。携带的 context 包括 definitionId、instanceId、source、kind、result；取消时额外包含 reason。`interaction_finished` 表示一次成功，`interaction_completed` 表示最终完成。可调用 `set_enabled(bool)`、`reset_state()`、`get_state()`、`apply_state(snapshot)`。
 
-## copyWorms 兼容导出
-
-兼容包输出为 `interactables-copyworms.zip`，放在独立的 `addons/workbench_interaction_copyworms/` 目录，不覆盖普通包、原游戏脚本或 `project.godot`。在**实际关卡根节点**下放置 `compat/copyworms/v1/interaction_runtime_2d.tscn`，然后放置包内物件；每关一个兼容运行时。MainEntry 模式也放在其关卡子节点下。
-
-兼容基线为 copyWorms `bb1581d12c9626e294e403a01db5f3cffb229cd8`、Godot 4.7.x。自动连接 `GameManager.player_ref` / `player` group、人物碰撞位 4、`ui_accept`（默认 Enter，保留原改键），并接入原输入锁、对话状态、鼠标释放令牌和 UI 层 100。完成、取消、移除只释放本运行时的资源；暂停、转场、其他输入锁期间不发起新交互。新旧物件同时可用时，更近者响应，同距离优先原物件，一次输入只触发一个。
-
-“触发 → 高级接入 → copyWorms 原事件物件 ID”可留空；留空执行编辑器行为。填写后，每次成功完成再发送 `interactive_object_triggered`，数据为 `{object_id: ID, workbench_context: context}`。取消、状态恢复不会发送。例如 `notice` 仍需要第一关处于卧室阶段。该映射不替换原节点，不绕过原 FSM，不会为自定义 ID 自动生成剧情处理器。四种物件原有的自定义信号仍可连接。
-
-兼容转换只更改生成的 Godot 配置；草稿、源 JSON 和重新导入的源配置保留普通版的按键、层和 group。网页预览模拟通用行为，原剧情和原输入锁在游戏中运行。原项目接口变化后需要同步适配器。
-
-CLI/MCP 使用相同能力与操作，在 input 中增加 `"targetProfile": "copyworms"`；省略时仍为 `generic`。示例：`examples/requests/interactable-copyworms-export.json`。开发验证命令为 `npm run test:interactable-copyworms -- --project <copyWorms路径> --godot <Godot可执行文件>`，只在 outputs 下复制项目并测试，不改动原项目。
-
 ## 可选状态记忆
 
 - `instance`：默认。只保存在当前物件，重新加载后重置。
@@ -160,7 +148,7 @@ npm run workbench -- status <task-id> --json
 
 MCP 使用 `workbench_list_capabilities`、`workbench_describe_capability`、`workbench_run_task`、`workbench_get_task`。用户已要求导出时可以直接 run；prepare 只用于希望单独检查输入的情形。
 
-输入外层字段为 `operation: "export-godot"`、`project`、可选的 `selectedDefinitionIds` 和 `targetProfile: "generic" | "copyworms"`（默认 generic）。省略选择表示导出全部；网页默认导出当前物件。项目至少包含 `projectId` 和 `objects`，物件至少包含 `definitionId`，其余字段有默认值。不要从本文手工复制一份 schema；模板分组用于理解，实际约束以 contract/manifest 为准：
+输入外层字段为 `operation: "export-godot"`、`project`、可选的 `selectedDefinitionIds` 和 `targetProfile`（只接受 `generic`，可省略）。早期版本保存的工程中残留的 `copyworms` 字段会被接受并忽略。省略选择表示导出全部；网页默认导出当前物件。项目至少包含 `projectId` 和 `objects`，物件至少包含 `definitionId`，其余字段有默认值。不要从本文手工复制一份 schema；模板分组用于理解，实际约束以 contract/manifest 为准：
 
 | 配置组 | 主要字段 |
 | --- | --- |
@@ -175,18 +163,16 @@ MCP 使用 `workbench_list_capabilities`、`workbench_describe_capability`、`wo
 | feedback | type 对应的 pages / seconds / animation / assetId / waitForEnd / volumeDb |
 | 收尾 | cooldownSeconds、completion: remain/hide/free |
 | memory | scope、namespace、slot |
-| copyworms | objectId：可选的原剧情事件物件 ID，仅兼容版生效 |
 
 项目 assets 使用 `{id,name,mime,source}`。source 可为工作区内路径或支持格式的 base64 data URL。浏览器按素材单独上传，每个素材上限 64 MB；项目导回上限 256 MB。字段默认值与约束以 `contract.mjs` 为准。切片坐标和尺寸使用像素，duration 为相对于 fps 的帧时长倍数。
 
-实际输出为 `outputs/<task-id>/interactables.zip`（兼容版为 `interactables-copyworms.zip`）、`interactable-project.json` 和 `result.json`，任务记录在 `work/tasks/<task-id>.json`。独立源 JSON 内嵌素材，可以移到其他机器继续编辑。`completed` 表示文件生成完成，不表示已验证用户目标游戏。
+实际输出为 `outputs/<task-id>/interactables.zip`、`interactable-project.json` 和 `result.json`，任务记录在 `work/tasks/<task-id>.json`。独立源 JSON 内嵌素材，可以移到其他机器继续编辑。`completed` 表示文件生成完成，不表示已验证用户目标游戏。
 
 ## 开发检查
 
 ```powershell
 npm run test:interactable
 npm run test:interactable -- --godot 'C:\path\to\Godot.exe'
-npm run test:interactable-copyworms -- --project 'C:\path\to\copyWorms' --godot 'C:\path\to\Godot.exe'
 npm run test:interactable-http
 npm run test:interactable-web
 npm run test:mcp
@@ -217,4 +203,4 @@ Godot 参数也可通过 `GODOT_47_BIN` 提供；无参数只运行 JavaScript �
 
 ## 交付到游戏项目
 
-“导出 Godot”及 CopyWorms 兼容导出完成打包后，共用项目选择窗口。Agent 安装已有运行时和选中物件，再按目标项目连接人物检测、交互信号及已确定的业务逻辑；新窗口不改变选中对象或兼容配置。保存到资产库仍只是保存编辑源。详见 [Godot 交付](godot-delivery.md)。
+“导出 Godot”完成打包后打开项目选择窗口。Agent 安装已有运行时和选中物件，再按目标项目连接人物检测、交互信号及已确定的业务逻辑；新窗口不改变选中对象。保存到资产库仍只是保存编辑源。详见 [Godot 交付](godot-delivery.md)。

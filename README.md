@@ -12,7 +12,7 @@ Forge 是面向 2D 游戏美术制作与工程交接的本地工作台。创作�
 | --- | --- | --- |
 | 角色原图 | PixelLab 生成 128×128 透明角色图，移送为动画参考 | MCP 生成、查询和移送；共用序列帧 Key |
 | 序列帧 | 生成候选、播放检查、逐帧修补、审核，导出 PNG 和 Godot SpriteFrames ZIP | MCP 覆盖清单内生成、检查、审核、恢复和导出；像素编辑等操作在原生界面 |
-| 交互物 | 查看、切换、拾取、序列行为，源工程与 Godot 资源包 | MCP 模板、save-project、export-godot，以及共享工程的文档命令；通用或 CopyWorms 兼容包 |
+| 交互物 | 查看、切换、拾取、序列行为，源工程与 Godot 资源包 | MCP 模板、save-project、export-godot，以及共享工程的文档命令；通用 Godot 包 |
 | 图片生成与局部调整 | 生成透明物品；对已有图片做替色、擦除、蒙版内生成编辑，候选经核验后采用 | `image-assets` 与图片编辑工具，详见[图片局部调整](docs/image-editing.md) |
 | 资产库 | 分页查找已有作品、准确定位候选、勾选下载真实素材 ZIP | 三个只读资产工具；范围不含浏览器草稿和外部工程 |
 | 游戏工程 Skill | 按目标工程接入已就绪资产、设计架构并写 Godot 4.7 脚本 | 外部 Agent 在获授权目标工程中实施；不是新的 MCP 生图工具 |
@@ -80,7 +80,7 @@ PixelLab Key 在原图或序列帧设置中保存一次，两处共用；由 Spr
 
 `sprite-pipeline` 适配器把 Manifest 的 camelCase 输入转换成 Python `/v1/jobs` 协议。图片服务设置可以保存密钥：它持久保存在被 Git 忽略的本机配置文件中，重启后自动恢复；Windows 使用当前账户加密，macOS 使用钥匙串保护，其他系统使用权限受限的文件。服务端不会把密钥回传给页面，也不会写入任务记录或日志。完整请求与响应约定见 [`docs/connector-contract.md`](docs/connector-contract.md)。
 
-安全与凭据说明见 [安全策略](SECURITY.md)。本仓库以 [MIT](LICENSE) 发布；组件来源、上游同步基线与 CopyWorms 复用边界见 [第三方声明](THIRD_PARTY_NOTICES.md)。本地集成更新不代表独立上游仓库已同步。
+安全与凭据说明见 [安全策略](SECURITY.md)。本仓库以 [MIT](LICENSE) 发布；组件来源、上游同步基线与 CopyWorms 参考来源见 [第三方声明](THIRD_PARTY_NOTICES.md)。本地集成更新不代表独立上游仓库已同步。
 
 导出到已有游戏：在 Godot 导出窗口选择项目，后续资源安装、场景挂载和脚本连接由 WorkBuddy 按 [游戏交付流程](docs/godot-delivery.md)完成。
 

@@ -26,7 +26,6 @@
     "test:mcp": "node scripts/test-workbench-mcp.mjs",
     "test:interactable": "node tests/interactable-editor/run.mjs",
     "test:interactable-http": "node tests/interactable-editor/http.mjs",
-    "test:interactable-copyworms": "node tests/interactable-editor/copyworms.mjs",
     "test:interactable-web": "vinext build && node tests/interactable-editor/http.mjs --web",
     "schema:interactable": "node scripts/sync-interactable-schema.mjs",
     "theme:sync": "node scripts/sync-theme.mjs",

@@ -170,11 +170,11 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 - `operation: "save-project"` 或 `"export-godot"`；
 - `project`：完整 `InteractableProject`；
 - 可选 `selectedDefinitionIds`：只导出选中定义；
-- 可选外层 `targetProfile` 选择 `generic` 或 `copyworms`。
+- 可选外层 `targetProfile` 只接受 `generic`，可省略。
 
-字段默认值和详细约束以 `features/interactable-editor/contract.mjs` 为编辑源，并同步到 manifest。完整请求见 `examples/requests/interactable-export.json` 与 `examples/requests/interactable-copyworms-export.json`。
+字段默认值和详细约束以 `features/interactable-editor/contract.mjs` 为编辑源，并同步到 manifest。完整请求见 `examples/requests/interactable-export.json`。
 
-`save-project` 只持久化完整源工程，不接受导出专用选择与 profile。`export-godot` 打包固定 GDScript runtime、`.tres` 定义、可编辑 `.tscn` 场景、原始图像/音频、安装说明和 round-trip 源数据。它不运行 Godot，也不连接 copyWorms 或外部服务。输出包括 `interactables.zip`（copyWorms profile 为 `interactables-copyworms.zip`）、`interactable-project.json` 和 `result.json`。
+`save-project` 只持久化完整源工程，不接受导出专用选择与 profile。`export-godot` 打包固定 GDScript runtime、`.tres` 定义、可编辑 `.tscn` 场景、原始图像/音频、安装说明和 round-trip 源数据。它不运行 Godot，也不连接外部服务。输出包括 `interactables.zip`、`interactable-project.json` 和 `result.json`。
 
 素材路径必须位于工作区；MCP/CLI 也可提交支持类型的 data URL。浏览器上传返回 workspace-relative `source`、`mime` 和 `size`，任务 JSON 只携带路径。详见 [独立交互物编辑器](interactable-editor.md)。
 

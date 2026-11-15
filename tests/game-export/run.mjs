@@ -68,7 +68,7 @@ const object = await buildGodotPackage(
 );
 let delivery, installed;
 test('interactable profiles keep real runtime and scene references', async () => {
-  for (const profile of ['generic', 'copyworms']) {
+  for (const profile of ['generic']) {
     const b = await buildGodotPackage(
       { project: createProject(), targetProfile: profile },
       { repositoryRoot },

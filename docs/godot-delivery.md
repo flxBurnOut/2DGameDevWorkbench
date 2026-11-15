@@ -26,7 +26,7 @@
 | 类型 | 导入项目的资源目录 | 接入契约 |
 | --- | --- | --- |
 | 角色动画 | `forge_sprites/<角色>/<作业与候选>/` | 原样保留 SpriteFrames、PNG、显式帧顺序、FPS、loop、锚点和候选；每包一个动作 |
-| 交互物 | `addons/workbench_interaction/`，或显式 CopyWorms 配置目录 | 选中的物件场景、素材、定义、源项目和共享运行时；保留对象 ID |
+| 交互物 | `addons/workbench_interaction/` | 选中的物件场景、素材、定义、源项目和共享运行时；保留对象 ID |
 
 
 上限为 256 MB 压缩或解压内容、6000 个文件。路径越界、链接、大小写重名、缺失引用、未知根目录和项目配置文件都会拒绝。标准化只转换导出包，不改生产源文件。交付的包与版本不可变；相同项目的同一份标准包复用交付，不新增重复记录。
@@ -36,7 +36,7 @@
 清单入口是 `manifest.gameExport` 和 `agentAssets.engineering.deliveryGuide`，工程规则仍以[工程 Skill](../.agents/skills/forge-game-engineering/SKILL.md) 和目标游戏自身规则为准。
 
 1. **发现交付。** 继续获准的游戏接入任务时调用 `workbench_list_game_exports`，分页查完相关范围。`workbench_get_environment.gameExports` 只是前五条待接入摘要，不代替完整列表。按用户明确的交付、名称、项目选择，不能因为“最新”就处理另一个游戏的资产。无相关授权时只告知有待接入事项。
-2. **检查具体项目。** `workbench_get_game_export(deliveryId)` 返回原包校验、所选项目绝对路径、配置指纹、主场景、autoload、有限深度的场景/脚本目录和冲突计划。读取目标自己的 `AGENTS.md`、架构文档及相关文件。目录摘要不是代码审查，可能截断。不要把 CopyWorms 参考工程当作写入目标。
+2. **检查具体项目。** `workbench_get_game_export(deliveryId)` 返回原包校验、所选项目绝对路径、配置指纹、主场景、autoload、有限深度的场景/脚本目录和冲突计划。读取目标自己的 `AGENTS.md`、架构文档及相关文件。目录摘要不是代码审查，可能截断。
 3. **安装资源。** 使用返回的 `packageSha256` 与 `inspection.projectRevision` 调用 `workbench_install_game_export`。新增文件直接安装；相同字节复用；上次由 Forge 管理且未改动的文件先备份再更新。未知同名文件、用户改过的文件或链接会阻止整批安装。先检查并合并冲突，不能删目录、覆盖用户修改或反复尝试来绕过检查。
 4. **完成代码连接。** 使用宿主真实文件工具修改获准的目标工程，不停在“文件已复制”。遵循下面的对象契约，保留项目现有 Builder、控制器、状态机、配置资源、autoload 和关卡生命周期。普通路径命名、资源引用、节点挂载由 Agent 处理，不让用户去 Godot 中手动操作；只有存在无法从代码和已确认策划中决定的玩法或目标选择时才提问。
 5. **验证并记录。** 检查实际资源加载、场景实例化、碰撞、动画与交互。`workbench_complete_game_export` 记录接入场景/脚本的实际路径与当前哈希、简短结果，以及引擎版本和执行证据。未安装不能标完成；不存在的文件不能当证据。引擎未运行填 `not_run`；外部 Agent 提交的运行说明标为 `agent-reported`，服务不会把它冒充自己执行过的检查。
@@ -44,7 +44,7 @@
 ### 按资产完成脚本接入
 
 - **角色动作：** 查找当前角色的 `Sprite`/AnimatedSprite2D 及控制器映射，使用 `sprite_frames_merge.gd` 的 `merge_clips(existing, incoming)` 生成新的合并资源，只更新此次动作。保留其他动作、控制器、朝向、脚底偏移、碰撞和攻击时序。QA 的关键帧索引不是伤害触发点，不从索引推导玩法。
-- **交互物：** 每关使用一个 InteractionRuntime，不重复添加。沿用用户已经选择的 generic/copyworms 配置。generic 的靠近检测将实际人物物理节点加入 `interaction_actor`，匹配 detection mask；不能重建人物控制器。读取物件定义以及现有库存/任务/供电系统，通过 `picked_up`、`toggled`、`interaction_finished` 等实际信号接入。信号携带 context Dictionary，不能猜参数。使用已有信号或 EventBus，连接前检查是否已经连接，避免重复触发。
+- **交互物：** 每关使用一个 InteractionRuntime，不重复添加。靠近检测将实际人物物理节点加入 `interaction_actor`，匹配 detection mask；不能重建人物控制器。读取物件定义以及现有库存/任务/供电系统，通过 `picked_up`、`toggled`、`interaction_finished` 等实际信号接入。信号携带 context Dictionary，不能猜参数。使用已有信号或 EventBus，连接前检查是否已经连接，避免重复触发。
 - **业务逻辑：** 静态图片不能凭空变成背包/任务系统。已有策划明确“电池拾取增加库存、开关接通点亮灯塔”时，在实际项目的对应管理器/关卡脚本中补最小连接，并验收重复拾取、重入和存档行为。没有对应玩法授权时不发明新系统。
 
 自定义集成代码放在目标游戏既有脚本目录或其外层关卡中，不放入会被更新的生成目录。原始包和旧版本保留在 `forge_imports`；不删除用户从其他渠道导入的旧资源。一次任务跨多个包时，每份交付各自校验，整体联调后分别记录实际接入结果。

@@ -176,9 +176,6 @@ export const objectSchema = z.object({
   feedback: z.array(feedback).max(100).default([]),
   cooldownSeconds: number(0, 0, 3600),
   completion: z.enum(['remain', 'hide', 'free']).default('remain'),
-  copyworms: z
-    .object({ objectId: z.string().trim().max(100).default('') })
-    .default({}),
   memory: z
     .object({
       scope: z.enum(['instance', 'session', 'persistent']).default('instance'),

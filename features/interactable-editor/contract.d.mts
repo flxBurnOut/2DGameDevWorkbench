@@ -31,7 +31,7 @@ export type Entry = {
   feedback: Feedback[];
 };
 export type Kind = 'inspect' | 'toggle' | 'pickup' | 'sequence';
-export type ExportProfile = 'generic' | 'copyworms';
+export type ExportProfile = 'generic';
 export type Clip = {
   name: string;
   fps: number;
@@ -99,7 +99,6 @@ export type Interactable = {
   feedback: Feedback[];
   cooldownSeconds: number;
   completion: 'remain' | 'hide' | 'free';
-  copyworms: { objectId: string };
   memory: {
     scope: 'instance' | 'session' | 'persistent';
     namespace: string;

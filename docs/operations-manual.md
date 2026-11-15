@@ -282,11 +282,11 @@ npm ci 安装锁定的前端与 Node 依赖。setup 查找 Python，在 Tools/Sp
 
 ### 导出和接入
 
-通用导出使用 generic；只有目标是 CopyWorms 时选择 copyworms 兼容版。导出不要求 PixelLab、SpritePipeline 或已安装 Godot。保存源文件可继续编辑，导出 Godot 才提供运行资源包。
+导出不要求 PixelLab、SpritePipeline 或已安装 Godot。保存源文件可继续编辑，导出 Godot 才提供运行资源包。
 
 通用包整体放入目标项目的 addons/workbench_interaction 目录结构。每个关卡放置一个 interaction_runtime_2d.tscn，再放置所需 object.tscn。靠近交互的实际物理节点加入 interaction_actor group，并让物件感知 mask 包含人物 collision layer；只给普通 Node2D 加 group 不会产生物理重叠。
 
-游戏代码连接 picked_up、toggled、interaction_finished 等信号处理奖励、剧情和输入。CopyWorms 兼容版已有对应角色、输入锁和事件接线约定，仍需在实际目标关卡验证。多包导入保持 runtime/v1 一致，不盲目覆盖旧版运行时。
+游戏代码连接 picked_up、toggled、interaction_finished 等信号处理奖励、剧情和输入。多包导入保持 runtime/v1 一致，不盲目覆盖旧版运行时。
 
 ## 9 找到旧资产并交付真实素材
 
@@ -423,7 +423,7 @@ Helper 不自动合并到游戏，不生成美术，不需要 API Key。Agent �
 | 任务多于作品 | 是否含查询、检查、导出记录 | 用资产库按真实候选盘点 |
 | 旧作品没有 Godot ZIP | 原导出是否早于新增格式 | 保留旧文件；需要时按门禁重新导出 |
 | Godot 动画缺失或卡首帧 | 单动作覆盖、别名或每帧重启 | 合并动作并检查控制器触发逻辑 |
-| 交互物靠近无响应 | 人物物理节点、group、layer/mask | 按通用包或 CopyWorms 接入约定核对 |
+| 交互物靠近无响应 | 人物物理节点、group、layer/mask | 按通用包接入约定核对 |
 
 动态模块错误可能来自前端进程中断，也可能来自测试和开发服务共用依赖缓存造成旧引用；不能仅凭该错误判断“放久了后端自动关闭”。项目测试已使用独立缓存目录，维护时继续保留隔离规则。修复前端缓存不需要删除用户草稿和资产目录。
 

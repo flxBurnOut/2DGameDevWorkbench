@@ -2333,18 +2333,6 @@
                       ],
                       "default": "remain"
                     },
-                    "copyworms": {
-                      "type": "object",
-                      "properties": {
-                        "objectId": {
-                          "type": "string",
-                          "maxLength": 100,
-                          "default": ""
-                        }
-                      },
-                      "additionalProperties": false,
-                      "default": {}
-                    },
                     "memory": {
                       "type": "object",
                       "properties": {
@@ -2370,6 +2358,10 @@
                       },
                       "additionalProperties": false,
                       "default": {}
+                    },
+                    "copyworms": {
+                      "type": "object",
+                      "description": "Retired. Accepted in projects saved by earlier versions and ignored."
                     }
                   },
                   "required": [
@@ -2398,11 +2390,10 @@
           "targetProfile": {
             "type": "string",
             "enum": [
-              "generic",
-              "copyworms"
+              "generic"
             ],
             "default": "generic",
-            "description": "generic exports a standalone kit; copyworms adds input, actor and EventBus integration for copyWorms."
+            "description": "generic exports a standalone kit. It is the only profile."
           }
         }
       },

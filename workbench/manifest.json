@@ -173,11 +173,6 @@
         "source": ".agents/skills/forge-game-engineering/references/frames.md"
       },
       {
-        "id": "engineering-copyworms",
-        "title": "CopyWorms-specific contracts",
-        "source": ".agents/skills/forge-game-engineering/references/copyworms.md"
-      },
-      {
         "id": "agent-clients",
         "title": "Client setup and guidance discovery",
         "source": "docs/agent-clients.md"

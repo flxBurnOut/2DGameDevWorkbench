@@ -223,7 +223,7 @@ flowchart TD
 
 Sprite 导出提供 PNG 与单动作 Godot SpriteFrames 包，交互物导出提供 Godot 资源包。[features/godot-export](../features/godot-export) 统一包结构，[game-export.mjs](../lib/workbench/game-export.mjs) 管理项目选择、收件、安装计划、备份和完成证据；网页、MCP 与 CLI 共享实现，交付记录保存在 `work/game-exports/`。
 
-外部 Agent 通过工程 Skill 在获授权目标项目写接入代码，消费已就绪包并遵守目标项目及 CopyWorms 等适用契约。工作台导出/helper 回归基线为 Godot 4.7.x，实际目标项目仍需使用其自身版本验证；打包完成与引擎验收是不同结果。详见[Godot 交付](godot-delivery.md)、[资产目录](asset-catalog.md)和[游戏工程](game-engineering.md)。
+外部 Agent 通过工程 Skill 在获授权目标项目写接入代码，消费已就绪包并遵守目标项目自身的契约。工作台导出/helper 回归基线为 Godot 4.7.x，实际目标项目仍需使用其自身版本验证；打包完成与引擎验收是不同结果。详见[Godot 交付](godot-delivery.md)、[资产目录](asset-catalog.md)和[游戏工程](game-engineering.md)。
 
 ## 8. Agent 调用、Web 草稿与页面跟随
 

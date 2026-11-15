@@ -1,47 +1,50 @@
 ---
 name: forge-game-engineering
-description: Integrate ready Forge assets and implement Godot game code in the selected target project. Use for animation imports, interactable integration, interaction wiring and project-specific architecture; consult CopyWorms contracts when that profile or reference is involved.
+description: Integrate ready Forge assets and implement Godot game code in the selected target project. Use for animation imports, interactable integration, interaction wiring and project-specific architecture.
 ---
 
 # Forge game engineering
 
-Use the actual target project's code and instructions to complete the requested integration or playable slice. Keep planning requests at the design stage; when implementation is authorized, resolve routine resource names, paths and wiring and continue through relevant validation.
+Complete the requested integration or playable slice using the target project's own code and instructions. A planning request ends with a design; an implementation request continues through file changes and validation, with resource names, paths and wiring decided from the actual files.
 
 ## Route the task
 
 | Work | Read |
 | --- | --- |
 | One animation or a character's visual resources | [Frames and actions](references/frames.md) · topic engineering-frames |
-| A Forge delivery selected for an existing game | [Delivery](../../../docs/godot-delivery.md), also available as MCP guidance topic delivery |
-| CopyWorms target/profile, or explicitly requested source reuse | [CopyWorms contracts](references/copyworms.md) · topic engineering-copyworms |
+| A Forge delivery selected for an existing game | [Delivery](../../../docs/godot-delivery.md) · topic delivery |
 | Producing or adjusting art | [Asset production Skill](../2d-game-workbench/SKILL.md), then return with the chosen result |
 
-Read only the relevant paths; MCP-only readers can use workbench_get_guidance({topic}) for the listed topics. A generic Godot project does not need CopyWorms controllers, Builders or global managers. For a new project, choose structure suited to the requested slice; for an existing one, begin with its current scene and ownership model.
+MCP-only readers load these with workbench_get_guidance({topic}).
 
 ## Establish the target and inputs
 
-Locate project.godot, target instructions, affected scenes/scripts/resources and the actual engine version. Separate a reference checkout from the write target. scripts/inspect_source.py ROOT provides a bounded read-only inventory; it is optional when the needed files are already clear.
+Locate project.godot, the target's own instructions, the affected scenes/scripts/resources and its engine version. For an existing project, start from its current scene and ownership model; for a new one, choose the smallest structure that supports the requested slice.
 
-For an existing Forge delivery, query list_game_exports / get_game_export, match the exact selected package and target, then use install_game_export with its current hashes. For a directly supplied ZIP, inspect and integrate that package without manufacturing a production task. Production replacements consume the selected adopted/exported asset; isolated tests of other candidates retain their test status.
+- **Tracked Forge delivery:** list_game_exports / get_game_export, match the exact package and target, then install_game_export with its current hashes.
+- **Directly supplied ZIP:** inspect and integrate that package as given.
+- **Production replacement:** use the adopted/exported asset. Importing another candidate is a test; label and isolate it.
 
-Preserve actual frame order, regions, FPS, loop and source identity from the package. Intermediate checkpoints, context images and repair previews are not complete delivered clips. Artwork review does not determine gameplay hit frames or authorize unrelated timing changes.
+Take frame order, regions, FPS, loop and source identity from the package. Checkpoints, context images and repair previews are intermediate files, not clips.
 
 ## Implement the requested slice
 
-- **Animation:** merge only selected actions into the existing SpriteFrames resource and retain other clips. Use assets/sprite_frames_merge.gd when suitable. Keep the real controller's aliases, state/timing, facing, visual anchor and collision behavior; derive any necessary visual scale from the new artwork and target actor.
-- **Interactables:** use the exported generic or copyworms profile and one shared interaction runtime. Connect its actual signals to the target's existing systems as the requested gameplay requires.
-- **New game code:** choose the minimum architecture that supports the agreed playable slice. Reuse source modules only when their behavior and dependencies fit.
+- **Animation:** follow [Frames and actions](references/frames.md). Merge the selected actions into the actor's existing SpriteFrames and keep its controller, timing, facing, anchor and collision.
+- **Interactables:** install the exported profile with one shared interaction runtime per level, then connect its signals to the target's existing systems.
+- **New game code:** build the minimum architecture for the agreed slice.
 
-For manual staging, scripts/stage_assets.py accepts explicit sprite input and writes a new output directory. It preserves the source package; the Agent performs the authorized target edits afterward. Helpers use Python 3.10+ standard library. A current verified export often needs no restaging.
-
-Keep custom integration code outside replaceable generated-resource directories. Inspect file/resource sharing and installation conflicts before updating a target. Existing user changes need a deliberate merge, not deletion to make an installer pass.
+Keep custom integration code outside replaceable generated-resource directories. Check shared resources and installation conflicts before updating a target, and merge existing user changes instead of deleting them.
 
 ## Validate and finish
 
-Use the target project's actual Godot executable and report its version. Forge's export/helper regression baseline is 4.7.x; differing target versions need relevant compatibility checks rather than an implicit upgrade.
+Run the target project's own Godot executable and report its version. Forge's export/helper baseline is 4.7.x; check compatibility for other versions instead of upgrading the target.
 
-Check what the change affects: resource loading and playback for a clip, repeated actions and switching for controller changes, interaction signals and state changes for interactable integration. A headless import checks parsing, while visual playback or gameplay claims require corresponding evidence. Missing engine or media leaves those checks explicitly unverified while other work can still complete.
+| Change | Check |
+| --- | --- |
+| A clip | Resource loads and plays with the intended order, FPS and loop |
+| Controller behavior | Repeated actions, interruption and switching |
+| Interactables | Interaction signals and resulting state changes |
 
-Helper changes use npm run test:engineering; GODOT_47_BIN selects its 4.7.x engine regression. Routine asset integration need not run the entire workbench suite.
+A headless import proves parsing only. Report visual playback or gameplay as unverified when the engine or media is missing. After changing the Skill's helpers, run npm run test:engineering (GODOT_47_BIN selects the 4.7.x engine).
 
-For a tracked delivery, complete_game_export records actual modified files and separate engine evidence. Otherwise provide the real target files and observed result. Explain source-to-target decisions only to the degree the task needs; a one-clip replacement does not require an architecture report.
+For a tracked delivery, complete_game_export records the modified files and engine evidence. Otherwise report the changed target files and the observed result.

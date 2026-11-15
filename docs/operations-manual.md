@@ -355,7 +355,7 @@ WorkBuddy 在首次用户消息后检查前端，离线时启动一次并等待�
 
 “用这份已选角色制作向右行走，一个候选，其余沿用预设，检查后交付。”用于明确制作。Agent 使用真实角色与动作 ID，不再问已给出的选择；实际审查通过后才导出。
 
-“只设计一个能跑跳、开门的小关卡，按 CopyWorms 方法，先不改文件。”用于工程规划。Agent 先查资产与工程，提供方案，不建生产任务或写入游戏。
+“只设计一个能跑跳、开门的小关卡，先不改文件。”用于工程规划。Agent 先查资产与工程，提供方案，不建生产任务或写入游戏。
 
 Agent 需要澄清时，优先使用当前宿主暴露的 AskUserQuestion 或等价工具，先读取其 schema。没有工具就简短提问；取消或未答复不能当作推荐选项已获批准。正常回复应说明结果、给准确预览或链接，再提供一个有用的下一步。
 
@@ -363,9 +363,9 @@ Agent 需要澄清时，优先使用当前宿主暴露的 AskUserQuestion 或等
 
 ### 工程 Skill 的前提
 
-使用 forge-game-engineering 时，提供目标游戏目录和需要完成的可玩范围，例如把已选行走与攻击动画接到现有角色，或把已导出交互物接入指定关卡。参考 CopyWorms 工程与待修改工程必须分清；参考工程默认只读。
+使用 forge-game-engineering 时，提供目标游戏目录和需要完成的可玩范围，例如把已选行走与攻击动画接到现有角色，或把已导出交互物接入指定关卡。如同时提供了参考工程，它与待修改工程必须分清；参考工程默认只读。
 
-Agent 应读取目标 project.godot、架构文档、场景、配置与相关脚本，以实际 CopyWorms 契约为起点。方法包括正式角色基类、Resource 配置、关卡和 UI Builder、明确事件与输入锁所有权、关卡生命周期。不能因为素材已经齐全就自动引入另一套通用框架。
+Agent 应读取目标 project.godot、架构文档、场景、配置与相关脚本，以目标工程现有的场景结构、控制器和生命周期为起点。不能因为素材已经齐全就自动引入另一套通用框架。
 
 ### 角色帧和动作
 
@@ -379,7 +379,7 @@ Cyber 的蓄力、突进或技能可能暂时接管动画。替换时保留这�
 
 ### Helper 的用途
 
-项目提供 inspect_source.py 只读整理参考源文件；stage_assets.py 在新的输出目录暂存角色动画；character_visual.gd 提供表现层播放；sprite_frames_merge.gd 合并指定动作。
+项目提供 stage_assets.py 在新的输出目录暂存角色动画；character_visual.gd 提供表现层播放；sprite_frames_merge.gd 合并指定动作。
 
 Helper 不自动合并到游戏，不生成美术，不需要 API Key。Agent 应先检查暂存结果，再执行用户授权的目标项目改动。自定义控制脚本放在生成资源目录之外，以免再次导出覆盖。
 
@@ -438,7 +438,7 @@ Helper 不自动合并到游戏，不生成美术，不需要 API Key。Agent �
 | workbench/manifest.json | 能力、schema、路由、工具和 Skill 入口 |
 | workbench/conversation-guide.md | 自然语言需求澄清、展示与交接 |
 | .agents/skills/2d-game-workbench | 美术生产、审查、资产盘点和交付 |
-| .agents/skills/forge-game-engineering | CopyWorms 工程方法、帧和交互物接入 |
+| .agents/skills/forge-game-engineering | 目标 Godot 工程的帧、动作和交互物接入 |
 | docs/agent-clients.md | MCP 配置、完整工具面与宿主验收 |
 | docs/README.md | 各模块使用手册索引 |
 | THIRD_PARTY_NOTICES.md | 上游基线、许可与代码复用边界 |

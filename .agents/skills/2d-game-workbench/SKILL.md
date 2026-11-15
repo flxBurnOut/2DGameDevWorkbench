@@ -32,20 +32,18 @@ Prefer the project's MCP tools. Reuse discovered schemas during the session; ref
 | run_task / get_task | npm run workbench -- run <capability-id> --input <json-file> / status <task-id> --json |
 | get_guidance and other shared operations | npm run workbench -- agent guidance --input <json-file> --json; other operations use their discovered names |
 
-Resolve real character, asset and task identities from context or discovery. Check environment readiness only for services the task needs; start an installed offline service when appropriate. A conflicting service calls for diagnosis rather than repeated startup.
+Resolve character, asset and task IDs from context or discovery instead of asking for them. Check only the services this task needs: start an installed offline service that is down, and diagnose a port or version conflict instead of starting it again. The selected capability's schema defines what MCP/CLI supports; prepare_task is an optional validation step for authorized production work.
 
-Use the user's existing authorization throughout the agreed workflow. Routine parameters and internal IDs are implementation choices. prepare_task optionally validates and saves a preparation record for authorized work; read-only discussion needs no production record. The selected capability schema determines which operations the MCP/CLI supports. Explicit webpage work and authorized feature development remain available.
+## Keep work recoverable
 
-## Preserve the work's identity
-
-- Poll the original task/job. For unknown paid submissions, inspect its saved receipt and provider ID before taking another action. Recovery should find the existing request; a new paid attempt needs to fit the agreed scope and budget.
-- Shared document and image writes use the canonical Bridge, current revision/hash and stable commandId. Reuse an ID for the same request; re-read conflicts. Direct edits to storage would bypass concurrent users and recovery.
-- Bind edits and adoption to the selected source, candidate and allowed range. Keep source history and unrelated changes. Candidate creation and adoption are separate operations; perform both when the user's requested outcome includes adoption.
-- The user or delegated main Agent evaluates actual output. Inspect animation sequences at their FPS, not just a GIF first frame. Record observed reasons and assessed warnings; technical hard errors remain blocking. [Visual criteria](../../../workbench/experts/2d-production-expert.md) supplies review guidance.
-- Treat task completion, artwork adoption, export and target-engine validation as distinct evidence. Report the result the user requested and the checks actually performed.
+- **Paid or async tasks:** poll the original task/job. When a paid submission's outcome is unknown, find the existing request through its saved receipt and provider ID; submit again only within the agreed scope and budget.
+- **Shared documents and images:** write through the canonical Bridge with the current revision/hash and a stable commandId. Reuse the ID when retrying the same request and re-read on conflict. Editing storage files directly bypasses concurrent users and recovery.
+- **Candidates:** bind edits and adoption to the selected source, candidate and allowed range. Creating a candidate does not adopt it; adopt when the user asked for the adopted result.
+- **Review:** view animations as a sequence at their FPS. Technical hard errors block; record other warnings with the observed reason. [Visual criteria](../../../workbench/experts/2d-production-expert.md) supplies review guidance.
+- **Report:** state which of task completion, adoption, export and engine validation actually happened.
 
 ## Show and deliver
 
-Use returned exact asset/work/candidate links. Follow the [presentation guide](../../../docs/agent-preview-follow.md) (topic presentation): On the first user message, WorkBuddy checks the environment and opens this session preview; production checks for its visible page; preview_required means no task or provider call was created. Use previewPolicy exceptions only for an explicit user refusal/dismissal or verified host-tool failure. Other clients remain headless unless they present. Reuse the existing page and preserve paused/closed/unsaved state.
+Show results with the exact asset/work/candidate links the tools return. Preview behavior for each host, including WorkBuddy and preview_required, is in the [presentation guide](../../../docs/agent-preview-follow.md) (topic presentation).
 
-Download existing files when delivering assets; a descriptive manifest does not contain textures. For game code or integration continue with [forge-game-engineering](../forge-game-engineering/SKILL.md). For service or configuration failures, read the relevant section of the [operations manual](../../../docs/operations-manual.md).
+Deliver the actual downloaded files; a manifest describes textures without containing them. For game code or integration continue with [forge-game-engineering](../forge-game-engineering/SKILL.md). For service or configuration failures, read the relevant section of the [operations manual](../../../docs/operations-manual.md).

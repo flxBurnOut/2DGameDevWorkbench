@@ -15,7 +15,6 @@ MCP `workbench_get_guidance({topic:"engineering"})` 可读取 Skill；引用主�
 
 ## 现有辅助工具
 
-- `inspect_source.py ROOT`：只读列出 CopyWorms 参考工程的固定文件、哈希与直接资源引用；Skill 正文不再引用，仅为已有回归保留。
 - `stage_assets.py sprite`：从已核实动画元数据建立独立暂存目录，保留源包，不自动合并目标工程。
 - `sprite_frames_merge.gd`：合并选定动作，保留原资源中的其他动画。
 - `character_visual.gd`：可选的角色表现 helper；目标已有控制器或关卡管理方式优先。

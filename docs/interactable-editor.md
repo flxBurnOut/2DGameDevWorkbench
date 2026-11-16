@@ -16,6 +16,8 @@
 
 右侧的 Image 2.6 面板使用 `image-assets` 图片任务：描述 → 生成或编辑 → 预览 → 明确采用到当前物件。透明物品输出 PNG，历史以 kind=prop 保存；生成与本编辑器的共享保存、save-project、export-godot 分开。采用保留物件身份、行为和各状态外观，新增默认图片并清空默认动画选择。来源任务 / SHA-256 随项目保存，采用时重新校验原图。既有 PixelLab 原图能力与旧产物仍可读取，详见[物品原图](prop-art.md)。
 
+“获取图片”的“导入 PNG / 从物品图转换”可把 128 px 透明 PNG 或 GPT 大图登记为动画原图；预览、调参、确认和来源规则见[物品导入与转换](prop-art.md#导入与转换为动画原图)。导入可本地完成，转换与移送需要完整工作台的 SpritePipeline 服务。
+
 ## 开始编辑
 
 运行 `npm run dev:interactable`，然后进入交互物编辑器。此命令启动网页与本地导出服务，不启动序列帧服务，也不需要 Python、图片生成 API 或 Godot。完整工作台也可使用 `npm run dev`。更新代码后，已运行的 Node Runtime Bridge 需要重启才能加载新适配器。

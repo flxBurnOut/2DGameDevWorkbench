@@ -103,7 +103,7 @@
       "id": "reference-art",
       "name": "角色原图",
       "shortName": "角色原图",
-      "description": "使用 PixelLab 生成透明背景的角色或交互物原图，两者都可移送为对应类型的动画参考。物品也可在交互物编辑器预览并采用。",
+      "description": "使用 PixelLab 生成角色或物品原图；也可本地导入 128 px 物品，或用 PixelProp 把大图转换后确认移送为动画参考。",
       "executable": true,
       "ui": {
         "icon": "reference",

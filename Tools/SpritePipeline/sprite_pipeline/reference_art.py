@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .errors import ProviderConfigurationError, ProviderPermanentError, ValidationHarnessError
 from .service import SpritePipelineService
 from . import prop_reference
+from .pixel_prop_gateway import conversion
 
 
 class ReferenceRequest(BaseModel):
@@ -38,6 +39,20 @@ class PropTransferRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sourceTaskId: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$")
     identityDescription: str = Field(default="", max_length=1000)
+    confirmation: 'PropConfirmation | None' = None
+
+
+class PropConfirmation(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    note: str = Field(min_length=4, max_length=1000)
+
+
+class PropConvertRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    sourceTaskId: str | None = Field(default=None, pattern=r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$')
+    sourceImagePath: str | None = Field(default=None, min_length=1, max_length=1000)
+    sourceImage: str | None = Field(default=None, max_length=40_000_100)
+    recipe: dict = Field(default_factory=dict)
 
 
 class KeyRequest(BaseModel):
@@ -169,8 +184,18 @@ def create_reference_router(service: SpritePipelineService) -> APIRouter:
 
     @router.post("/transfer-prop")
     def transfer_prop(body: PropTransferRequest):
-        identity = prop_reference.transfer(service, body.sourceTaskId, body.identityDescription.strip())
+        identity = prop_reference.transfer(service, body.sourceTaskId, body.identityDescription.strip(),
+                                           body.confirmation.model_dump() if body.confirmation else None)
         return {"objectId": identity, "objectType": "interactable"}
+
+    def convert_prop(body: PropConvertRequest):
+        result, provenance = conversion(service, body.model_dump(exclude_none=True))
+        return {'image': base64.b64encode(result.png).decode('ascii'),
+                'compare': base64.b64encode(result.compare).decode('ascii'),
+                'report': result.report, 'provenance': provenance}
+
+    router.add_api_route('/convert-prop', convert_prop, methods=['POST'])
+    router.add_api_route('/convert-prop/preview', convert_prop, methods=['POST'])
 
     @router.post("/import")
     def import_reference(body: ImportRequest):

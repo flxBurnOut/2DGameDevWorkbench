@@ -227,3 +227,105 @@ def test_prop_transfer_only_admits_verified_registered_png(service, tmp_path, mo
         png.write_bytes(b'tampered pixels')
         assert transfer().status_code == 409
         assert not service.list_jobs()
+
+
+def local_prop_repo(service, tmp_path, monkeypatch):
+    from sprite_pipeline.jsonio import atomic_write_json
+    monkeypatch.delenv('WORKBENCH_TEST_RUN', raising=False)
+    monkeypatch.setattr(reference_art, '_provider_request', Mock(side_effect=AssertionError('Local props cannot call providers')))
+    repo = tmp_path / 'local-prop-repo'
+    service.settings = replace(service.settings, install_root=repo/'Tools/SpritePipeline')
+    atomic_write_json(repo/'workbench/manifest.json', {'workspace': {'taskDirectory':'work/tasks','outputDirectory':'outputs'}})
+    return repo
+
+
+def register_local_prop(repo, task_id, fields, data, result, extra=None):
+    from sprite_pipeline.jsonio import atomic_write_json
+    folder = repo/'outputs'/task_id; folder.mkdir(parents=True)
+    (folder/'reference.png').write_bytes(data)
+    atomic_write_json(folder/'result.json', result)
+    for name, value in (extra or {}).items(): atomic_write_json(folder/name, value)
+    task = {'id':task_id, 'input':fields, 'capabilityId':'reference-art', 'status':'completed',
+            'outputs':[(folder/name).relative_to(repo).as_posix() for name in ['reference.png','result.json',*(extra or {})]]}
+    atomic_write_json(repo/'work/tasks'/f'{task_id}.json', task)
+    return folder, task
+
+
+def test_import_confirmation_provenance_and_legacy_snapshot(service, tmp_path, monkeypatch):
+    import hashlib
+    from sprite_pipeline.jsonio import read_json
+    repo = local_prop_repo(service, tmp_path, monkeypatch)
+    data = base64.b64decode(image_base64()); sha = hashlib.sha256(data).hexdigest()
+    register_local_prop(repo, 'imported-lamp', {'operation':'import','subject':'prop','prompt':'closed lamp'}, data,
+        {'subject':'prop','model':None,'width':128,'height':128,'sha256':sha,
+         'provenance':{'type':'import','sourceSha256':sha,'providerCalled':False}})
+    with TestClient(create_api(service=service)) as client:
+        body = {'sourceTaskId':'imported-lamp'}
+        assert client.post('/v1/reference-art/transfer-prop', json=body).status_code == 422
+        assert client.post('/v1/reference-art/transfer-prop', json={**body,'confirmation':{'note':'    '}}).status_code == 422
+        body['confirmation'] = {'note':'已核对侧视、关闭状态、完整灯体和透明背景'}
+        first = client.post('/v1/reference-art/transfer-prop', json=body)
+        assert first.status_code == 200, first.text
+        assert client.post('/v1/reference-art/transfer-prop', json=body).json() == first.json()
+        identity = first.json()['objectId']
+        preset, path = service.presets.load_object(identity)
+        original = read_json(path)
+        provenance = read_json(path.parent/'provenance.json')
+        assert provenance['type'] == 'import' and provenance['referenceSha256'] == sha
+        assert provenance['confirmation']['note'] == body['confirmation']['note']
+        assert provenance['confirmation']['confirmedAt'].endswith('+00:00')
+        assert 'provenance' not in original
+        row = next(o for o in client.get('/v1/open-motion/references').json()['objects'] if o['id'] == identity)
+        assert row['provenance'] == provenance
+        snapshot = service.presets.object_snapshot(preset)
+        assert snapshot['provenance'] == {'type':'import','referenceSha256':sha}
+        (path.parent/'provenance.json').unlink()
+        assert service.presets.object_provenance(identity) == {'type':'pixellab'}
+        assert service.presets.object_snapshot(preset)['provenance']['referenceSha256'] == sha
+        assert read_json(path) == original
+        palette = client.post('/v1/reference-art/convert-prop', json={
+            'sourceImage':'data:image/png;base64,'+image_base64(), 'recipe':{'palette':'object:'+identity}})
+        assert palette.status_code == 200, palette.text
+        assert palette.json()['report']['recipe']['palette'] == ['#289650']
+    reference_art._provider_request.assert_not_called()
+
+
+def test_conversion_preview_replay_tampering_and_palette(service, tmp_path, monkeypatch):
+    import hashlib
+    from sprite_pipeline.jsonio import atomic_write_json, read_json
+    from sprite_pipeline import pixel_prop_gateway
+    repo = local_prop_repo(service, tmp_path, monkeypatch)
+    source = repo/'source.png'; source.write_bytes(base64.b64decode(image_base64((512,512))))
+    fields = {'operation':'convert-prop','subject':'prop','prompt':'green indicator lamp','sourceImagePath':'source.png'}
+    with TestClient(create_api(service=service)) as client:
+        payload = {'sourceImagePath':'source.png','recipe':{'colors':8}}
+        assert client.post('/v1/reference-art/convert-prop',json={**payload,'recipe':{'size':64}}).status_code == 422
+        assert client.post('/v1/reference-art/convert-prop',json={**payload,'sourceImage':'bad'}).status_code == 422
+        assert client.post('/v1/reference-art/convert-prop',json={'sourceImagePath':'../outside.png'}).status_code in (400,422)
+        preview = client.post('/v1/reference-art/convert-prop/preview', json=payload)
+        assert preview.status_code == 200, preview.text
+        converted = client.post('/v1/reference-art/convert-prop', json=payload).json()
+        assert converted == preview.json()
+        assert not (repo/'outputs').exists(), 'Preview and gateway never persist task files'
+        fields['recipe'] = payload['recipe']
+        png = base64.b64decode(converted['image']); report = converted['report']
+        result = {'subject':'prop','model':None,'width':128,'height':128,'sha256':report['sha256'],'provenance':converted['provenance']}
+        folder, task = register_local_prop(repo, 'converted-lamp', fields, png, result,
+            {'recipe.json':report['recipe'], 'report.json':report})
+        body = {'sourceTaskId':task['id'],'confirmation':{'note':'已核对视角、初始状态、完整部件和透明背景'}}
+        first = client.post('/v1/reference-art/transfer-prop',json=body)
+        assert first.status_code == 200, first.text
+        identity = first.json()['objectId']
+        assert client.post('/v1/reference-art/transfer-prop',json=body).json() == first.json()
+        provenance = service.presets.object_provenance(identity)
+        assert provenance['conversion']['recipeSha256'] == report['recipeSha256']
+        assert client.post('/v1/reference-art/convert-prop',json={**payload,'recipe':{'palette':'object:'+identity}}).status_code == 422
+        before = source.read_bytes(); source.write_bytes(base64.b64decode(image_base64((128,128))))
+        assert client.post('/v1/reference-art/transfer-prop',json=body).status_code == 409
+        source.write_bytes(before)
+        atomic_write_json(folder/'recipe.json', {**report['recipe'],'colors':3})
+        assert client.post('/v1/reference-art/transfer-prop',json=body).status_code == 409
+        atomic_write_json(folder/'recipe.json', report['recipe'])
+        monkeypatch.setattr(pixel_prop_gateway,'ALGORITHM_VERSION',999)
+        assert client.post('/v1/reference-art/transfer-prop',json=body).status_code == 409
+    reference_art._provider_request.assert_not_called()

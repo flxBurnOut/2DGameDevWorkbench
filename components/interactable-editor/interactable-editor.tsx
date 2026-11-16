@@ -71,6 +71,7 @@ import { Field, Numeric, Check, BehaviorPanel } from './property-panels';
 import { VisualPanel } from './visual-panel';
 import { PropArtPanel } from './prop-art-panel';
 import { ImagePropPanel } from './image-prop-panel';
+import { PropReferenceTools } from './prop-reference-tools';
 import { applyPropArt } from '@/features/interactable-editor/prop-art.mjs';
 import { Preview, assetUrl } from './preview';
 import './interactable-editor.css';
@@ -837,6 +838,8 @@ export function InteractableEditor() {
           {/* Kept mounted on other tabs so running generations keep polling. */}
           <section className="ie-get-image" aria-label="获取图片" hidden={tab !== 'visual'}>
             <h3>获取图片</h3>
+            <PropReferenceTools objectName={current.displayName} disabled={!ready || busy || !draftWritable}
+              onBusy={setBusy} beforeSave={async () => { await persist(true); }} />
             <button disabled={!ready || busy || !draftWritable || !current.visual.assetId || imageOpening} onClick={() => void openImageEdit()}>
               {imageOpening ? '正在保存源工程…' : '局部调整默认图片'}
             </button>

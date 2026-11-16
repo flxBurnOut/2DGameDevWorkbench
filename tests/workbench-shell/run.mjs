@@ -84,10 +84,12 @@ try {
   });
 
   test('prop generation records open the exact image in interactable artwork, not the character editor', () => {
-    const [item] = taskWorkItems([{id:'prop-task',capabilityId:'reference-art',status:'completed',input:{operation:'generate',subject:'prop'}}], modules);
-    assert.equal(item.capabilityId,'interactable-editor');
-    assert.equal(item.title,'物品原图');
-    assert.equal(item.href,'/tools/interactable-editor?artTask=prop-task');
+    for (const input of [{operation:'generate',subject:'prop'}, {operation:'import',subject:'prop'}, {operation:'convert-prop'}]) {
+      const [item] = taskWorkItems([{id:'prop-task',capabilityId:'reference-art',status:'completed',input}], modules);
+      assert.equal(item.capabilityId,'interactable-editor');
+      assert.equal(item.title,'物品原图');
+      assert.equal(item.href,'/tools/interactable-editor?artTask=prop-task');
+    }
   });
   test('Image 2.6 work items use existing editors without duplicate navigation modules', () => {
     assert.equal(modules.some((entry) => entry.id === 'image-assets'), false);

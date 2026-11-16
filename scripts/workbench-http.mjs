@@ -34,7 +34,7 @@ import {
   updateImageGenerationSettings,
 } from '../lib/workbench/image-generation-settings.mjs';
 
-import { referenceServiceRequest } from '../lib/workbench/adapters/reference-art.mjs';
+import { previewPropConversion, referenceServiceRequest } from '../lib/workbench/adapters/reference-art.mjs';
 import { frontendHeartbeat } from '../lib/workbench/preview-follow.mjs';
 
 import {randomUUID} from 'node:crypto';
@@ -319,6 +319,15 @@ const server = http.createServer(async (request, response) => {
         sendJson(response, 400, {
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+      return;
+    }
+    if (url.pathname === '/v1/reference-art/convert-prop/preview' && request.method === 'POST') {
+      try {
+        const capability = findCapability(await loadManifest(), 'reference-art');
+        sendJson(response, 200, await previewPropConversion(capability.connector, await readJsonBody(request)));
+      } catch (error) {
+        sendJson(response, error.status || 400, { error: error.message });
       }
       return;
     }

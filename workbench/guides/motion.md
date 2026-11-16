@@ -4,7 +4,7 @@
 
 ## 开始或继续
 
-读取当前对象库存和已有作品。新动作使用 `plan-motion`，在 `motionSpec.description` 保留用户原话，按请求设置 ending、候选数与预算；需要已有对象 preset，不需要动作 preset。新请求使用 motionSpec.object_id / object_type，类型从库存读取；旧 character_id 保持可读。PixelLab 物品经[移送到交互物动画](../../docs/prop-art.md#旧-pixellab-流程)后可选。交互物可在 `motionSpec.interactable_skeleton` 按顺序列出状态（首个为原图，最多 5 个）；规划必须每对相邻状态一段，段数不符由本机校验退回，骨架写入冻结方案。交互物合同核对视角、初态与部件归属。遇到带遮挡的刚体平移，只有用户明确选择尝试才在 generate-motion 传 allowUnsupportedMotion。review-motion-stage 的 accept_state 可先锁定真实状态帧，过渡仍待确认。用户授权默认制作时可使用已配置模型和当前默认预算，普通参数无需再次确认。规划本身调用模型；纯讨论只读取信息。
+读取当前对象库存和已有作品。新动作使用 `plan-motion`，在 `motionSpec.description` 保留用户原话，按请求设置 ending、候选数与预算；需要已有对象 preset，不需要动作 preset。新请求使用 motionSpec.object_id / object_type，类型从库存读取；旧 character_id 保持可读。128 px 物品经[导入、转换或 PixelLab 生成后移送](../../docs/prop-art.md#导入与转换为动画原图)可选。交互物可在 `motionSpec.interactable_skeleton` 按顺序列出状态（首个为原图，最多 5 个）；规划必须每对相邻状态一段，段数不符由本机校验退回，骨架写入冻结方案。交互物合同核对视角、初态与部件归属。遇到带遮挡的刚体平移，只有用户明确选择尝试才在 generate-motion 传 allowUnsupportedMotion。review-motion-stage 的 accept_state 可先锁定真实状态帧，过渡仍待确认。用户授权默认制作时可使用已配置模型和当前默认预算，普通参数无需再次确认。规划本身调用模型；纯讨论只读取信息。
 
 收到方案后处理真正未答的关键问题。`generate-motion` 绑定返回的 revision 与 planSha256；已授权连续制作可使用 autoExecute。追踪原 taskId 和 `?work=<openWorkId>`，换候选时保留精确版本与候选身份。
 
@@ -16,9 +16,11 @@ PixelLab 规划会先读取可用单位。可在 `motionSpec.budget` 设置 `max
 
 涉及结构辅助、时序观察或规划稳定性时，读取[视觉结构协议](../../docs/visual-structures.md)：策略分析草案与可执行方案分开，预留后续专家预算；实际绘图文本不截断。结构确认不是画面采用或修改区域授权。遮挡、透视缩短与外观断裂保留不确定性及具体矛盾，不能凭单次模型意见自动通过、重绘或升级旧任务。
 
+只有 GPT Image 物品图时，先 `reference-art convert-prop`，查看 compare.png，核对视角、初始状态、部件完整和透明背景，再 `transfer` 附 `confirmation.note`。用户已明确委托检查时 Agent 可直接提交实际观察；未委托或保留选择时，用 `workbench_present` 展示对比图等待确认。选参数属于本机可重做的常规选择；多张源图而用户未指定时先确定来源。导入/转换的 PixelLab 动画效果未经真实验证，后续规划与绘图仍需各自费用授权。对象清单与新作品的 character.provenance 保留来源摘要，实验统计按来源筛选。
+
 ## 网页入口
 
-需要用户在网页上操作或查看时：交互物动画在“交互物动画”面板 `/tools/interactable-motion` 制作，`object_type=interactable` 的作品默认在此打开（`?work=<openWorkId>`，可带 `&document=<id>&definition=<definitionId>` 指明写回物件）；角色动画页的对象列表只含角色。面板左侧为状态图，中间为过渡画布，右侧“要求 / 检查 / 工具 / 写回”。没有 128 px 物品原图时可在面板内生成并移送；交互物编辑器中切换与序列物件的“制作状态动画”会保存工程并带上下文打开面板。写回页签逐槽显示当前绑定，并只通过 `import-motion-asset` 提交；编辑器“素材 → 导入位置”仍可直接选用。用 `workbench_present` 打开准确页面，`workbench_get_motion_bindings` 只读查询各槽绑定。面板说明见[方案与实施记录](../../docs/交互物动画独立面板方案.md)。
+需要用户在网页上操作或查看时：交互物动画在“交互物动画”面板 `/tools/interactable-motion` 制作，`object_type=interactable` 的作品默认在此打开（`?work=<openWorkId>`，可带 `&document=<id>&definition=<definitionId>` 指明写回物件）；角色动画页的对象列表只含角色。面板左侧为状态图，中间为过渡画布，右侧“要求 / 检查 / 工具 / 写回”。没有 128 px 物品原图时可在面板内生成、导入或转换并移送；交互物编辑器中切换与序列物件的“制作状态动画”会保存工程并带上下文打开面板。写回页签逐槽显示当前绑定，并只通过 `import-motion-asset` 提交；编辑器“素材 → 导入位置”仍可直接选用。用 `workbench_present` 打开准确页面，`workbench_get_motion_bindings` 只读查询各槽绑定。面板说明见[方案与实施记录](../../docs/交互物动画独立面板方案.md)。
 
 写回可带 `durations`（逐帧相对时长，数量等于过渡帧数）与 `playback: ping_pong`；这只改变交互物动画片段，原帧和导出不变。面板的确定性工具（固定部件回填、对齐、批量清理、同帧数旋转草稿）经 `local-frame-edits` 保存为完整播放备选，仍须对比后采用。倒放、旋转草稿、色调派生和上传的状态图属于派生素材：记录来源与哈希，必须人工播放并写明结论接受后才进入资产库，目前只在网页面板创建。
 

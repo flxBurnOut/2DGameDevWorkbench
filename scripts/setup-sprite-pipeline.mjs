@@ -86,10 +86,11 @@ try {
     '-r',
     fs.existsSync(lock) ? lock : path.join(pipeline, 'requirements.txt'),
   ]);
+  run(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '-e', path.join(root, 'Tools', 'PixelProp')]);
   run(python, ['-m', 'pip', 'check']);
   run(python, [
     '-c',
-    'import fastapi, uvicorn, gradio, PIL; print("SpritePipeline dependencies ready")',
+    'import fastapi, uvicorn, gradio, PIL, pixel_prop; print("SpritePipeline and PixelProp dependencies ready")',
   ]);
   console.log(
     `SpritePipeline 已就绪：${python}\n运行 npm run dev 启动完整工作台。`,

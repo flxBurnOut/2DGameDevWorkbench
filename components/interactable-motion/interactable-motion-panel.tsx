@@ -34,6 +34,7 @@ import { TransitionCanvas, type DrawMode, type Overlays, type ToolMarks } from '
 import { ToolsTab } from './tools-tab';
 import { WritebackTab, type Rhythm } from './writeback-tab';
 import { PropReferenceGenerator } from './prop-reference-generator';
+import { propProvenanceLabel } from '@/components/interactable-editor/prop-reference-tools';
 import { DerivedAssets } from './derived-assets';
 import { MotionStructure } from '../sprite-generator/motion-structure';
 
@@ -292,11 +293,11 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     </header>
     <div className="im-object-bar" aria-label="对象">
       {referenceUrl ? <img src={referenceUrl} alt="" width={40} height={40} /> : <span className="im-object-empty" aria-hidden="true" />}
-      {work ? <span><b>{work.character.display_name}</b> · 交互物 · {work.character.cell_width}px</span>
+      {work ? <span><b>{work.character.display_name}</b> · 交互物 · {work.character.cell_width}px · {propProvenanceLabel(work.character.provenance?.type)}</span>
         : <label>交互物对象<NativeSelect aria-label="交互物对象" value={objectId} disabled={busy}
           onChange={e => setObjectId(e.target.value)}>
           <NativeSelectOption value="">请选择交互物</NativeSelectOption>
-          {objects.map(o => <NativeSelectOption key={o.id} value={o.id}>{o.name} · {o.width}px</NativeSelectOption>)}
+          {objects.map(o => <NativeSelectOption key={o.id} value={o.id}>{o.name} · {o.width}px · {propProvenanceLabel(o.provenance?.type)}</NativeSelectOption>)}
         </NativeSelect></label>}
       <span className="im-binding">{documentId ? <>绑定：{project?.name || documentId} › {object?.displayName || definitionId || '未选物件'}
         {object && `（${({ toggle: '切换', sequence: '序列', inspect: '查看', pickup: '拾取' } as Record<string, string>)[object.behavior.kind]}）`}</>

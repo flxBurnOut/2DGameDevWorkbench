@@ -514,7 +514,7 @@ class SpritePipelineService:
                     or work.generation_policy_version != binding.generation_policy_version
                     or work.visibility_review_version != binding.visibility_review_version
                     or (binding.plan.quality is not None and work.planning_config != binding.model_snapshot)
-                    or work.character != character.model_dump(mode="json")):
+                    or work.character != (self.presets.object_snapshot(character) if 'provenance' in work.character else character.model_dump(mode="json"))):
                 raise ConflictError("任务、角色或方案已改变，请查看最新版本")
             if binding.compiled_prompts:
                 from .collaboration.quality import compiled_prompt

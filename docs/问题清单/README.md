@@ -34,6 +34,7 @@
 | UI-03 | 已验证 | 角色历史读取期间迟到响应曾覆盖新输入；现独立加载锁、epoch 和卸载检查，保护编辑与生成/移送。 | 真实组件时序回归覆盖禁用、替代请求、失败、卸载、原生成轮询及精确移送身份。 | [并行审查](#并行审查) |
 | UI-04 | 已验证 | 角色详情渲染清单不支持的导入目标曾同步抛错；现按清单过滤无效入口，恢复预览下载和有效链接。 | 真实组件与真实导入合同验证四格式角色、GIF 预览下载、有效用途和原工具返回链接。 | [并行修复验收](#并行修复验收) |
 | SEC-02 | 已登记（本轮不改） | 原生 Python API 的 Host/来源边界与 Web/Bridge 独立；用户明确决定留待下一轮。 | 仅在临时数据及模拟凭据库验证读写边界，未改原生安全策略。 | [并行修复验收](#并行修复验收) |
+| DEV-01 | 已登记（待定位） | 本机 vinext dev 的 RSC 依赖在 Vite/Cloudflare 转换后含两个 default export，开发服务器启动失败；生产构建与 vinext start 可用。 | 隔离 WORKBENCH_TEST_RUN 启动 dev 复现 Parse failure；同版本 build/start 浏览器导入与转换链路通过。 | [物品转换验收](#物品转换验收中的开发服务问题) |
 
 ## 工作记录
 
@@ -146,3 +147,9 @@ Node 图片编辑完整 9 组、页面跟随、呈现、Agent 验收、前端服
 
 **维护清理实现归档。** 2026-11-15T01:55:48-05:00（提交时间），提交 [c992a1668c38](https://github.com/aaaarthur666-design/2DGameDevWorkbench/commit/c992a1668c38dcb7317a56e60784f4df806a929b) 收录 MAINT-01、PKG-01 的修复、死代码与依赖清理及当前文档更新。提交前核对 94 项跟踪变更，公开仓库检查与差异检查通过；没有带入本地目录、测试产物、测试样例或私人素材，嵌套本地目录仍保留。
 
+
+### 物品转换验收中的开发服务问题
+
+2026-11-16T18:31:25-05:00，分支 paper-vbyc，工作区基于 `d12f46298e2d`，物品导入/PixelProp 转换实现尚未提交。登记 DEV-01：在隔离命名空间执行 vinext dev 时，`vite-cache/deps_rsc/react-server-dom-webpack_server__edge.js` 同时出现预打包 `export default require_server_edge()` 与 commonjs 插件附加的默认导出，Cloudflare worker 解析报 “A module cannot have multiple default exports”。尚未确定依赖预打包与插件交互的根因，未修改开发服务器配置或依赖版本。
+
+同一工作区 `npm run build` 与 `vinext start` 正常，物品导入、转换调参、保存、确认移送、对象来源、GPT 候选深链和 430 px 对话框验收通过，无真实付费请求。DEV-01 保持待定位，不能以生产页面通过视为开发启动问题已修复。复现入口为 `node node_modules/vinext/dist/cli.js dev --host 127.0.0.1 --port <隔离端口>`；浏览器流程见 `tests/prop-art/browser.mjs`，使用生产模式以完成本次功能验收。

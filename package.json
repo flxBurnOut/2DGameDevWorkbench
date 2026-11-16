@@ -48,7 +48,7 @@
     "lint": "oxlint",
     "format": "oxfmt",
     "test:desktop-services": "node tests/desktop-services/run.mjs",
-    "test:prop-art": "node tests/prop-art/run.mjs",
+    "test:prop-art": "node tests/prop-art/run.mjs && node tests/prop-art/local.mjs",
     "test:image-assets": "node tests/image-assets/run.mjs && node tests/image-assets/processing.mjs && node tests/image-assets/frontend.mjs && node tests/image-assets/commit-recovery.mjs && node tests/image-assets/settings.mjs",
     "test:image-edit": "node tests/image-edit/core.mjs && node tests/image-edit/targets.mjs && node tests/image-edit/run.mjs && node tests/image-edit/restore.mjs && node tests/image-edit/frontend.mjs && node tests/image-edit/ai.mjs && node tests/image-edit/ai-recovery.mjs && node tests/image-edit/presentation.mjs && node tests/image-edit/transport.mjs",
     "test:image-edit-evaluation": "node tests/image-edit/evaluation.mjs",
@@ -59,7 +59,9 @@
     "test:asset-import": "node tests/asset-import/run.mjs && node tests/asset-import/animation-timing.mjs && node tests/asset-import/image-formats.mjs",
     "test:game-export": "node tests/game-export/run.mjs && node tests/game-export/history.mjs && node tests/game-export/install-lock.mjs",
     "test:asset-packages": "node tests/asset-packages/core.mjs && node tests/asset-packages/catalog.mjs && node tests/asset-packages/http.mjs && node tests/asset-packages/type-loading.mjs",
-    "test:asset-navigation": "node tests/asset-navigation/run.mjs && node tests/asset-navigation/detail.mjs"
+    "test:asset-navigation": "node tests/asset-navigation/run.mjs && node tests/asset-navigation/detail.mjs",
+    "pixel-prop": "node scripts/run-pixel-prop.mjs",
+    "test:pixel-prop": "node scripts/test-pixel-prop.mjs"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",

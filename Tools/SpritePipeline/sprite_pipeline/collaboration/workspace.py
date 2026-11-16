@@ -107,7 +107,7 @@ class OpenMotionWorkspace:
             from .structure_control import freeze_structure
             structure=freeze_structure(self.service,spec.visual_structure,hashlib.sha256(data).hexdigest(), object_type=spec.object_type)
             work = OpenWork(id=uuid.uuid4().hex, request_key=request_key, request_sha256=fingerprint,
-                            spec=spec, character=character.model_dump(mode="json"), reference_sha256=hashlib.sha256(data).hexdigest(),
+                            spec=spec, character=self.service.presets.object_snapshot(character), reference_sha256=hashlib.sha256(data).hexdigest(),
                             created_at=now(), updated_at=now(), planning_authorized=True, auto_execute=auto_execute,
                             planning_config=self.model.configuration,planning_format_version=3,visual_structure=structure,
                             generation_policy_version=DEFAULT_GENERATION_POLICY if spec.provider != 'fixture' else None,
@@ -162,7 +162,7 @@ class OpenMotionWorkspace:
             work.history.append({"revision": work.revision, "title": work.plan.title if work.plan else work.spec.description[:60], "job_id": work.job_id})
             work.revision += 1; work.spec = spec; work.request_key = request_key; work.request_sha256 = fingerprint
             work.version = 3
-            work.character = character.model_dump(mode="json"); work.reference_sha256 = hashlib.sha256(data).hexdigest()
+            work.character = self.service.presets.object_snapshot(character); work.reference_sha256 = hashlib.sha256(data).hexdigest()
             work.plan = None; work.plan_sha256 = None; work.job_id = None
             work.end_targets = []
             work.frame_budget = None

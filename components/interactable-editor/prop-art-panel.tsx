@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
 import type { StoredTask } from '@/lib/workbench/work-items';
+import { propProvenanceLabel } from './prop-reference-tools';
 import type { Asset } from '@/features/interactable-editor/contract.mjs';
 import {
   isPropArtTask,
@@ -54,6 +55,7 @@ export function PropArtPanel({
   const { tasks, refresh } = useWorkbench();
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
+  const [confirmation, setConfirmation] = useState('');
   const [selected, setSelected] = useState<StoredTask | null>(null);
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [motionTarget, setMotionTarget] = useState<{source: string; id: string} | null>(null);
@@ -93,6 +95,7 @@ export function PropArtPanel({
       if (!alive.current || epoch !== selectionEpoch.current) return;
       if (!isPropArtTask(task)) throw new Error('这不是物品原图生成记录。');
       setSelected(task);
+      setConfirmation('');
       setPrompt(
         typeof task.input?.prompt === 'string' ? task.input?.prompt : '',
       );
@@ -209,7 +212,8 @@ export function PropArtPanel({
     try {
       const result = await propArtJson<{status: string; outputs: string[]; error?: string}>('/api/workbench/tasks', {
         method: 'POST', headers: {'content-type': 'application/json'},
-        body: JSON.stringify({capabilityId: 'reference-art', input: {operation: 'transfer', sourceTaskId: selected.id}}),
+        body: JSON.stringify({capabilityId: 'reference-art', input: {operation: 'transfer', sourceTaskId: selected.id,
+          ...(selected.input?.operation !== 'generate' ? {confirmation: {note: confirmation.trim()}} : {})}}),
       });
       const file = result.outputs?.find(value => value.endsWith('/result.json'));
       if (result.status !== 'completed' || !file) throw new Error(result.error || '物品移送未完成。');
@@ -375,14 +379,17 @@ export function PropArtPanel({
                 />
               </div>
               <div className="ie-row">
+                <span>{propProvenanceLabel(selected?.input?.operation === 'generate' ? 'pixellab' : String(selected?.input?.operation))}</span>
                 <a href={artifactUrl(png)} download>
                   <Download size={14} />
                   下载 PNG
                 </a>
                 {motionTarget && motionTarget.source === selectedId
                   ? <a href={`/tools/interactable-motion?object=${motionTarget.id}`} target="_blank" rel="noreferrer">打开交互物动画</a>
-                  : <button disabled={busy || disabled} onClick={() => void transfer()}>移送到交互物动画</button>}
+                  : <button disabled={busy || disabled || (selected?.input?.operation !== 'generate' && confirmation.trim().length < 4)} onClick={() => void transfer()}>移送到交互物动画</button>}
               </div>
+              {selected?.input?.operation !== 'generate' && <label>移送确认说明<textarea aria-label="历史原图移送确认说明" rows={3} maxLength={1000} value={confirmation} disabled={busy || disabled} onChange={e => setConfirmation(e.target.value)} placeholder="核对视角、初始状态、部件完整与透明背景后填写（至少 4 字）" /></label>}
+              {selected?.outputs?.find(p => p.endsWith('/compare.png')) && <a href={artifactUrl(selected.outputs.find(p => p.endsWith('/compare.png'))!)} target="_blank" rel="noreferrer">查看转换对比图</a>}
               <button
                 className="ie-primary"
                 disabled={busy || disabled}

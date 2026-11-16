@@ -191,8 +191,8 @@ export function taskWorkItems(
                   ? input.name
                   : input.operation === 'transfer'
                     ? '原图已移送序列帧'
-                    : input.subject === 'prop' ? '物品原图' : '角色原图',
-              href: propObjectId ? `${interactableMotionRoute}?object=${encodeURIComponent(propObjectId)}` : input.subject === 'prop'
+                    : (input.subject === 'prop' || input.operation === 'convert-prop') ? '物品原图' : '角色原图',
+              href: propObjectId ? `${interactableMotionRoute}?object=${encodeURIComponent(propObjectId)}` : (input.subject === 'prop' || input.operation === 'convert-prop')
                 ? `${modules.find((m) => m.id === 'interactable-editor')?.href || capabilityModule.href}?artTask=${encodeURIComponent(task.id)}`
                 : `${capabilityModule.href}?task=${encodeURIComponent(typeof input.sourceTaskId === 'string' ? input.sourceTaskId : task.id)}`,
             },
@@ -228,7 +228,7 @@ export function taskWorkItems(
       const previous = grouped.get(target.id);
       grouped.set(target.id, {
         ...target,
-        capabilityId: task.capabilityId === 'reference-art' && input.subject === 'prop' ? 'interactable-editor' : capabilityModule.id,
+        capabilityId: task.capabilityId === 'reference-art' && (input.subject === 'prop' || input.operation === 'convert-prop') ? 'interactable-editor' : capabilityModule.id,
         state,
         detail:
           (input.operation === 'save-project' && task.status === 'completed' ? '交互物已保存，可继续编辑；尚未导出' : '') ||

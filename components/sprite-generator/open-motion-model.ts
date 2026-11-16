@@ -12,6 +12,7 @@ export type MotionReferenceObject = {
   facing?: string;
   valid: boolean;
   object_type?: MotionObjectType;
+  provenance?: { type: 'pixellab' | 'import' | 'convert-prop'; referenceSha256?: string };
 };
 export type MotionSpec = MotionObjectIdentity & {
   description: string;
@@ -146,7 +147,7 @@ export type MotionWork = {
   status: string;
   message: string;
   updated_at: string;
-  character: { display_name: string; facing?: string; cell_width: number; object_id?: string; object_type?: MotionObjectType };
+  character: { display_name: string; facing?: string; cell_width: number; object_id?: string; object_type?: MotionObjectType; provenance?: {type: string; referenceSha256?: string} };
   plan: MotionPlan | null;
   plan_sha256: string | null;
   job: MotionJob | null;

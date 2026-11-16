@@ -2,11 +2,11 @@
 
 `reference-art` 是工作台独立能力。它使用 PixelLab Pixflux 生成 64×64 或 128×128 透明背景像素角色，供现有序列帧工作区直接使用。输入和输出以 `workbench/manifest.json` 为准。
 
-物品原图复用本适配器的 `generate`，传入 `subject: prop`，从交互物编辑器制作与采用。`transfer` 按已保存源任务的 subject 分派：角色创建角色预设，128×128 PixelLab 物品创建交互物预设。角色请求省略 subject 保持原行为。详见[物品原图](prop-art.md)。
+物品原图使用本适配器的 `generate` / `import`（`subject: prop`），或 `convert-prop` 本地转换大图，从交互物编辑器制作与采用。`transfer` 按已保存源任务的 subject 分派：角色创建角色预设，128×128 物品创建交互物预设，导入/转换来源须附实际检查的 confirmation。角色请求省略 subject 保持原行为。详见[物品原图](prop-art.md)。
 
 ## 使用流程
 
-1. 用 `npm run dev` 启动完整工作台，在 `/player` 选择“制作角色原图”。此能力复用 SpritePipeline 服务；首次安装仍使用 `npm run sprite-pipeline:setup`，无需增加一套服务或 Python 依赖。
+1. 用 `npm run dev` 启动完整工作台，在 `/player` 选择“制作角色原图”。此能力复用 SpritePipeline 服务；首次安装仍使用 `npm run sprite-pipeline:setup`，同时安装独立 PixelProp 包，无需增加一套服务。
 2. 在原图的 PixelLab 设置中保存 Key；如果已在序列帧设置中保存，无需再输入。两处使用同一个服务实例的受保护凭据，页面只显示配置状态。环境变量 `PIXELLAB_API_KEY` 可覆盖本地存储，启用覆盖时不能从界面修改。
 3. 输入角色描述、可选名称和朝向，点击“生成一张原图”。可选原生 64×64 粗像素或 128×128 精细像素（默认），侧视、透明背景，提示词原样传给 PixelLab；不额外调用付费提示词增强。每次生成都是新的付费任务。
 4. 等待完成，检查人物、武器、朝向及边缘。页面按整数倍显示，下载保持原始 PNG。

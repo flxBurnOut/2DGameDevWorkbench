@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, KeyRound, LoaderCircle, RefreshCw, Sparkles, X } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
 import { ImageEditWorkspace } from '@/components/image-edit/lazy-image-edit-workspace';
+import { PropReferenceTools } from '@/components/interactable-editor/prop-reference-tools';
 import type { StoredTask } from '@/lib/workbench/work-items';
 import { validateImageAssetDimensions } from '@/lib/workbench/image-dimensions.mjs';
 import {
@@ -52,6 +53,7 @@ export function ImageAssetsPanel({
   const [message, setMessage] = useState('');
   const [settingsMessage, setSettingsMessage] = useState('');
   const [localEditTask, setLocalEditTask] = useState<string | null>(null);
+  const [convertTask, setConvertTask] = useState('');
   const actionLock = useRef(false);
   const alive = useRef(true);
   const selectionEpoch = useRef(0);
@@ -250,6 +252,7 @@ export function ImageAssetsPanel({
       <div className="image-assets-preview image-assets-transparent"><img src={imageArtifactUrl(image)} alt="待采用的透明物件" /></div>
       <div className="image-assets-actions"><a href={imageArtifactUrl(image)} download><Download size={14} />下载 PNG</a><button className="image-assets-primary" disabled={disabled || busy || loadingTask} onClick={() => void adopt()}>{adoptionLabel}</button></div>
       <button disabled={disabled || busy || running || loadingTask} onClick={() => void cleanAlpha()}>清理透明噪点（本地，无需额度）</button>
+      {kind === 'prop' && selected && isConvertible(selected) && <button disabled={disabled || busy || loadingTask} onClick={() => setConvertTask(selected.id)}>转换为 128 px 物品原图</button>}
       <button disabled={disabled || busy || running || loadingTask || !!localEditTask} onClick={() => { if (selectedId) { setLocalEditTask(selectedId); onBusy?.(true); } }}>局部调整图片</button>
       <small>采用会替换默认图片并停用默认动画，保留各状态图片、原有素材和行为。</small>
     </>}
@@ -269,5 +272,10 @@ export function ImageAssetsPanel({
       setLocalEditTask(null); onBusy?.(false); void refresh();
       setMessage('局部调整版本已保存，原图保留。检查后可采用到工程。');
     }} />}
+    {convertTask && <PropReferenceTools key={convertTask} objectName={name} initialSourceTaskId={convertTask} disabled={disabled || busy} onBusy={onBusy} beforeSave={beforeGenerate} />}
   </div>;
+}
+
+function isConvertible(task: StoredTask) {
+  return task.input?.operation === 'generate-prop' || (task.input?.operation === 'edit-image' && task.input?.kind === 'prop');
 }

@@ -6,7 +6,7 @@ import { toast } from '@/components/ui/toast';
 import { assetLocationHref, readAssetLocation, type AssetLocation } from '@/lib/workbench/asset-navigation';
 import { AssetPackageImport } from './lazy-dialogs';
 import {offerGodotExport} from '@/lib/workbench/godot-export';
-import { importLink } from '@/lib/workbench/asset-import';
+import { importLink, purposesFor } from '@/lib/workbench/asset-import';
 import { operationLabel } from '@/lib/workbench/work-items';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { ImageEditWorkspace } from '@/components/image-edit/lazy-image-edit-workspace';
@@ -19,6 +19,7 @@ type Asset = {
   kind: string;
   origin?: string;
   attachmentOnly?: boolean;
+  primaryMime?: string | null;
   statusLabel: string;
   availability: string;
   previewKind?: string;
@@ -141,6 +142,8 @@ export function AssetLibrary() {
           ...(page.snapshot ? { snapshot: page.snapshot } : {}),
         });
     void (async () => {
+      setLoading(true);
+      setError('');
       try {
         const response = await fetch(`/api/workbench/assets?${params}`, {
           cache: 'no-store',
@@ -260,8 +263,8 @@ export function AssetLibrary() {
           <button
             className="wb-button"
             aria-busy={loading}
+            disabled={loading}
             onClick={() => {
-              setLoading(true);
               updateListing({ offset: 0, snapshot: '' });
               setReload((v) => v + 1);
               setFailedPreviews([]);
@@ -315,10 +318,10 @@ export function AssetLibrary() {
             ))}
             <div className="wb-tool-links">
               <button className="wb-button" disabled={managing || exporting} onClick={() => { setNotice(''); setPending({ operation: asset.trashedAt ? 'restore' : 'trash', assets: [asset] }); }}>{asset.trashedAt ? '恢复到资产库' : '移入回收站'}</button>
-              {!asset.trashedAt && !asset.attachmentOnly && asset.kind === 'character' && <a className="wb-button" href={importLink('reference-art', 'image', asset.id)}>用作角色参考</a>}
+              {!asset.trashedAt && !asset.attachmentOnly && asset.kind === 'character' && purposesFor(asset, ['image']).some((rule) => rule.targets.includes('reference-art')) && <a className="wb-button" href={importLink('reference-art', 'image', asset.id)}>用作角色参考</a>}
               {!asset.trashedAt && asset.availability === 'available' && asset.id.startsWith('image:') && <button className="wb-button" onClick={() => setLocalEditTask(asset.id.slice('image:'.length))}>局部调整图片</button>}
               {asset.kind === 'interactable' && <a className="wb-button" href={importLink('interactable-editor','interactable',asset.id)}>编辑交互物项目</a>}
-              {!asset.attachmentOnly && ['prop','character'].includes(asset.kind) && <a className="wb-button" href={importLink('interactable-editor','image',asset.id)}>用于交互物外观</a>}
+              {!!purposesFor(asset, ['image']).length && <a className="wb-button" href={importLink('interactable-editor','image',asset.id)}>用于交互物外观</a>}
               {asset.kind === 'animation' && <a className="wb-button" href={importLink('interactable-editor','animation',asset.id)}>用于交互物动画</a>}
               {asset.origin !== 'imported-package' && asset.editorPath && asset.kind !== 'interactable' && (
                 <a className="wb-button" href={editorHref(asset.editorPath, asset.id)}>

@@ -2,11 +2,14 @@ import {
   fetchWorkbenchRuntime,
   runtimeUnavailable,
 } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 export async function GET(
   request: Request,
   context: { params: Promise<{ taskId: string }> },
 ) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   try {
     const { taskId } = await context.params;
     const refresh = new URL(request.url).searchParams.get('refresh') === 'true';

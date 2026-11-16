@@ -2,8 +2,11 @@ import {
   fetchWorkbenchRuntime,
   runtimeUnavailable,
 } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 export async function GET(request: Request) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   const requestedPath = new URL(request.url).searchParams.get('path');
   if (!requestedPath) {
     return Response.json({ error: '缺少产物路径。' }, { status: 400 });

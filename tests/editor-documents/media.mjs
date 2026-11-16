@@ -1,7 +1,7 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
 import { createProject, normalizeProject } from '../../features/interactable-editor/contract.mjs';
@@ -11,7 +11,7 @@ import { documentMediaReferences, parseDocumentMediaReference, documentMediaRefe
 import { DocumentMediaCache } from '../../features/editor-documents/media-cache.mjs';
 import { DocumentSyncController } from '../../features/editor-documents/sync-controller.mjs';
 import { RequestJournal } from '../../features/editor-documents/request-journal.mjs';
-import { createDocument, saveDocument, getDocument, restoreDocument, readDocumentMedia, uploadDocumentMedia, documentDirectory } from '../../lib/workbench/editor-documents.mjs';
+import { applyDocumentCommands, createDocument, saveDocument, getDocument, restoreDocument, readDocumentMedia, uploadDocumentMedia, documentDirectory } from '../../lib/workbench/editor-documents.mjs';
 import { loadManifest, repositoryRoot as root } from '../../lib/workbench/runtime.mjs';
 
 const manifest = await loadManifest(), directory = documentDirectory(root, manifest);
@@ -65,6 +65,64 @@ await assert.rejects(() => readDocumentMedia(root, manifest, imageKey), { code: 
 await assert.rejects(() => getDocument(root, manifest, { documentId: project.projectId }, { media: 'references' }), { code: 'CORRUPT_DOCUMENT_MEDIA' });
 await writeFile(imageFile, png); // Test-only corruption is restored before further checks.
 assert.deepEqual((await readDocumentMedia(root, manifest, imageKey)).bytes, png);
+
+// Full replacement can recover from media belonging only to the broken head.
+// Each case owns its blob namespace so corruption cannot affect other fixtures.
+for (const damage of ['missing', 'corrupt']) for (const operation of ['restore', 'save']) {
+  const recoveryManifest = { ...manifest, workspace: { ...manifest.workspace, documentDirectory: `${manifest.workspace.documentDirectory}/recovery-${damage}-${operation}` } };
+  const clean = createProject(); clean.projectId = `recover-${damage}-${operation}`;
+  await createDocument(root, recoveryManifest, { kind: 'interactable', commandId: 'recovery-create', content: clean });
+  const withMedia = structuredClone(clean);
+  withMedia.assets = [{ id: 'head-only-image', name: 'head-only.png', mime: 'image/png', source: embedded(thumbnail, 'image/png') }];
+  withMedia.objects[0].visual.assetId = 'head-only-image';
+  const broken = (await saveDocument(root, recoveryManifest, { documentId: clean.projectId, expectedRevision: 1, commandId: 'add-head-media', content: withMedia }, { media: 'references' })).document;
+  const media = parseDocumentMediaReference(broken.content.assets[0].source);
+  const file = path.join(documentDirectory(root, recoveryManifest), 'media', media.key);
+  if (damage === 'missing') await unlink(file);
+  else await writeFile(file, Buffer.alloc(thumbnail.length, 9));
+  const mediaCode = damage === 'missing' ? 'DOCUMENT_MEDIA_NOT_FOUND' : 'CORRUPT_DOCUMENT_MEDIA';
+  assert.deepEqual((await getDocument(root, recoveryManifest, { documentId: clean.projectId, revision: 1 })).document.content, clean);
+  await assert.rejects(() => applyDocumentCommands(root, recoveryManifest, { documentId: clean.projectId, expectedRevision: 2, commandId: 'incremental-with-bad-media', commands: [{ type: 'rename', name: 'Keep the broken asset' }] }), { code: mediaCode });
+  const request = { documentId: clean.projectId, expectedRevision: 2, commandId: 'recover-clean-content',
+    ...(operation === 'restore' ? { revision: 1 } : { content: { ...clean, name: 'Clean replacement' } }) };
+  const recover = operation === 'restore' ? restoreDocument : saveDocument;
+  const result = await recover(root, recoveryManifest, request);
+  assert.equal(result.document.revision, 3);
+  assert.equal(result.document.content.assets.length, 0);
+  assert.equal(result.document.contentHash, hash(JSON.stringify(result.document.content)));
+  if (operation === 'restore') assert.equal(result.document.restoredFrom, 1);
+  await assert.rejects(() => recover(root, recoveryManifest, { ...request, commandId: 'stale-recovery' }), { code: 'REVISION_CONFLICT' });
+  await saveDocument(root, recoveryManifest, { documentId: clean.projectId, expectedRevision: 3, commandId: 'after-recovery', content: { ...result.document.content, name: 'Later clean edit' } });
+  const replay = await recover(root, recoveryManifest, request);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.currentRevision, 4);
+  assert.deepEqual(replay.document, result.document, 'recovery replays its original snapshot even after a later edit');
+  const reused = operation === 'restore' ? { ...request, revision: 2 } : { ...request, content: { ...clean, name: 'Changed request' } };
+  await assert.rejects(() => recover(root, recoveryManifest, reused), { code: 'COMMAND_ID_REUSED' });
+  await assert.rejects(() => restoreDocument(root, recoveryManifest, { documentId: clean.projectId, expectedRevision: 4, commandId: 'restore-bad-target', revision: 2 }), { code: mediaCode });
+  await assert.rejects(() => saveDocument(root, recoveryManifest, { documentId: clean.projectId, expectedRevision: 4, commandId: 'save-bad-content', content: broken.content }), { code: mediaCode });
+  await assert.rejects(() => saveDocument(root, recoveryManifest, { documentId: clean.projectId, expectedRevision: 4, commandId: 'save-wrong-identity', content: { ...clean, projectId: 'different-project' } }), /identity/);
+  assert.equal((await getDocument(root, recoveryManifest, { documentId: clean.projectId, metadataOnly: true })).document.revision, 4, 'rejected recovery targets cannot advance the head');
+}
+
+// Replacement still reads and verifies the current immutable snapshot, even
+// when its media is no longer needed. Rehashing the envelope cannot bypass its
+// document identity or contentHash checks.
+for (const damagedField of ['id', 'contentHash']) {
+  const clean = createProject(); clean.projectId = `replacement-snapshot-${damagedField}`;
+  await createDocument(root, manifest, { kind: 'interactable', commandId: 'snapshot-create', content: clean });
+  await saveDocument(root, manifest, { documentId: clean.projectId, expectedRevision: 1, commandId: 'snapshot-edit', content: { ...clean, name: 'Current snapshot' } });
+  const snapshotDirectory = path.join(directory, `document-${hash(clean.projectId).slice(0, 40)}`);
+  const headPath = path.join(snapshotDirectory, 'head.json'), head = JSON.parse(await readFile(headPath, 'utf8'));
+  const snapshot = JSON.parse(await readFile(path.join(snapshotDirectory, head.versions[1].file), 'utf8'));
+  snapshot[damagedField] = damagedField === 'id' ? 'another-document' : '0'.repeat(64);
+  const bytes = JSON.stringify(snapshot) + '\n', sha256 = hash(bytes), file = `versions/2-${sha256}.json`;
+  await writeFile(path.join(snapshotDirectory, file), bytes);
+  Object.assign(head.versions[1], { file, sha256 });
+  await writeFile(headPath, JSON.stringify(head));
+  await assert.rejects(() => restoreDocument(root, manifest, { documentId: clean.projectId, expectedRevision: 2, commandId: 'restore-corrupt-head', revision: 1 }), { code: 'CORRUPT_DOCUMENT' });
+  await assert.rejects(() => saveDocument(root, manifest, { documentId: clean.projectId, expectedRevision: 2, commandId: 'save-over-corrupt-head', content: clean }), { code: 'CORRUPT_DOCUMENT' });
+}
 
 // Private candidates use a separate blob namespace, including their previews.
 const privateManifest = { ...manifest, workspace: { ...manifest.workspace, documentDirectory: `${manifest.workspace.documentDirectory}/private-candidate` } };
@@ -163,4 +221,4 @@ assert.equal(controller.getState().status, 'synced');
 assert.equal(sent.commandId, 'legacy-save-body'); assert.deepEqual(sent.content, oldBody);
 assert.equal(await journal.pending(), null);
 controller.dispose();
-console.log('Document media passed: compact histories, blob reuse, integrity, provenance, private candidates, old snapshots/replay, self-contained packages, offline browser drafts and original pending bodies.');
+console.log('Document media passed: compact histories, blob reuse, integrity, provenance, bad-head recovery with strict replacement validation, private candidates, old snapshots/replay, self-contained packages, offline browser drafts and original pending bodies.');

@@ -1,5 +1,6 @@
 import type { RegionSpec } from './core.mjs';
 import type { PixelSpan } from './pixel-controller.mjs';
+import { createLocalHistoryGuard } from '@/lib/workbench/browser-store';
 import { appearanceAnimation, type Interactable } from '../interactable-editor/contract.mjs';
 
 export type ImageTargetRef =
@@ -253,26 +254,35 @@ export async function listImagePixelDrafts(editId: string) {
   }); } finally { database.close(); }
 }
 const draftWrites = new Map<string, Promise<void>>();
-async function writeImagePixelDraft(draft: ImagePixelDraft | null, key: string) {
+async function writeImagePixelDraft(draft: ImagePixelDraft | null, key: string, assertCurrent: () => void) {
+  assertCurrent();
   if (draft && new TextEncoder().encode(JSON.stringify(draft)).byteLength > 2 * 1024 * 1024) throw new Error('本机草稿超过 2 MiB；请先保存笔划为候选。');
   const database = await draftDatabase();
   try { await new Promise<void>((resolve, reject) => {
+    assertCurrent();
     const transaction = database.transaction('drafts', 'readwrite');
     const store = transaction.objectStore('drafts');
+    let failure: unknown;
     if (draft) {
       const read = store.getAllKeys();
       read.onsuccess = () => {
-        if (read.result.length >= 12 && !read.result.includes(key)) { transaction.abort(); reject(new Error('本机已保留 12 份笔划草稿；请先保存或明确删除旧草稿。')); }
-        else store.put(draft);
+        try {
+          assertCurrent();
+          if (read.result.length >= 12 && !read.result.includes(key)) throw new Error('本机已保留 12 份笔划草稿；请先保存或明确删除旧草稿。');
+          store.put(draft);
+        } catch (cause) { failure = cause; transaction.abort(); }
       };
     } else store.delete(key);
-    transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error);
+    transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(failure || transaction.error);
+    transaction.onabort = () => reject(failure || transaction.error || new Error('本机笔划草稿保存已中断，请重试。'));
   }); } finally { database.close(); }
 }
 /** Serialize cleanup behind prior writes so a late draft cannot resurrect after saving. */
 export async function saveImagePixelDraft(draft: ImagePixelDraft | null, key: string) {
+  const assertCurrent = createLocalHistoryGuard();
+  assertCurrent();
   const previous = draftWrites.get(key) || Promise.resolve();
-  const pending = previous.catch(() => undefined).then(() => writeImagePixelDraft(draft, key));
+  const pending = previous.catch(() => undefined).then(() => writeImagePixelDraft(draft, key, assertCurrent));
   draftWrites.set(key, pending);
   try { await pending; } finally { if (draftWrites.get(key) === pending) draftWrites.delete(key); }
 }

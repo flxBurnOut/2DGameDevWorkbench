@@ -100,7 +100,7 @@ export function WorkbenchManagement() {
       )
     : visible[0];
   const tasks = wb.tasks.filter((task) => item?.taskIds?.includes(task.id));
-  const resultTaskId = requestedTask || tasks.at(-1)?.id;
+  const resultTaskId = requestedTask || tasks[0]?.id;
   return (
     <main className="wb-page wb-advanced">
       <div className="wb-page-heading">

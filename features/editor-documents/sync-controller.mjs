@@ -184,11 +184,15 @@ export class DocumentSyncController {
   async retry() {
     if (this.saving || this.disposed || this.options.busy()) return;
     try {
+      this.saving = true;
+      try {
+        const wasInitialized = this.initialized;
+        // Failed storage reads must restore the baseline and original request
+        // before reconciliation can classify drafts or allocate another ID.
+        await this.initialize();
+        if (wasInitialized && !this.pending) await this.reconcile();
+      } finally { this.finishOperation(); }
       // Retry an uncertain submission with the exact command ID and content.
-      if (!this.pending) {
-        this.saving = true;
-        try { await this.reconcile(); } finally { this.finishOperation(); }
-      }
       await this.sync();
     } catch (error) { this.update({ status: 'offline', message: `连接未恢复：${error.message}` }); }
   }

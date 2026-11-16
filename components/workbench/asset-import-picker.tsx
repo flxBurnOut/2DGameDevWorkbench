@@ -21,6 +21,7 @@ import {
   type ImportBundle,
   type LibraryAsset,
 } from '@/lib/workbench/asset-import';
+import { importPurposeIssue } from '@/lib/workbench/asset-import-contract.mjs';
 
 type Catalog = {
   assets: LibraryAsset[];
@@ -139,6 +140,9 @@ export function AssetImportPicker({
   const visible = (catalog?.assets || []).filter(
     (asset) => (!kind || asset.kind === kind) && (!motionSource || motionSource === asset.motionSource) && purposesFor(asset, purposes).length,
   );
+  const initialRow = catalog?.assets[0];
+  const initialIssue = initialAsset && initialRow
+    ? purposes.map((purpose) => importPurposeIssue(initialRow, purpose)).find(Boolean) : '';
   return (
     <Dialog
       open={open}
@@ -195,7 +199,7 @@ export function AssetImportPicker({
         </div>
         {!loading && !visible.length && (
           <p>
-            没有匹配的适用素材，可调整搜索条件或在资产库导入素材包。选用外观或动画后，可在交互物编辑器配置行为并导出。
+            {initialIssue || '没有匹配的适用素材，可调整搜索条件或在资产库导入素材包。选用外观或动画后，可在交互物编辑器配置行为并导出。'}
           </p>
         )}
         <div className="wb-tool-links">

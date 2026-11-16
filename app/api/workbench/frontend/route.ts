@@ -1,7 +1,8 @@
 import { fetchWorkbenchRuntime, runtimeUnavailable } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 export async function POST(request: Request) {
-  const origin = request.headers.get('origin');
-  if (origin && origin !== new URL(request.url).origin) return Response.json({ error: 'Invalid origin.' }, { status: 403 });
+  const denied = trustedRequest(request, { json: true });
+  if (denied) return denied;
   try {
     const body = await request.text();
     if (body.length > 16_384) return Response.json({ error: 'Page context is too large.' }, { status: 413 });

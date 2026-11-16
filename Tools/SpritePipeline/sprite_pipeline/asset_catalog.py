@@ -13,6 +13,23 @@ from .errors import ConflictError, NotFoundError, ValidationHarnessError
 from .jsonio import inside
 
 
+def _image_file_mime(path: Path) -> str | None:
+    try:
+        with path.open('rb') as source:
+            header = source.read(16)
+    except OSError:
+        return None
+    if header.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if header.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if header.startswith(b'RIFF') and header[8:12] == b'WEBP':
+        return 'image/webp'
+    if header.startswith((b'GIF87a', b'GIF89a')):
+        return 'image/gif'
+    return None
+
+
 class AssetCatalog:
     def __init__(self, service):
         self.service = service
@@ -38,6 +55,7 @@ class AssetCatalog:
                 "candidateCount": job.get("candidate_count"), "frameCount": material.get("frame_count"),
                 "previewKind": "animation" if source and source.suffix.lower() == ".gif" else "image",
                 "hasArtwork": True, "engineValidated": False,
+                **({"primaryMime": _image_file_mime(Path(row['fallback']))} if row['kind'] in ('character', 'prop') else {}),
             })
         for job in summaries.values():
             for saved in job.get("state_assets", []):
@@ -45,6 +63,7 @@ class AssetCatalog:
                 path = self.service.store.resolve_job_path(job['job_id'], row.pop('previewPath'))
                 rows.append(dict(row, status='approved', statusLabel='已确认状态图' if row['kind'] == 'prop' else '已确认过渡',
                                  createdAt=job['created_at'], updatedAt=job['updated_at'], previewKind='image',
+                                 **({'primaryMime': _image_file_mime(path)} if row['kind'] == 'prop' else {}),
                                  availability='available' if path.is_file() else 'missing', hasArtwork=True))
         from .collaboration.derived_assets import DerivedAssets
         rows.extend(DerivedAssets(self.service).catalog_rows())

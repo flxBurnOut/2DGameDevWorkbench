@@ -1,7 +1,10 @@
 import { fetchWorkbenchRuntime, runtimeUnavailable } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 const operations = new Set(['inspect', 'resolve', 'part-context', 'part-get', 'part-suggest', 'plan-prepare', 'plan-get', 'review-record', 'critic-prepare','critic-get','critic-run','edit', 'apply', 'session-create', 'session-get']);
 export async function POST(request: Request, context: { params: Promise<{ operation: string }> }) {
+  const denied = trustedRequest(request, { json: true });
+  if (denied) return denied;
   const { operation } = await context.params;
   if (!operations.has(operation)) return Response.json({ error: 'Unknown image edit operation.' }, { status: 404 });
   try {

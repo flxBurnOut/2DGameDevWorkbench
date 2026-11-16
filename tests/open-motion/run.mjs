@@ -179,11 +179,11 @@ try {
   assert.deepEqual(adjustmentAttemptBudget(attemptContext,13,14).blocked,[14]);
   assert.equal(adjustmentAttemptBudget(attemptContext,14,15).remaining,2);
   const proxy=await vite.ssrLoadModule('/app/api/workbench/open-motion/route.ts');
-  assert.equal((await proxy.GET(new Request('http://localhost/api/workbench/open-motion?path=../secrets'))).status,400);
-  assert.equal((await proxy.POST(new Request('http://localhost/api/workbench/open-motion',{method:'POST',headers:{origin:'https://foreign.example'},body:'{}'}))).status,403);
-  const proxied=await proxy.GET(new Request(`http://localhost/api/workbench/open-motion?path=open-motion/${workId}`));
+  assert.equal((await proxy.GET(new Request('http://localhost:3000/api/workbench/open-motion?path=../secrets'))).status,400);
+  assert.equal((await proxy.POST(new Request('http://localhost:3000/api/workbench/open-motion',{method:'POST',headers:{origin:'https://foreign.example'},body:'{}'}))).status,403);
+  const proxied=await proxy.GET(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}`));
   assert.equal(proxied.status,200); assert.equal((await proxied.json()).id,workId);
-  const checkpointImage=await proxy.GET(new Request(`http://localhost/api/workbench/open-motion?path=open-motion/${workId}/candidates/1/stages/0/frames/3`));
+  const checkpointImage=await proxy.GET(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/candidates/1/stages/0/frames/3`));
   assert.equal(checkpointImage.status,200);assert.match(checkpointImage.headers.get('content-type'),/image\/png/);
   // Independent preference alternative: read context, submit once, poll same receipt,
   // compare exact files and adopt a derived version without touching source bytes.
@@ -209,7 +209,7 @@ try {
   assert.equal(alternative.adjustment.planning_calls.length,1);assert.equal(alternative.adjustment.review_calls.length,5);
   assert.equal(alternative.originalFrames.length,8);assert.equal(alternative.alternativeFrames.length,8);
   for(const i of [0,3,4,5,6,7])assert.deepEqual(await readFile(alternative.originalFrames[i]),await readFile(alternative.alternativeFrames[i]));
-  const imageProxy=await proxy.GET(new Request(`http://localhost/api/workbench/open-motion?path=open-motion/${workId}/adjustments/${alternative.adjustmentId}/proposed/1`));
+  const imageProxy=await proxy.GET(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/adjustments/${alternative.adjustmentId}/proposed/1`));
   assert.equal(imageProxy.status,200);
   const before=await request(`/v1/open-motion/${workId}`);
   const adopted=await runConnector(manifest,capability,{operation:'review-motion-adjustment',openWorkId:workId,expectedRevision:1,

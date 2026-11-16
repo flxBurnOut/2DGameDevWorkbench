@@ -1,4 +1,5 @@
 import manifest from '@/workbench/manifest.json';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 // Deliberately bounded proxy: no arbitrary URL, path, header or method passthrough.
 const work = '[0-9a-f]{32}';
@@ -15,16 +16,12 @@ const write = new RegExp(
 );
 
 async function proxy(request: Request) {
+  const denied = trustedRequest(request, { json: request.method !== 'GET' });
+  if (denied) return denied;
   const url = new URL(request.url);
   const path = url.searchParams.get('path') || 'open-motion';
   if (!(request.method === 'GET' ? read.test(path) || structureRead.test(path) || temporalRead.test(path) : write.test(path) || structureWrite.test(path) || temporalWrite.test(path)))
     return Response.json({ error: '不支持的工作区操作' }, { status: 400 });
-  if (
-    request.method !== 'GET' &&
-    request.headers.get('origin') &&
-    request.headers.get('origin') !== url.origin
-  )
-    return Response.json({ error: '请从工作台页面执行操作' }, { status: 403 });
   const connector = manifest.capabilities.find(
     (c) => c.id === 'sprite-generator',
   )!.connector;

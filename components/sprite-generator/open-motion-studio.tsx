@@ -33,6 +33,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useWorkbenchActions } from '@/components/workbench/workbench-provider';
+import { SourceAssetLink } from '@/components/workbench/shared-navigation';
 import {
   publishEditorSession,
   removeEditorSession,
@@ -555,6 +556,10 @@ function OpenMotionStudio({
   return (
     <div className="motion-studio" data-sprite-editor>
       <header className="motion-header">
+        <span className="motion-work">
+          <strong title={pageTitle}>{pageTitle}</strong>
+          <SourceAssetLink />
+        </span>
         <nav className="motion-steps" aria-label="角色动画制作阶段">
           {motionSteps.map((name, i) => (
             <button

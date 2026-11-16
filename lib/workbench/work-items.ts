@@ -62,6 +62,33 @@ export function workItemTitle(item: Pick<WorkItem, 'title'>, toolName = '未命�
   return parts.join(' · ') || toolName;
 }
 
+const statusMessages: Record<number, string> = {
+  400: '请求内容不完整，请在工具中检查后重试',
+  401: '没有访问权限，请检查服务配置',
+  403: '没有访问权限，请检查服务配置',
+  404: '作品已不存在或已被移除',
+  409: '版本已变化，请刷新后重试',
+  429: '服务繁忙，请稍后重试',
+  502: '服务繁忙，请稍后重试',
+  503: '服务暂时不可用，请稍后重试',
+  504: '服务响应超时，请稍后重试',
+};
+
+/**
+ * Record detail for people: adapter errors such as `Adapter returned HTTP 404: …`
+ * become a short Chinese sentence; the original text stays available as `raw`.
+ */
+export function workItemDetail(detail: string): { text: string; raw?: string } {
+  const match = /^Adapter returned HTTP (\d{3})(?::\s*([\s\S]*))?$/.exec(detail.trim());
+  if (!match) return { text: detail };
+  const status = Number(match[1]);
+  const message = match[2]?.trim() || '';
+  const text = /[\u4e00-\u9fff]/.test(message)
+    ? message
+    : statusMessages[status] || (status >= 500 ? '服务出错，请稍后重试' : '请求失败，请在工具中查看');
+  return { text, raw: detail };
+}
+
 export const workStateLabels: Record<WorkItemState, string> = {
   saved: '已保存，可继续',
   editing: '正在编辑',

@@ -67,8 +67,10 @@ function useWorkbenchState() {
   const [refreshing, setRefreshing] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
-  // Current work shown at the end of the header breadcrumb, set by the page.
+  // Name of the current work, set by the tool page and shown in its own toolbar.
   const [pageTitle, setPageTitle] = useState('');
+  // Destination of a navigation that is saving or loading, for header feedback.
+  const [pendingHref, setPendingHref] = useState('');
   const refreshLock = useRef(false);
   const history = useRef<TaskHistory | undefined>(undefined);
   const generating = useRef(false);
@@ -188,10 +190,15 @@ function useWorkbenchState() {
     navigating.current = true;
     window.dispatchEvent(new Event('workbench:manual-navigation'));
     setNavigationError('');
+    setPendingHref(href);
     try {
       await saveBeforeNavigation();
       window.location.assign(href);
+      // The page normally unloads; if the browser kept it (a cancelled leave
+      // prompt), stop showing progress rather than spinning forever.
+      setTimeout(() => setPendingHref(''), 10000);
     } catch (error) {
+      setPendingHref('');
       setNavigationError(
         error instanceof Error ? error.message : '保存未完成，请先保存源文件。',
       );
@@ -230,15 +237,19 @@ function useWorkbenchState() {
       event.preventDefault();
       void navigate(url.href);
     };
+    // Returning through the back/forward cache restores the old page state.
+    const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) setPendingHref(''); };
     const onUnload = (event: BeforeUnloadEvent) => {
       if (getEditorSessions().some((s) => s.dirty || s.busy))
         event.preventDefault();
     };
     document.addEventListener('click', onClick, true);
     window.addEventListener('beforeunload', onUnload);
+    window.addEventListener('pageshow', onPageShow);
     return () => {
       document.removeEventListener('click', onClick, true);
       window.removeEventListener('beforeunload', onUnload);
+      window.removeEventListener('pageshow', onPageShow);
     };
   }, [navigate]);
   const items = useMemo(() => {
@@ -285,6 +296,7 @@ function useWorkbenchState() {
     setQueueOpen,
     pageTitle,
     setPageTitle,
+    pendingHref,
   };
 }
 

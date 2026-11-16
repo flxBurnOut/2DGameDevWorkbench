@@ -1,7 +1,8 @@
 'use client';
 /* oxlint-disable next/no-html-link-for-pages -- Native navigation is saved and guarded by WorkbenchProvider. */
 import { useState, type ReactNode } from 'react';
-import { ArrowRight, Box, ExternalLink, Layers3 } from 'lucide-react';
+import { ArrowRight, Box, ExternalLink, Layers3, RefreshCw } from 'lucide-react';
+import { Tooltip } from '@/components/ui/tooltip';
 import {
   Dialog,
   DialogContent,
@@ -10,7 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useWorkbench } from './workbench-provider';
-import { workItemTitle, workStateLabels, type WorkItem } from '@/lib/workbench/work-items';
+import { workItemDetail, workItemTitle, workStateLabels, type WorkItem } from '@/lib/workbench/work-items';
 import { ModuleIcon } from './module-icon';
 import { SharedWorkbenchNavigation, useRecordSummary } from './shared-navigation';
 import { currentWorkbenchPage } from '@/lib/workbench/navigation';
@@ -23,6 +24,7 @@ export function WorkbenchChrome({ children }: { children: ReactNode }) {
     <div className="wb-app">
       <header className="wb-header">
         <SharedWorkbenchNavigation />
+        {wb.pendingHref && <span className="wb-nav-progress"><progress aria-label="正在打开页面" /></span>}
       </header>
       {(wb.navigationError || wb.storageError) && (
         <div className="wb-alert" role="alert">
@@ -53,6 +55,7 @@ export function WorkbenchChrome({ children }: { children: ReactNode }) {
 export function WorkItemRow({ item }: { item: WorkItem }) {
   const wb = useWorkbench();
   const capabilityModule = wb.modules.find((m) => m.id === item.capabilityId);
+  const detail = workItemDetail(item.detail);
   return (
     <article className="wb-work-row">
       <span className="wb-work-icon" data-accent={capabilityModule?.accent}>
@@ -64,8 +67,8 @@ export function WorkItemRow({ item }: { item: WorkItem }) {
       </span>
       <div className="wb-work-copy">
         <strong title={item.title}>{workItemTitle(item, capabilityModule?.name)}</strong>
-        <span>
-          {capabilityModule?.entryTitle} · {item.detail}
+        <span title={detail.raw}>
+          {capabilityModule?.entryTitle} · {detail.text}
         </span>
         <small>
           {item.savedAt
@@ -73,8 +76,7 @@ export function WorkItemRow({ item }: { item: WorkItem }) {
             : `更新于 ${formatTime(item.updatedAt)}`}
         </small>
       </div>
-      <span className="wb-state" data-state={item.state}>
-        <i />
+      <span className="wb-pill" data-state={item.state}>
         {workStateLabels[item.state]}
       </span>
       <a className="wb-button" href={item.href}>
@@ -126,7 +128,6 @@ function ProductionRecords() {
             </DialogDescription>
           </DialogHeader>
           <div className="wb-record-tabs">
-            <a className="wb-button wb-ghost" href="/advanced?tab=data">管理本机数据</a>
             <fieldset className="ui-segmented" aria-label="记录范围">
               <button
                 className="wb-button"
@@ -143,14 +144,17 @@ function ProductionRecords() {
                 已完成 · {wb.items.length - active.length}
               </button>
             </fieldset>
-            <button
-              className="wb-button wb-ghost"
-              onClick={() => void wb.refresh()}
-              disabled={wb.refreshing}
-              aria-busy={wb.refreshing}
-            >
-              {wb.refreshing ? '刷新中…' : '刷新'}
-            </button>
+            <Tooltip label={wb.refreshing ? '正在刷新' : '刷新记录'}>
+              <button
+                className="wb-icon-button wb-records-refresh"
+                onClick={() => void wb.refresh()}
+                disabled={wb.refreshing}
+                aria-label="刷新记录"
+                data-spinning={wb.refreshing || undefined}
+              >
+                <RefreshCw size={16} />
+              </button>
+            </Tooltip>
           </div>
           {offline && (
             <output className="wb-notice">
@@ -173,6 +177,10 @@ function ProductionRecords() {
               </div>
             )}
           </div>
+          <a className="wb-text-button wb-records-manage" href="/advanced?tab=data">
+            管理本机数据
+            <ArrowRight size={14} />
+          </a>
         </DialogContent>
       </Dialog>
     </>

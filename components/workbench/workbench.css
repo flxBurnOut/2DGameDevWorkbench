@@ -40,7 +40,6 @@
 }
 .wb-app .wb-theme-toggle:hover { color: var(--theme-accent); background: var(--theme-accent-soft); }
 .wb-app .wb-theme-toggle:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
-@media (max-width: 1099px) { .wb-header .wb-theme-toggle span { display: none; } }
 .wb-app:has([data-sprite-editor]) > .wb-route {
   overflow: hidden;
 }
@@ -69,12 +68,11 @@
   outline-offset: 2px;
 }
 .wb-header {
+  position: relative;
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 18px;
+  align-items: stretch;
   min-height: 56px;
-  padding: 8px 20px;
+  padding: 0 16px 0 20px;
   background: var(--theme-panel);
   border-bottom: 1px solid var(--wb-line);
   flex-shrink: 0;
@@ -82,63 +80,174 @@
 }
 .wb-shared-navigation {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: stretch;
+  gap: 20px;
   min-width: 0;
   flex: 1;
 }
-.wb-shared-navigation .wb-home-link,
-.motion-studio .wb-shared-navigation .wb-home-link {
-  border: 0;
-  background: transparent;
-  padding: 0;
-  color: var(--theme-text);
+.wb-shared-navigation .wb-home-link {
+  align-self: center;
   border-radius: var(--ui-radius-sm);
 }
-.wb-workspace-trigger { white-space: nowrap; }
-.wb-workspace-menu {
-  width: 260px;
-  max-width: calc(100vw - 24px);
-  color: var(--theme-text);
-  background: var(--theme-panel);
-  border: 1px solid var(--theme-border);
+/* Primary navigation: the current page is underlined at the header edge. */
+.wb-nav {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
 }
-.wb-workspace-menu [role^='menuitem'] { min-height: 34px; padding: 6px 12px; }
-.wb-workspace-menu [aria-current='page'],
-.wb-workspace-menu [data-active='true'] { color: var(--theme-accent); background: var(--theme-accent-soft); }
-.wb-nav button {
-  padding: 7px 12px;
-  border: 0;
-  border-radius: var(--ui-radius-sm);
-  color: var(--wb-muted);
-  background: transparent;
-  font: inherit;
-  white-space: nowrap;
-}
-.wb-nav button:hover,
-.wb-nav button[aria-current='page'] { background: var(--wb-soft); color: var(--wb-accent); }
-.wb-breadcrumb button,
-.motion-studio .wb-breadcrumb button {
+.wb-nav a {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--ui-radius-sm);
-  background: transparent;
-  color: var(--theme-muted);
-  font: inherit;
+  gap: 7px;
+  padding: 0 12px;
+  color: var(--wb-muted);
   white-space: nowrap;
 }
-.wb-breadcrumb button:hover { color: var(--theme-accent); }
-.wb-breadcrumb-parent { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.wb-breadcrumb-current { flex-shrink: 0; color: var(--wb-text); }
-.wb-breadcrumb > strong { min-width: 40px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; color: var(--wb-text); }
-.wb-breadcrumb > svg { flex-shrink: 0; }
-.wb-source-link { color: var(--theme-accent) !important; margin-left: 6px; }
+.wb-nav a > svg {
+  opacity: 0.8;
+}
+.wb-nav a::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  transition: background-color var(--ui-duration) var(--ui-ease);
+}
+.wb-nav a:hover {
+  color: var(--wb-text);
+  background: var(--ui-hover-bg);
+}
+.wb-nav a[aria-current='page'] {
+  color: var(--wb-text);
+  font-weight: 600;
+}
+.wb-nav a[aria-current='page'] > svg {
+  color: var(--wb-accent);
+  opacity: 1;
+}
+.wb-nav a[aria-current='page']::after {
+  background: var(--wb-accent);
+}
+.wb-nav a[data-pending] {
+  color: var(--wb-text);
+  background: var(--ui-press-bg);
+}
+.wb-nav a:focus-visible {
+  outline-offset: -2px;
+}
+.wb-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
 .wb-header-actions .wb-button { position: relative; }
+.wb-icon-button,
+.wb-app .wb-header .wb-theme-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-md);
+  color: var(--wb-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.wb-icon-button:hover:not(:disabled),
+.wb-app .wb-header .wb-theme-toggle:hover {
+  color: var(--wb-text);
+  background: var(--ui-hover-bg);
+}
+.wb-icon-button:active:not(:disabled) {
+  background: var(--ui-press-bg);
+}
+.wb-icon-button[aria-current='page'],
+.wb-icon-button[aria-expanded='true'] {
+  color: var(--ui-selected-fg);
+  background: var(--ui-selected-bg);
+}
 .wb-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--ui-radius-lg); font-size: var(--ui-text-xs); line-height: 18px; font-weight: 600; text-align: center; color: var(--theme-on-primary); background: var(--theme-primary); }
 .wb-badge[data-tone='attention'] { color: var(--theme-warning); background: var(--theme-warning-soft); }
+/* Something is generating: a quiet pulse instead of a number. */
+.wb-badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--theme-accent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--theme-accent) 50%, transparent);
+  animation: wb-pulse-ring 1.6s ease-out infinite;
+}
+@keyframes wb-pulse-ring {
+  to {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+/* Opening another page: an indeterminate bar along the header's bottom edge. */
+.wb-nav-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--theme-accent) 18%, transparent);
+}
+/* The native element announces progress; the bar above is drawn by CSS. */
+.wb-nav-progress > progress {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.wb-nav-progress::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: var(--theme-accent);
+  animation: wb-progress 1s var(--ui-ease) infinite;
+}
+@keyframes wb-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+/* Shown inside tool toolbars, so it outranks each tool's generic button rule. */
+.wb-app button.wb-source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--ui-radius-md);
+  color: var(--theme-accent);
+  background: transparent;
+  font: inherit;
+  font-size: var(--ui-text-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.wb-app button.wb-source-link {
+  min-height: 0;
+}
+.wb-app button.wb-source-link:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--ui-selected-bg);
+}
 .wb-width-notice { display: none; }
 .wb-save-locations { display: grid; grid-template-columns: 90px 1fr; gap: 10px 16px; font-size: var(--ui-text-sm); }
 .wb-save-locations dt { font-weight: 600; }
@@ -165,27 +274,6 @@
   line-height: 1.05;
   font-weight: 650;
   letter-spacing: -0.055em;
-}
-.wb-nav {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  flex: 1;
-}
-.wb-nav a {
-  padding: 7px 12px;
-  border-radius: var(--ui-radius-sm);
-  color: var(--wb-muted);
-}
-.wb-nav a:hover,
-.wb-nav a[aria-current='page'] {
-  background: var(--wb-soft);
-  color: var(--wb-accent);
-}
-.wb-header-actions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
 }
 .wb-button {
   display: inline-flex;
@@ -237,10 +325,7 @@
   border-color: transparent;
   color: var(--wb-text);
 }
-.wb-header-actions .wb-button[aria-current='page'] {
-  color: var(--ui-selected-fg);
-  background: var(--ui-selected-bg);
-}
+
 [data-accent='cyan'] .wb-primary {
   background: var(--theme-cyan-strong);
   border-color: var(--theme-cyan-strong);
@@ -598,52 +683,6 @@
 .wb-text-button:hover {
   color: var(--wb-accent);
 }
-.wb-breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  flex-wrap: nowrap;
-  font-size: var(--ui-text-sm);
-  color: var(--wb-muted);
-}
-.wb-breadcrumb a {
-  color: var(--wb-muted);
-}
-.wb-breadcrumb a:hover {
-  color: var(--wb-accent);
-}
-.wb-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  white-space: nowrap;
-  font-size: var(--ui-text-xs);
-  color: var(--wb-muted);
-}
-.wb-state i {
-  height: 6px;
-  width: 6px;
-  border-radius: var(--ui-radius-sm);
-  background: var(--theme-muted);
-  flex-shrink: 0;
-}
-.wb-state[data-state='running'] i {
-  background: var(--theme-accent);
-}
-.wb-state[data-state='attention'] i {
-  background: var(--theme-warning);
-}
-.wb-state[data-state='completed'] i {
-  background: var(--theme-success);
-}
-.wb-state[data-state='saved'] i {
-  background: var(--theme-cyan);
-}
-.wb-state[data-state='editing'] i {
-  background: var(--theme-blue);
-}
 .wb-dialog {
   width: min(900px, calc(100vw - 32px));
   max-width: min(900px, calc(100vw - 32px)) !important;
@@ -695,8 +734,32 @@
 }
 .wb-record-tabs {
   display: flex;
+  align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+.wb-records-refresh {
+  margin-left: auto;
+}
+.wb-records-refresh[data-spinning] svg {
+  animation: ui-spin 0.8s linear infinite;
+}
+.wb-records-manage {
+  justify-self: start;
+  gap: 4px;
+  font-size: var(--ui-text-sm);
+}
+.wb-save-details > summary {
+  width: fit-content;
+  color: var(--wb-muted);
+  font-size: var(--ui-text-sm);
+  cursor: pointer;
+}
+.wb-save-details > summary:hover {
+  color: var(--wb-text);
+}
+.wb-save-details[open] > summary {
+  margin-bottom: 10px;
 }
 .wb-records {
   min-height: 100px;
@@ -889,14 +952,19 @@
 /* Two layout steps only: below the supported desktop width (1100px), and phone width. */
 @media (max-width: 1099px) {
   .wb-header {
-    gap: 10px;
-    padding-inline: 16px;
+    padding-inline: 12px;
+  }
+  .wb-shared-navigation {
+    gap: 8px;
+  }
+  .wb-nav a {
+    padding-inline: 9px;
+  }
+  .wb-nav a > svg {
+    display: none;
   }
   .wb-header-actions .wb-button > span:not(.wb-badge) {
     display: none;
-  }
-  .wb-header-actions {
-    margin-left: auto;
   }
   .wb-width-notice {
     display: block;
@@ -910,27 +978,11 @@
   }
 }
 @media (max-width: 700px) {
-  .wb-header {
-    padding: 8px 12px;
-    gap: 6px;
-  }
   .wb-brand strong {
     display: none;
   }
-  .wb-shared-navigation {
-    gap: 4px;
-  }
   .wb-nav {
-    display: none;
-  }
-  .wb-breadcrumb-parent {
-    display: none;
-  }
-  .wb-header-actions {
-    gap: 0;
-  }
-  .wb-header-actions .wb-button {
-    padding: 6px;
+    overflow-x: auto;
   }
   .wb-page {
     padding: 24px 16px;
@@ -961,7 +1013,7 @@
   .wb-dialog [data-slot='dialog-title'] {
     font-size: var(--ui-text-lg);
   }
-  .wb-work-row > .wb-state {
+  .wb-work-row > .wb-pill {
     margin-left: 54px;
   }
   .wb-alert {
@@ -983,8 +1035,13 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .wb-spin {
+  .wb-spin,
+  .wb-badge-dot,
+  .wb-records-refresh[data-spinning] svg {
     animation: none;
+  }
+  .wb-nav-progress::before {
+    animation-duration: 3s;
   }
   .wb-skeleton {
     animation: none;

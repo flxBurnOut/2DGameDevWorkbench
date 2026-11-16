@@ -11,6 +11,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
+import { SourceAssetLink } from '@/components/workbench/shared-navigation';
 import { AssetImportPicker } from '@/components/workbench/lazy-dialogs';
 import { clearImportQuery, type ImportBundle } from '@/lib/workbench/asset-import';
 import { CharacterIdentityField } from '@/components/sprite-generator/character-identity-field';
@@ -292,6 +293,7 @@ export function ReferenceArtEditor() {
           <h1>角色原图</h1>
           <p>描述外观，生成像素角色，再让它动起来。</p>
         </div>
+        <SourceAssetLink />
         <a
           className="wb-button"
           href={

@@ -58,6 +58,7 @@ import type { ImageTargetRef } from '@/features/image-edit/client';
 import { imageTargetEquals, readImageEdit } from '@/features/image-edit/client';
 import { clearImageEditNavigation, readImageEditNavigation, writeImageEditNavigation, type ImageEditNavigation } from '@/features/image-edit/navigation';
 import { DocumentSyncStatus } from '@/components/workbench/document-sync-status';
+import { SourceAssetLink } from '@/components/workbench/shared-navigation';
 import { SharedDocumentPicker } from '@/components/workbench/shared-document-picker';
 import { sharedDocumentHref } from '@/features/editor-documents/library';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -586,6 +587,7 @@ export function InteractableEditor() {
             ? draftStatus
             : '原草稿保留，请保存源文件；打开工程可恢复自动保存'}
         </span>
+        <SourceAssetLink />
         <span className="ie-spacer" />
         <DropdownMenu>
           <DropdownMenuTrigger render={<button type="button" aria-label="打开" disabled={busy || !ready} />}>

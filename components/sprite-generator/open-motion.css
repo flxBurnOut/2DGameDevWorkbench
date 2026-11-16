@@ -60,6 +60,22 @@
   z-index: 20;
   background: var(--theme-panel);
 }
+.motion-work {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 220px;
+  padding-right: 14px;
+  margin-right: 2px;
+  border-right: 1px solid var(--theme-border);
+}
+.motion-work > strong {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .motion-save {
   margin-left: auto;
   font-size: var(--ui-text-xs);

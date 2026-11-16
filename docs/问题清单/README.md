@@ -153,3 +153,5 @@ Node 图片编辑完整 9 组、页面跟随、呈现、Agent 验收、前端服
 2026-11-16T18:31:25-05:00，分支 paper-vbyc，工作区基于 `d12f46298e2d`，物品导入/PixelProp 转换实现尚未提交。登记 DEV-01：在隔离命名空间执行 vinext dev 时，`vite-cache/deps_rsc/react-server-dom-webpack_server__edge.js` 同时出现预打包 `export default require_server_edge()` 与 commonjs 插件附加的默认导出，Cloudflare worker 解析报 “A module cannot have multiple default exports”。尚未确定依赖预打包与插件交互的根因，未修改开发服务器配置或依赖版本。
 
 同一工作区 `npm run build` 与 `vinext start` 正常，物品导入、转换调参、保存、确认移送、对象来源、GPT 候选深链和 430 px 对话框验收通过，无真实付费请求。DEV-01 保持待定位，不能以生产页面通过视为开发启动问题已修复。复现入口为 `node node_modules/vinext/dist/cli.js dev --host 127.0.0.1 --port <隔离端口>`；浏览器流程见 `tests/prop-art/browser.mjs`，使用生产模式以完成本次功能验收。
+
+**物品转换实现与 DEV-01 登记归档。** 2026-11-16T18:59:12-05:00，提交 `ae05a87bd275` 收录物品导入、PixelProp 工具与工作台转换实现，以及 DEV-01 的复现记录。独立工具 28 项、原图服务 17 项、对象身份/资产目录 16 项、交互物动画 29 项 Python 专项通过；相关 Node/MCP/HTTP、浏览器验收、类型检查、lint、构建和公开范围检查通过。DEV-01 未修复，继续待定位。真实付费调用为零。

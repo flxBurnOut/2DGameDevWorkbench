@@ -55,7 +55,7 @@ try{
   await dialog.getByLabel('原色',{exact:true}).fill('#184680');
   await dialog.getByLabel('替换色',{exact:true}).fill('#00ff00');
   await dialog.getByRole('button',{name:'精确替色',exact:true}).click();
-  const save=dialog.getByRole('button',{name:'保存为动画备选',exact:true});
+  const save=dialog.getByRole('button',{name:/^保存为动画备选/});
   await save.click();await page.getByRole('button',{name:'同步播放完整对比',exact:true}).waitFor();
   await page.screenshot({path:path.join(root,'single-frame-alternative.png'),fullPage:true});
   await page.getByRole('button',{name:'保留原版',exact:true}).click();

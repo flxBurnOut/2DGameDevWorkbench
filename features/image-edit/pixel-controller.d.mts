@@ -17,6 +17,11 @@ export class PixelController {
   stroke(point: PixelPoint, tool: 'pencil' | 'eraser', rgba: number[], size?: number): void;
   endStroke(): void; cancelStroke(): void;
   undoPixels(): void; redoPixels(): void; undoMask(): void; redoMask(): void;
+  /** One undo order across strokes and selection changes. */
+  readonly canUndo: boolean; readonly canRedo: boolean;
+  undo(): 'pixel' | 'mask' | null; redo(): 'pixel' | 'mask' | null;
+  /** Pixels of the current/last stroke written, and those dropped outside the selection. */
+  readonly strokeWritten: number; readonly strokeBlocked: number;
   selectRegion(spec: RegionSpec | null, remember?: boolean): void;
   combineRegion(spec: RegionSpec, mode?: 'replace' | 'add' | 'subtract'): void;
   selectRectangle(from: PixelPoint, to: PixelPoint, mode?: 'replace' | 'add' | 'subtract'): void;

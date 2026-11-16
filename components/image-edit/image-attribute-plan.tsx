@@ -65,7 +65,7 @@ export function ImageAttributePlan(props:Props){
       if(keyRef.current===submittedKey)setReady({plan:result.plan,operation,key:submittedKey});
     }catch(cause){setError(cause instanceof Error?cause.message:String(cause));}finally{setPending(false);props.onBusy('');}
   };
-  return <details className="ie-attribute-plan" open={props.offerPlanner && !!props.prompt.trim()}><summary>部件与属性计划 · 试验</summary><fieldset disabled={props.disabled||pending}>
+  return <details className="ie-attribute-plan"><summary>部件与属性计划 · 试验</summary><fieldset disabled={props.disabled||pending}>
     {props.offerPlanner && <ImagePartPlanner target={props.target} session={props.session} baseVersion={props.baseVersion} allowed={allowed??props.region} instruction={props.prompt} preserveAlpha={props.preserveAlpha} disabled={props.disabled||pending} onBusy={props.onBusy} onUse={useSuggestion}/>}
     {origin&&<p>已载入视觉建议。修正画布选区后，点「将当前选区设为目标」更新计划。{originStale&&'原建议已过期。'} <button type="button" onClick={()=>{setOrigin(null);setReady(null);}}>转为手动计划</button></p>}
     <label>目标部件<input value={part} placeholder="例如：石座下方正面的圆形徽章" onChange={e=>setPart(e.target.value)} maxLength={500}/></label>

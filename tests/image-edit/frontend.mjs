@@ -77,7 +77,21 @@ for (let x = 0, column = 0; x < 3840; x += 3, column++) { maskBudget.maskStroke(
 assert.throws(() => maskBudget.endMaskStroke(), /256 KiB/); checks++;
 check(maskBudget.selectionCount, 0); check(maskBudget.region, null); check(JSON.stringify(maskBudget.maskUndo), beforeMaskHistory, 'mask history budget failure rolls back the whole gesture and does not leave an unreplayable recipe');
 
-// Browsing must not reset selection; an explicit new editing base preserves it too.
+// One undo order across strokes and selection changes, and feedback for dropped strokes.
+const ordered = new PixelController(source, width, height);
+ordered.beginStroke(); ordered.stroke({ x: 0, y: 0 }, 'pencil', [9, 9, 9, 255]); ordered.endStroke();
+check([ordered.strokeWritten, ordered.strokeBlocked], [1, 0], 'a stroke inside the range reports its written pixels');
+ordered.selectRegion({ type: 'rectangle', x: 0, y: 0, width: 2, height: 2 });
+ordered.beginStroke(); ordered.stroke({ x: 6, y: 3 }, 'pencil', [9, 9, 9, 255]); ordered.endStroke();
+check([ordered.strokeWritten, ordered.strokeBlocked, ordered.dirtyPixelCount], [0, 1, 1], 'a stroke outside the range is dropped and reported, not silently ignored');
+check(ordered.undo(), 'mask', 'undo reverts the latest action: the selection change');
+check(ordered.selectionCount, width * height);
+check(ordered.undo(), 'pixel', 'then the earlier stroke');
+check(ordered.dirty, false); check(ordered.canUndo, false);
+check(ordered.redo(), 'pixel'); check(ordered.redo(), 'mask'); check(ordered.selectionCount, 4, 'redo replays in the original order');
+check(ordered.redo(), null);
+
+
 const versions = new PixelController(source, width, height);
 versions.selectRegion(null); versions.setBase(new Uint8Array(source));
 check(versions.selectionCount, 0, 'empty selection survives editing-base change');

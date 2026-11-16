@@ -34,6 +34,31 @@ export class PixelController {
     this.dirtyOffsets = new Set(); this.strokeChanges = null; this.lastPoint = null;
     this.dirtyBounds = { x: 0, y: 0, width, height }; this.maskRevision = 0;
     this.maskDirtyBounds = { x: 0, y: 0, width, height }; this.maskStrokeBefore = null; this.maskStrokeSpec = null; this.maskLastPoint = null;
+    // One user-facing undo order across pixel strokes and selection changes.
+    this.actionUndo = []; this.actionRedo = [];
+    // Pixels of the current or last stroke that fell outside the selection.
+    this.strokeBlocked = 0; this.strokeWritten = 0;
+  }
+  recordAction(kind) { this.actionUndo.push(kind); this.actionRedo = []; if (this.actionUndo.length > 4096) this.actionUndo.shift(); }
+  get canUndo() { return this.canUndoPixels || this.canUndoMask; }
+  get canRedo() { return this.canRedoPixels || this.canRedoMask; }
+  /** Undo the most recent stroke or selection change; returns its kind. */
+  undo() { return this.stepHistory(this.actionUndo, this.actionRedo, 'undo'); }
+  redo() { return this.stepHistory(this.actionRedo, this.actionUndo, 'redo'); }
+  stepHistory(from, to, direction) {
+    while (from.length) {
+      const kind = from.at(-1);
+      const available = kind === 'pixel' ? (direction === 'undo' ? this.canUndoPixels : this.canRedoPixels) : (direction === 'undo' ? this.canUndoMask : this.canRedoMask);
+      if (!available) { from.pop(); continue; }
+      if (kind === 'pixel') { if (direction === 'undo') this.undoPixels(); else this.redoPixels(); }
+      else if (direction === 'undo') this.undoMask();
+      else this.redoMask();
+      from.pop(); to.push(kind);
+      return kind;
+    }
+    // Histories created outside the ordered log (restored drafts) still undo.
+    if (direction === 'undo') { if (this.canUndoPixels) { this.undoPixels(); to.push('pixel'); return 'pixel'; } if (this.canUndoMask) { this.undoMask(); to.push('mask'); return 'mask'; } }
+    return null;
   }
   get dirty() { return this.dirtyOffsets.size > 0; }
   get dirtyPixelCount() { return this.dirtyOffsets.size; }
@@ -101,7 +126,7 @@ export class PixelController {
       const next = !this.selectionCount ? null : this.selectionCount === this.width * this.height ? { type: 'all' } : { type: 'mask-runs', spans };
       if (maskSpecBytes([this.maskStrokeSpec, next]) > MASK_HISTORY_BYTES) throw new Error('选区历史超过 256 KiB；这一笔已撤回，请简化范围。');
       if (JSON.stringify(this.maskStrokeSpec) !== JSON.stringify(next)) {
-        this.maskUndo.push(this.maskStrokeSpec); this.maskRedo = [];
+        this.maskUndo.push(this.maskStrokeSpec); this.maskRedo = []; this.recordAction('mask');
         while (this.maskUndo.length > 1 && maskSpecBytes([...this.maskUndo, next]) > MASK_HISTORY_BYTES) this.maskUndo.shift();
       }
       this.region = next; this.maskStrokeBefore = null; this.maskStrokeSpec = null; this.maskLastPoint = null;
@@ -113,14 +138,15 @@ export class PixelController {
     this.maskStrokeBefore = null; this.maskStrokeSpec = null; this.maskLastPoint = null; this.maskRevision++;
     this.maskDirtyBounds = { x: 0, y: 0, width: this.width, height: this.height };
   }
-  beginStroke() { if (this.strokeChanges) throw new Error('上一笔尚未结束。'); this.strokeChanges = new Map(); this.lastPoint = null; }
+  beginStroke() { if (this.strokeChanges) throw new Error('上一笔尚未结束。'); this.strokeChanges = new Map(); this.lastPoint = null; this.strokeBlocked = 0; this.strokeWritten = 0; }
   stroke(point, tool, rgba, size = 1) {
     if (!this.strokeChanges) this.beginStroke();
     const points = this.lastPoint ? rasterIntegerLine(this.lastPoint, point) : [point];
     for (const center of points) {
       const changes = stampSquareRgba(this.pixels, this.width, this.height, center, size, tool === 'eraser' ? [0, 0, 0, 0] : rgba);
       for (const change of changes) {
-        if (!this.mask[change.offset / 4]) { applyRgbaChanges(this.pixels, [change], 'undo'); continue; }
+        if (!this.mask[change.offset / 4]) { applyRgbaChanges(this.pixels, [change], 'undo'); this.strokeBlocked++; continue; }
+        this.strokeWritten++;
         const first = this.strokeChanges.get(change.offset);
         this.strokeChanges.set(change.offset, { offset: change.offset, before: first?.before || change.before, after: change.after });
         this.mark(change.offset);
@@ -137,7 +163,7 @@ export class PixelController {
     const spans = compactPixelChanges(this.strokeChanges.values());
     this.strokeChanges = null; this.lastPoint = null;
     if (!spans.length) return;
-    this.pixelUndo.push(spans); this.pixelRedo = [];
+    this.pixelUndo.push(spans); this.pixelRedo = []; this.recordAction('pixel');
     while (this.pixelUndo.length > 1 && this.pixelUndo.reduce((sum, entry) => sum + patchBytes(entry), 0) > this.historyBudget) this.pixelUndo.shift();
   }
   cancelStroke() {
@@ -165,7 +191,7 @@ export class PixelController {
     for (const offset of this.dirtyOffsets) if (!next.mask[offset / 4]) throw new Error('新选区会排除未保存笔划；请先保存笔划，或保留包含它们的选区。');
     if (remember) {
       if (maskSpecBytes([this.region, spec]) > MASK_HISTORY_BYTES) throw new Error('选区历史超过 256 KiB，未更改当前范围。');
-      this.maskUndo.push(structuredClone(this.region)); this.maskRedo = [];
+      this.maskUndo.push(structuredClone(this.region)); this.maskRedo = []; this.recordAction('mask');
       while (this.maskUndo.length > 1 && maskSpecBytes([...this.maskUndo, spec]) > MASK_HISTORY_BYTES) this.maskUndo.shift();
     }
     this.region = spec ? structuredClone(spec) : null; this.mask = next.mask; this.selectionCount = next.count; this.maskRevision++;

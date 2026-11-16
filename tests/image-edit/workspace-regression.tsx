@@ -21,6 +21,8 @@ const until = async (predicate: () => boolean) => {
 };
 const button = (name: string) => Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent?.trim() === name);
 const click = async (name: string) => { await until(() => !!button(name) && !button(name)!.disabled); button(name)!.click(); };
+const buttonStarting = (prefix: string) => Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent?.trim().startsWith(prefix));
+const clickStarting = async (prefix: string) => { await until(() => !!buttonStarting(prefix) && !buttonStarting(prefix)!.disabled); buttonStarting(prefix)!.click(); };
 const checkbox = (name: string) => Array.from(document.querySelectorAll<HTMLLabelElement>('label')).find(item => item.textContent?.trim() === name)?.querySelector<HTMLInputElement>('input[type=checkbox]');
 const fixturePixels = async (rgba: [number, number, number, number]): Promise<ImagePixels> => {
   const width = 8, height = 4, bytes = new Uint8Array(width * height * 4);
@@ -80,8 +82,8 @@ try {
   const previewSource = () => document.querySelector<HTMLImageElement>('[data-fixture-preview]')?.getAttribute('src');
   await until(() => previewSource() === candidateUrl);
   check(blobCalls === 0, 'Saved candidate appears without Canvas.toBlob');
-  await click('采用此候选'); await until(() => document.body.innerText.includes('已采用到指定目标'));
-  await click('恢复会话原图'); await until(() => document.body.innerText.includes('原始图片已恢复为新的目标版本'));
+  await clickStarting('应用到交互物'); await until(() => document.body.innerText.includes('已应用到指定图片位置'));
+  await click('恢复打开时的图片'); await until(() => document.body.innerText.includes('已恢复打开时的图片'));
   check(previewSource() === originalUrl, 'Restore success and original preview are committed in the same render');
   check(blobCalls === 0, 'Restoration does not wait for a delayed Canvas encoding');
   await click('基于当前图片继续精修');
@@ -102,7 +104,7 @@ try {
   const prompt = document.querySelector('textarea')!;
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(prompt, 'Fixture-only recolor'); prompt.dispatchEvent(new Event('input', { bubbles: true }));
   await click('生成 AI 候选（调用模型）');
-  await until(() => editPayloads.length === 1 && document.body.innerText.includes('候选已保存，请对比效果'));
+  await until(() => editPayloads.length === 1 && document.body.innerText.includes('AI 结果已存为版本 1'));
   check(editPayloads[0].constraints.preserveAlpha === false, 'Turning off Alpha preservation reaches the frozen request');
   await until(() => readImageEditNavigation()?.candidateVersion === 'candidate-ui-1');
   check(readImageEditNavigation()?.editId === 'edit-created-1', 'Completed candidate URL remains in the new session');

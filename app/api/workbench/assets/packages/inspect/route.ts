@@ -1,6 +1,9 @@
 import { fetchWorkbenchRuntime, runtimeUnavailable } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 export async function POST(request: Request) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   try {
     const size = Number(request.headers.get('content-length'));
     if (Number.isFinite(size) && size > 768 * 1024 * 1024) return Response.json({ error: '素材包超过 768 MiB 上传上限。' }, { status: 413 });

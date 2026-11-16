@@ -2,7 +2,10 @@ import {
   fetchWorkbenchRuntime,
   runtimeUnavailable,
 } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 export async function GET(request: Request) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   try {
     const query = new URL(request.url).searchParams;
     const assetId = query.get('assetId') || '';

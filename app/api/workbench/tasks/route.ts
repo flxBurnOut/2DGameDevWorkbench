@@ -2,8 +2,11 @@ import {
   fetchWorkbenchRuntime,
   runtimeUnavailable,
 } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 export async function GET(request: Request) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   const searchParams = new URL(request.url).searchParams;
   const limit = searchParams.get('limit') ?? '30';
   const refresh = searchParams.get('refresh') === 'true' ? 'true' : 'false';
@@ -22,6 +25,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const denied = trustedRequest(request, { json: true });
+  if (denied) return denied;
   try {
     const response = await fetchWorkbenchRuntime('/v1/tasks', {
       method: 'POST',

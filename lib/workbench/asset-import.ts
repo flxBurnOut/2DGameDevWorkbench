@@ -1,5 +1,6 @@
 import manifest from './ui-manifest.json';
 import { readWorkspaceDraft, saveWorkspaceDraft } from './browser-store';
+import { importPurposes, importPurposeIssue } from './asset-import-contract.mjs';
 
 export type ImportPurpose =
   | 'interactable'
@@ -14,6 +15,7 @@ export type LibraryAsset = {
   objectType?: 'character' | 'interactable';
   origin?: string;
   attachmentOnly?: boolean;
+  primaryMime?: string | null;
   title: string;
   revision?: string;
   statusLabel?: string;
@@ -51,12 +53,8 @@ export function libraryAnimationTiming(asset: ImportBundle['asset'], frameCount:
     throw new Error('动画帧时长缺失或超出交互物支持范围（每帧 0.01–100）；原素材仍保留在资产库。');
   return { fps, loop, durations };
 }
-export function purposesFor(asset: LibraryAsset, purposes: ImportPurpose[]) {
-  return manifest.assetImports.filter(
-    (rule) =>
-      !asset.attachmentOnly && purposes.includes(rule.id as ImportPurpose) &&
-      rule.kinds.includes(asset.kind),
-  );
+export function purposesFor(asset: LibraryAsset, purposes: ImportPurpose[]): typeof manifest.assetImports {
+  return importPurposes(manifest, asset).filter((rule: (typeof manifest.assetImports)[number]) => purposes.includes(rule.id as ImportPurpose));
 }
 export function importLink(
   target: string,
@@ -102,7 +100,7 @@ export async function loadLibraryAsset(
   if (!detail.ok || !value.asset?.revision)
     throw new Error(value.error || '资产详情读取失败。');
   if (!purposesFor(value.asset, [purpose]).length)
-    throw new Error('这件素材不适合当前导入用途。');
+    throw new Error(importPurposeIssue(value.asset, purpose) || '这件素材不适合当前导入用途。');
   const response = await fetch('/api/workbench/assets/import', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -140,6 +138,7 @@ export async function loadLibraryAsset(
     metadata.purpose !== purpose ||
     metadata.asset?.id !== value.asset.id ||
     metadata.asset.revision !== value.asset.revision ||
+    (purpose === 'image' && metadata.asset.primaryMime !== value.asset.primaryMime) ||
     !Array.isArray(metadata.files) ||
     !metadata.files.length ||
     metadata.files.length > 1000
@@ -158,7 +157,7 @@ export async function loadLibraryAsset(
     if (digest !== record.sha256)
       throw new Error('素材内容已变化，导入未应用。');
     const ext = String(record.name).split('.').pop()?.toLowerCase();
-    const type =
+    const type = record.mime ||
       (
         {
           png: 'image/png',
@@ -170,6 +169,8 @@ export async function loadLibraryAsset(
           json: 'application/json',
         } as Record<string, string>
       )[ext || ''] || 'application/octet-stream';
+    if (purpose === 'image' && type !== value.asset.primaryMime)
+      throw new Error('原图格式与资产详情不一致，请刷新后重新选择。');
     files.push({
       file: new File([data], record.name, { type }),
       sha256: digest,

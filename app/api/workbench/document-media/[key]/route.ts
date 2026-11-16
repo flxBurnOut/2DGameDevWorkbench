@@ -1,6 +1,9 @@
 import { fetchWorkbenchRuntime, runtimeUnavailable } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 async function forward(request: Request, context: { params: Promise<{ key: string }> }) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   const { key } = await context.params;
   if (!/^[a-f0-9]{64}\.(png|jpg|webp|wav|ogg|mp3|zip)$/.test(key)) return Response.json({ error: 'Invalid media identity.' }, { status: 400 });
   try {

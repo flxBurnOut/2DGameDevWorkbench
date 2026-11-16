@@ -1,6 +1,9 @@
 import { fetchWorkbenchRuntime, runtimeUnavailable } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 async function proxy(request: Request, method: 'GET' | 'POST') {
+  const denied = trustedRequest(request, { json: method === 'POST' });
+  if (denied) return denied;
   try {
     const search = method === 'GET' ? new URL(request.url).search : '';
     const response = await fetchWorkbenchRuntime(`/v1/assets/packages/commit${search}`, {

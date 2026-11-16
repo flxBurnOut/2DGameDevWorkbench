@@ -227,6 +227,34 @@ def test_preference_works_without_expert_defect_and_guards_whole_range(setup):
     accept(s,w,0);assert len(p.requests)==calls
 
 
+def test_rejected_segment_adjustment_waits_for_acceptance_then_finishes_once(setup):
+    s,ws,p,w=stage_work(setup);gates=Checkpoints(s);engine=PlanGeneration(s)
+    view=gates.view(w.job_id,1,0)
+    gates.decide(w.job_id,1,0,token=view['token'],note='当前片段未达到要求，先修正再继续',decision='reject')
+    with s.store.locked_job(w.job_id) as job:
+        job.candidates[0].error={'code':'rejected_source','message':'原片段审核未通过'}
+    manager=Adjustments(s);task=manager.create(w.id,request(manager,w))
+    task=manager.advance(w.id,task['id'],p);assert task['state']=='ready',task
+    decision=dict(token=task['preview_token'],decision='accept',note='完整播放修正备选，确认可继续',acknowledge=True)
+    manager.decide(w.id,task['id'],**decision)
+    adopted=s.store.load(w.job_id);candidate=adopted.candidates[0]
+    assert candidate.status.value=='created' and candidate.error is None
+    assert candidate.plan_execution.stages[0].state=='awaiting_review'
+    assert candidate.plan_execution.stages[0].review['adjustment_id']==task['id']
+    assert not adopted.plan_control.enabled and len(p.requests)==2
+    engine.advance(w.job_id,p,wait=True)
+    manager.decide(w.id,task['id'],**decision)
+    assert not s.store.load(w.job_id).plan_control.enabled and len(p.requests)==2
+    accept(s,w,0);engine.advance(w.job_id,p,wait=True)
+    assert len(p.requests)==3
+    assert gates.view(w.job_id,1,1)['state']=='awaiting_review'
+    engine.advance(w.job_id,p,wait=True);assert len(p.requests)==3
+    accept(s,w,1);completed=engine.advance(w.job_id,p,wait=True)
+    engine.advance(w.job_id,p,wait=True)
+    assert len(completed.candidates[0].frames)==8 and len(p.requests)==3
+    assert all(r.state=='accepted' for r in completed.candidates[0].plan_execution.stages)
+
+
 def test_invalid_selection_no_authorization_no_direction_and_stale_sources_create_nothing(setup):
     s,ws,p,w=stage_work(setup);m=Adjustments(s)
     for kw in ({'start':0},{'end':3},{'end':1},{'authorized':False},{'token':'0'*64},{'user_request':''}):

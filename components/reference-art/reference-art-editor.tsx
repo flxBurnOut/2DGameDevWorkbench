@@ -67,11 +67,14 @@ export function ReferenceArtEditor() {
   const [message, setMessage] = useState('');
   const [selected, setSelected] = useState<StoredTask | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selectionLoading, setSelectionLoading] = useState(false);
   const [savingKey, setSavingKey] = useState(false);
   const [readyHref, setReadyHref] = useState('');
   const [library, setLibrary] = useState<{ assetId?: string } | null>(null);
   const [identityDrafts, setIdentityDrafts] = useState<Record<string, string>>({});
   const busyRef = useRef(false);
+  const selectionLoadingRef = useRef(false);
+  const selectionMounted = useRef(true);
   const selectionEpoch = useRef(0);
   const selectedId = selected?.id;
   const identityDescription = selectedId ? referenceIdentityDescription(tasks, selectedId, identityDrafts) : '';
@@ -90,14 +93,17 @@ export function ReferenceArtEditor() {
   }, []);
 
   const selectTask = useCallback(async (id: string, restorePrompt = true) => {
+    if (!selectionMounted.current) return;
     const epoch = ++selectionEpoch.current;
+    selectionLoadingRef.current = true;
+    setSelectionLoading(true);
     setReadyHref('');
     setMessage('');
     try {
       const { task } = await json<{ task: StoredTask }>(
         `/api/workbench/tasks/${encodeURIComponent(id)}`,
       );
-      if (epoch !== selectionEpoch.current) return;
+      if (!selectionMounted.current || epoch !== selectionEpoch.current) return;
       if (
         task.capabilityId !== 'reference-art' || !task.input ||
         !['generate','import'].includes(String(task.input?.operation)) || task.input.subject === 'prop'
@@ -114,12 +120,18 @@ export function ReferenceArtEditor() {
       url.searchParams.set('task', id);
       history.replaceState(history.state, '', url.pathname + url.search);
     } catch (error) {
-      if (epoch === selectionEpoch.current)
+      if (selectionMounted.current && epoch === selectionEpoch.current)
         setMessage((error as Error).message);
+    } finally {
+      if (selectionMounted.current && epoch === selectionEpoch.current) {
+        selectionLoadingRef.current = false;
+        setSelectionLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
+    selectionMounted.current = true;
     const timer = setTimeout(() => {
       void checkSettings();
       const params = new URLSearchParams(location.search);
@@ -130,6 +142,10 @@ export function ReferenceArtEditor() {
     const onFocus = () => void checkSettings();
     window.addEventListener('focus', onFocus);
     return () => {
+      selectionMounted.current = false;
+      // oxlint-disable-next-line react-hooks/exhaustive-deps -- Invalidate the request counter, not a DOM ref.
+      selectionEpoch.current++;
+      selectionLoadingRef.current = false;
       window.removeEventListener('focus', onFocus);
       clearTimeout(timer);
     };
@@ -187,7 +203,7 @@ export function ReferenceArtEditor() {
   };
 
   const importReference = async (bundle: ImportBundle) => {
-    if (busyRef.current) throw new Error('请等待当前操作完成。');
+    if (busyRef.current || selectionLoadingRef.current) throw new Error('请等待当前操作完成。');
     const file = bundle.files[0]?.file;
     if (bundle.asset.kind !== 'character' || bundle.purpose !== 'image' || bundle.files.length !== 1 || !file || file.type !== 'image/png' || file.size > 2_000_000)
       throw new Error('请选择 2 MB 以内、64×64 或 128×128 且带透明背景的角色 PNG。原素材保留在资产库。');
@@ -214,7 +230,7 @@ export function ReferenceArtEditor() {
   };
 
   const run = async (operation: 'generate' | 'transfer') => {
-    if (busyRef.current) return;
+    if (busyRef.current || selectionLoadingRef.current) return;
     if (operation === 'generate' && !prompt.trim()) {
       setMessage('请先描述角色外观。');
       return;
@@ -281,7 +297,9 @@ export function ReferenceArtEditor() {
       ? selected.outputs?.find((path) => path.endsWith('/reference.png'))
       : undefined;
   // Why the generate button is unavailable, shown under it instead of a silent grey button.
-  const generateBlocker = busy || selected?.status === 'running'
+  const generateBlocker = selectionLoading
+    ? '正在读取所选原图，请稍候…'
+    : busy || selected?.status === 'running'
     ? ''
     : configured === false
       ? '先在下方“PixelLab 设置”中保存 Key。'
@@ -319,7 +337,7 @@ export function ReferenceArtEditor() {
             onChange={(event) => setName(event.target.value)}
             maxLength={80}
             placeholder="例如：森林守卫"
-            disabled={busy}
+            disabled={busy || selectionLoading}
           />
           <label htmlFor="ra-prompt">角色描述</label>
           <Textarea
@@ -328,7 +346,7 @@ export function ReferenceArtEditor() {
             onChange={(event) => setPrompt(event.target.value)}
             maxLength={2000}
             rows={7}
-            disabled={busy}
+            disabled={busy || selectionLoading}
             placeholder="一位披着绿色斗篷的森林守卫，手持木弓，棕色短靴，全身站姿，轮廓清晰，武器完整留在画面内。"
           />
           <div className="ra-form-row">
@@ -339,7 +357,7 @@ export function ReferenceArtEditor() {
                 id="ra-facing"
                 value={facing}
                 onChange={(event) => setFacing(event.target.value)}
-                disabled={busy}
+                disabled={busy || selectionLoading}
               >
                 <NativeSelectOption value="right">朝右</NativeSelectOption>
                 <NativeSelectOption value="left">朝左</NativeSelectOption>
@@ -347,7 +365,7 @@ export function ReferenceArtEditor() {
             </div>
             <div>
               <label htmlFor="ra-size">像素规格</label>
-              <NativeSelect id="ra-size" className="w-full" value={size} onChange={(event) => setSize(Number(event.target.value))} disabled={busy || selected?.status === 'running'}>
+              <NativeSelect id="ra-size" className="w-full" value={size} onChange={(event) => setSize(Number(event.target.value))} disabled={busy || selectionLoading || selected?.status === 'running'}>
                 <NativeSelectOption value={128}>128 × 128 · 精细像素</NativeSelectOption>
                 <NativeSelectOption value={64}>64 × 64 · 粗像素</NativeSelectOption>
               </NativeSelect>
@@ -357,6 +375,7 @@ export function ReferenceArtEditor() {
             className="wb-button wb-primary ra-generate"
             disabled={
               busy ||
+              selectionLoading ||
               selected?.status === 'running' ||
               !prompt.trim() ||
               configured !== true
@@ -375,7 +394,7 @@ export function ReferenceArtEditor() {
             每次生成使用 PixelLab 账户额度。移送参考图不生成动画。
           </p>
           <div className="ra-alternatives">
-            <button className="wb-button" disabled={busy || selected?.status === 'running'} onClick={() => setLibrary({})}>从资产库选用角色原图</button>
+            <button className="wb-button" disabled={busy || selectionLoading || selected?.status === 'running'} onClick={() => setLibrary({})}>从资产库选用角色原图</button>
             <a className="wb-text-button" href={modules.find((module) => module.id === 'sprite-generator')?.href}>
               已有原图，直接制作动画 <ArrowRight size={14} />
             </a>
@@ -428,13 +447,13 @@ export function ReferenceArtEditor() {
             </p>
           )}
         </section>
-        <section className="ra-result" aria-label="原图预览">
+        <section className="ra-result" aria-label="原图预览" aria-busy={selectionLoading}>
           <div className="ra-preview-heading">
             <div className="ra-step">
               02 <span>检查原图</span>
             </div>
             <span className="ra-status" aria-live="polite">
-              {selected
+              {selectionLoading ? '正在读取所选原图…' : selected
                 ? selected.input?.operation === 'import' ? '已导入' : taskLabels[selected.status] || '等待处理'
                 : '等待你的第一个角色'}
             </span>
@@ -473,7 +492,7 @@ export function ReferenceArtEditor() {
             移送前请确认角色与武器完整、朝向正确。此处按整数倍放大显示。
           </p>
           {png && selectedId && <>
-            <CharacterIdentityField value={identityDescription} onChange={(value) => setIdentityDrafts((previous) => ({ ...previous, [selectedId]: value }))} maxLength={referenceIdentityLimit} disabled={busy} />
+            <CharacterIdentityField value={identityDescription} onChange={(value) => setIdentityDrafts((previous) => ({ ...previous, [selectedId]: value }))} maxLength={referenceIdentityLimit} disabled={busy || selectionLoading} />
             <p className="ra-note">此说明只用于移送角色。已移送的同一原图会复用角色身份；修改这里的说明不会覆盖已保存角色的外观约束。</p>
           </>}
           <div className="ra-actions">
@@ -485,7 +504,7 @@ export function ReferenceArtEditor() {
             )}
             <button
               className="wb-button wb-primary"
-              disabled={!png || busy}
+              disabled={!png || busy || selectionLoading}
               onClick={() => void run('transfer')}
             >
               用于制作序列帧 <ArrowRight size={16} />
@@ -510,7 +529,7 @@ export function ReferenceArtEditor() {
                 disabled={busy}
                 className="ra-history-item"
                 aria-pressed={selectedId === task.id}
-                onClick={() => void selectTask(task.id)}
+                onClick={() => { if (!busyRef.current) void selectTask(task.id); }}
               >
                 <strong>{textField(task.input?.name, '角色原图')}</strong>
                 <span>{task.input?.operation === 'import' ? '导入素材 · 已保存' : taskLabels[task.status] || task.status}</span>

@@ -1,7 +1,7 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
 import { RequestJournal } from '../../features/editor-documents/request-journal.mjs';
-import { DocumentSyncController } from '../../features/editor-documents/sync-controller.mjs';
+import { DocumentSyncController, documentFingerprint } from '../../features/editor-documents/sync-controller.mjs';
 import { createProject, normalizeProject } from '../../features/interactable-editor/contract.mjs';
 import { createDocument, saveDocument, getDocument } from '../../lib/workbench/editor-documents.mjs';
 import { loadManifest, repositoryRoot as root } from '../../lib/workbench/runtime.mjs';
@@ -119,4 +119,83 @@ assert.equal(rejectionController.getState().status, 'conflict');
 assert.equal(await rejectionJournal.pending(), null);
 assert.equal(rows.get(rejectionJournal.key).history.at(-1).request.input.commandId, rejection.input.commandId);
 rejectionController.dispose();
-console.log('Durable request journal passed: tab races, immutable bodies, receipts, stale completion, restart replay, CAS and persistence-before-send.');
+
+// A transient initialization read must retry the baseline and original journal
+// before comparing drafts or inventing another command identity.
+for (const failedRead of ['cache', 'journal']) for (const scenario of ['local-edit', 'uncertain-save', 'remote-conflict']) {
+  const project = createProject(); project.projectId = `initialization-${failedRead}-${scenario}`;
+  const initial = (await createDocument(root, manifest, { kind: 'interactable', content: project, commandId: 'initial-create' })).document;
+  const pendingJournal = journal('initialization-retry', project.projectId);
+  let local = { ...initial.content, name: 'Latest local edit' };
+  let baseline = { revision: 1, fingerprint: await documentFingerprint(initial.content) };
+  let originalRequest;
+  if (scenario === 'uncertain-save') {
+    const content = { ...initial.content, name: 'Original uncertain edit' };
+    originalRequest = { operation: 'save', input: { documentId: project.projectId, kind: 'interactable', expectedRevision: 1, commandId: 'original-uncertain-command', content } };
+    await pendingJournal.begin(originalRequest);
+    await saveDocument(root, manifest, { documentId: project.projectId, expectedRevision: 1, commandId: originalRequest.input.commandId, content });
+    baseline.pending = { commandId: originalRequest.input.commandId, expectedRevision: 1, fingerprint: await documentFingerprint(content) };
+  } else if (scenario === 'remote-conflict') {
+    await saveDocument(root, manifest, { documentId: project.projectId, expectedRevision: 1, commandId: 'external-edit', content: { ...initial.content, name: 'Another editor changed the server' } });
+  }
+  const sent = [];
+  let cacheReads = 0, journalReads = 0;
+  let releaseCacheRead;
+  const cacheReadGate = new Promise(resolve => { releaseCacheRead = resolve; });
+  const recovering = new DocumentSyncController({
+    id: project.projectId, kind: 'interactable', current: () => local, busy: () => false,
+    prepare: normalizeProject, saveLocal: async () => {}, applyRemote: async next => { local = next; }, backupLocal: async () => 'backup',
+    readCache: async () => {
+      if (++cacheReads === 1 && failedRead === 'cache') throw new Error('transient cache read failure');
+      if (cacheReads === 2) await cacheReadGate;
+      return structuredClone(baseline);
+    },
+    writeCache: async next => { baseline = structuredClone(next); },
+    journal: {
+      pending: async () => {
+        if (++journalReads === 1 && failedRead === 'journal') throw new Error('transient journal read failure');
+        return pendingJournal.pending();
+      },
+      begin: request => pendingJournal.begin(request), respond: (request, result) => pendingJournal.respond(request, result),
+      complete: (...args) => pendingJournal.complete(...args),
+    },
+    api: {
+      read: () => getDocument(root, manifest, { documentId: project.projectId }),
+      save: async (documentId, expectedRevision, content, commandId) => {
+        sent.push({ documentId, expectedRevision, content: structuredClone(content), commandId });
+        return saveDocument(root, manifest, { documentId, expectedRevision, content, commandId });
+      },
+      create: async () => { throw new Error('An existing document must not be recreated.'); },
+    },
+  });
+  await recovering.sync();
+  assert.equal(recovering.getState().status, 'offline');
+  assert.equal(sent.length, 0, 'failed initialization cannot submit a request');
+  const reconnect = recovering.retry();
+  await recovering.sync();
+  assert.equal(sent.length, 0, 'reconnect initialization serializes concurrent autosave');
+  releaseCacheRead();
+  await reconnect;
+  assert.equal(cacheReads, 2, 'reconnect rereads the baseline after incomplete initialization');
+  assert.equal(journalReads, failedRead === 'journal' ? 2 : 1, 'reconnect restores the durable request log');
+  const remote = (await getDocument(root, manifest, { documentId: project.projectId })).document;
+  assert.equal(local.name, 'Latest local edit');
+  if (scenario === 'remote-conflict') {
+    assert.equal(recovering.getState().status, 'conflict');
+    assert.equal(remote.content.name, 'Another editor changed the server');
+    assert.equal(sent.length, 0, 'recovering storage must not bypass a real remote conflict');
+  } else {
+    assert.equal(recovering.getState().status, 'synced');
+    assert.equal(remote.content.name, 'Latest local edit');
+    assert.equal(sent.at(-1).expectedRevision, scenario === 'uncertain-save' ? 2 : 1);
+    if (originalRequest) {
+      const { kind: _kind, ...originalInput } = originalRequest.input;
+      assert.deepEqual(sent[0], originalInput, 'reconnect replays the original ID, CAS revision and exact body before the newer draft');
+      assert.notEqual(sent[1].commandId, sent[0].commandId);
+      assert.equal(remote.revision, 3, 'replaying a committed uncertain request cannot create an extra version');
+    }
+    assert.equal(await pendingJournal.pending(), null);
+  }
+  recovering.dispose();
+}
+console.log('Durable request journal passed: tab races, immutable bodies, receipts, stale completion, restart replay, CAS, persistence-before-send and initialization read recovery.');

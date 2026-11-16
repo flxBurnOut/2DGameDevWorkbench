@@ -3,12 +3,30 @@ import json
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from PIL import Image
 from sprite_pipeline.api_app import create_api
 from sprite_pipeline.asset_catalog import AssetCatalog
 from sprite_pipeline.service import SpritePipelineService
 from test_harness_integration import TemporaryHarness
+
+
+def test_list_reports_exact_original_mime_without_using_preview_format(tmp_path):
+    rows = []
+    for extension, image_format, mime in [('png', 'PNG', 'image/png'), ('jpg', 'JPEG', 'image/jpeg'), ('webp', 'WEBP', 'image/webp'), ('gif', 'GIF', 'image/gif')]:
+        source = tmp_path / f'{extension}.original'
+        Image.new('RGB', (4, 4), '#24b787').save(source, format=image_format)
+        preview = tmp_path / f'{extension}.gif'
+        Image.new('RGB', (4, 4), '#333333').save(preview, format='GIF')
+        rows.append(dict(id=f'character:{extension}', kind='character', title=extension,
+                         fallback=str(source), source=str(preview), updated_at='test', status_label='saved'))
+    catalog = AssetCatalog(SimpleNamespace(list_jobs=lambda **_kwargs: [], settings=SimpleNamespace(data_root=tmp_path)))
+    catalog.library = SimpleNamespace(list_artworks=lambda: rows, preview_source=lambda row: Path(row['source']))
+    listed = catalog.list()['assets']
+    assert [row['primaryMime'] for row in listed] == ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+    assert all(row['previewKind'] == 'animation' for row in listed)
 
 
 def test_inventory_exact_candidate_and_files_are_read_only():

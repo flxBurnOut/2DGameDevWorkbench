@@ -2,12 +2,15 @@ import {
   fetchWorkbenchRuntime,
   runtimeUnavailable,
 } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
-async function forward(request?: Request) {
+async function forward(request: Request) {
+  const denied = trustedRequest(request, { json: request.method === 'POST' });
+  if (denied) return denied;
   try {
     const response = await fetchWorkbenchRuntime(
       '/v1/reference-art/settings',
-      request
+      request.method === 'POST'
         ? {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -26,9 +29,5 @@ async function forward(request?: Request) {
     return runtimeUnavailable(error);
   }
 }
-export async function GET() {
-  return forward();
-}
-export async function POST(request: Request) {
-  return forward(request);
-}
+export const GET = forward;
+export const POST = forward;

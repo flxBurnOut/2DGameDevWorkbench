@@ -36,11 +36,12 @@ def adopt_stage(manager,task):
             proposed[i]={**proposed[i],'path':path.relative_to(manager.store.job_dir(job_id)).as_posix(),
                          'sha256':task['proposed_frames'][i]['sha256'],'adjustment_id':task['id']}
         with manager.store.locked_job(job_id) as job:
-            r=s._candidate(job,index).plan_execution.stages[stage]
+            candidate=s._candidate(job,index);r=candidate.plan_execution.stages[stage]
             r.review_history.append(r.review or {});r.active_frames=proposed;r.accepted=None;r.state='awaiting_review'
             r.adjustment_history.append(adoption_note(task))
             token=Checkpoints(s).evidence(job,index,stage)['token']
             r.review={**bound_review(task),'token':token}
+            candidate.status=CandidateStatus.created;candidate.error=None
             job.plan_control.enabled=False;job.plan_control.message='已采用备选；检查结论已绑定，请确认本段后继续'
             s._refresh_job_status(job);job.touch('motion_adjustment_adopted',adjustment_id=task['id'],candidate_index=index,stage=stage)
 

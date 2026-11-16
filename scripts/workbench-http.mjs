@@ -50,13 +50,20 @@ import { documentRequest, readDocumentMedia, uploadDocumentMedia } from '../lib/
 import { MAX_DOCUMENT_MEDIA_BYTES } from '../lib/workbench/document-media.mjs';
 import { inspectAssetPackage, commitAssetPackages, readAssetPackageCommit, readAssetPackagePreview } from '../lib/workbench/asset-packages.mjs';
 import { ASSET_PACKAGE_LIMITS } from '../lib/workbench/asset-package-contract.mjs';
+import { configuredFrontendUrl, createRuntimeRequestPolicy, runtimeRequestFailure, jsonRequestFailure } from '../lib/workbench/request-security.mjs';
 
 const host = process.env.WORKBENCH_RUNTIME_HOST || '127.0.0.1';
 const port = readPort(process.env.WORKBENCH_RUNTIME_PORT, 8790);
 const maxRequestBytes = 50 * 1024 * 1024;
+const requestPolicy = createRuntimeRequestPolicy({
+  host, port, runtimeUrl: process.env.WORKBENCH_RUNTIME_URL?.trim(),
+  frontendUrl: configuredFrontendUrl(),
+});
 
 const server = http.createServer(async (request, response) => {
   try {
+    const failure = runtimeRequestFailure(request, requestPolicy);
+    if (failure) { sendJson(response, failure.status, { error: failure.error }); return; }
     const url = new URL(
       request.url ?? '/',
       `http://${request.headers.host ?? `${host}:${port}`}`,
@@ -431,7 +438,7 @@ const server = http.createServer(async (request, response) => {
     const validation =
       message.startsWith('Input validation failed:') ||
       message.startsWith('Unknown capability');
-    sendJson(response, validation ? 400 : 500, {
+    sendJson(response, error.status || (validation ? 400 : 500), {
       status: 'failed',
       error: message,
     });
@@ -457,6 +464,8 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 }
 
 async function readJsonBody(request, maximumBytes = maxRequestBytes) {
+  const failure = jsonRequestFailure(request.headers);
+  if (failure) throw Object.assign(new Error(failure.error), { status: failure.status });
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {

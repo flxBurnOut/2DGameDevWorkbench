@@ -1,9 +1,12 @@
 import manifest from '@/workbench/manifest.json';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 const label = (value: unknown, fallback = '') =>
   typeof value === 'string' ? value : fallback;
 
 /** Read only: observe native UI jobs without creating tasks or submitting generation. */
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   const capability = manifest.capabilities.find(
     (c) => c.id === 'sprite-generator',
   );

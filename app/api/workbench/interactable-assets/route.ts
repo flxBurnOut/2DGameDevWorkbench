@@ -2,8 +2,11 @@ import {
   fetchWorkbenchRuntime,
   runtimeUnavailable,
 } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 export async function GET(request: Request) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   try {
     const response = await fetchWorkbenchRuntime(
       `/v1/interactable-assets?path=${encodeURIComponent(new URL(request.url).searchParams.get('path') ?? '')}`,
@@ -23,6 +26,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   try {
     const response = await fetchWorkbenchRuntime('/v1/interactable-assets', {
       method: 'POST',

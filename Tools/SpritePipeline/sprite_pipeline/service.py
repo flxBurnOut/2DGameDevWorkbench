@@ -2017,7 +2017,9 @@ class SpritePipelineService:
             if candidate.frames:
                 return job
             if job.request.open_plan:
-                run = next((r for r in candidate.plan_execution.stages if r.state != "complete"), None)
+                from .collaboration.checkpoints import checked_plan
+                finished_state = "accepted" if checked_plan(job) else "complete"
+                run = next((r for r in candidate.plan_execution.stages if r.state != finished_state), None)
                 if run is None or run.state not in {"submitting", "unknown", "pending"}:
                     raise ConflictError("当前片段没有待核对的提交")
                 if run.provider_job_id and run.provider_job_id != remote_id:

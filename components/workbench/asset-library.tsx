@@ -256,7 +256,7 @@ export function AssetLibrary() {
           </a>
         ) : !emptyLibrary && (
           <div className="wb-tool-links">
-          <button className="wb-button wb-primary" onClick={() => setPackageOpen(true)}>导入 Forge 素材包</button>
+          <button className="wb-button" onClick={() => setPackageOpen(true)}>导入 Forge 素材包</button>
           <button
             className="wb-button"
             aria-busy={loading}
@@ -419,15 +419,14 @@ export function AssetLibrary() {
           </form>
           {catalog && (
             <>
-              <p className="wb-muted">
-                {catalog.total} 件资产，按创建时间排序；动画的每个候选单独列出。交互物可回到编辑器继续修改，其他素材可下载或导出到游戏项目。
-                {catalog.coverage.complete && ` ${catalog.coverage.note}`}
+              <p className="wb-muted wb-asset-count" title={catalog.coverage.complete ? catalog.coverage.note : undefined}>
+                {catalog.total} 件资产 · 按创建时间排序 · 点击素材查看详情
               </p>
               {!catalog.coverage.complete && <p className="wb-notice">{catalog.coverage.note}</p>}
               {catalog.coverage.issues.map((i, index) => (
                 <output key={index}>{i.message}</output>
               ))}
-              <div className="wb-asset-grid">
+              <div className="wb-asset-grid" data-selecting={selected.length > 0 || undefined}>
                 {catalog.assets.map((a) => (
                   <article
                     key={a.id}
@@ -441,21 +440,10 @@ export function AssetLibrary() {
                     >
                       {preview(a)}
                     </a>
-                    <h2>
-                      {a.title}{importedIds.includes(a.id) && <small> · 本次导入</small>}
-                      {a.candidateIndex ? ` · 候选 ${a.candidateIndex}` : ''}
-                    </h2>
-                    <p>
-                      {labels[a.kind]} ·{' '}
-                      {a.availability === 'missing'
-                        ? '文件缺失'
-                        : a.statusLabel}
-                      {a.frameCount ? ` · ${a.frameCount} 帧` : ''}
-                    </p>
-                    <div className="wb-tool-links">
-                      <label>
-                        <input
+                    <label className="wb-asset-select" title="选择素材，用于批量下载或移入回收站">
+                      <input
                           type="checkbox"
+                          aria-label={`选择 ${a.title}${a.candidateIndex ? ` 候选 ${a.candidateIndex}` : ''}`}
                           checked={selected.some((item) => item.id === a.id)}
                           disabled={
                             exporting ||
@@ -468,12 +456,24 @@ export function AssetLibrary() {
                                 : ids.filter((item) => item.id !== a.id),
                             )
                           }
-                        />{' '}
-                        选择素材
-                      </label>
-                      <a href={assetLocationHref({ ...locationState, asset: a.id })} onClick={rememberScroll} className="wb-button">
-                        查看详情
-                      </a>
+                        />
+                    </label>
+                    <div className="wb-asset-card-foot">
+                      <div className="wb-asset-card-copy">
+                        <h2>
+                          <a href={assetLocationHref({ ...locationState, asset: a.id })} onClick={rememberScroll}>
+                            {a.title}{importedIds.includes(a.id) && <small> · 本次导入</small>}
+                            {a.candidateIndex ? ` · 候选 ${a.candidateIndex}` : ''}
+                          </a>
+                        </h2>
+                        <p>
+                          {labels[a.kind]} ·{' '}
+                          {a.availability === 'missing'
+                            ? '文件缺失'
+                            : a.statusLabel}
+                          {a.frameCount ? ` · ${a.frameCount} 帧` : ''}
+                        </p>
+                      </div>
                       {!a.trashedAt && a.editorPath && <a className="wb-button" href={editorHref(a.editorPath, a.id)} onClick={rememberScroll}>继续编辑</a>}
                     </div>
                   </article>

@@ -280,6 +280,16 @@ export function ReferenceArtEditor() {
     selected?.status === 'completed'
       ? selected.outputs?.find((path) => path.endsWith('/reference.png'))
       : undefined;
+  // Why the generate button is unavailable, shown under it instead of a silent grey button.
+  const generateBlocker = busy || selected?.status === 'running'
+    ? ''
+    : configured === false
+      ? '先在下方“PixelLab 设置”中保存 Key。'
+      : configured === null
+        ? '正在连接 PixelLab 服务…'
+        : !prompt.trim()
+          ? '填写角色描述后即可生成。'
+          : '';
   const historyTasks = tasks.filter(
     (task) =>
       task.capabilityId === 'reference-art' && !!task.input &&
@@ -294,14 +304,6 @@ export function ReferenceArtEditor() {
           <p>描述外观，生成像素角色，再让它动起来。</p>
         </div>
         <SourceAssetLink />
-        <a
-          className="wb-button"
-          href={
-            modules.find((module) => module.id === 'sprite-generator')?.href
-          }
-        >
-          已有参考图 <ArrowRight size={16} />
-        </a>
       </header>
       <div className="ra-layout">
         <section className="ra-controls" aria-label="生成设置">
@@ -368,10 +370,16 @@ export function ReferenceArtEditor() {
             )}
             生成一张原图
           </button>
+          {generateBlocker && <p className="wb-disabled-reason">{generateBlocker}</p>}
           <p className="ra-note">
             每次生成使用 PixelLab 账户额度。移送参考图不生成动画。
           </p>
-          <button className="wb-button" disabled={busy || selected?.status === 'running'} onClick={() => setLibrary({})}>从资产库选用角色原图</button>
+          <div className="ra-alternatives">
+            <button className="wb-button" disabled={busy || selected?.status === 'running'} onClick={() => setLibrary({})}>从资产库选用角色原图</button>
+            <a className="wb-text-button" href={modules.find((module) => module.id === 'sprite-generator')?.href}>
+              已有原图，直接制作动画 <ArrowRight size={14} />
+            </a>
+          </div>
           <details className="ra-settings">
             <summary>
               <KeyRound size={16} /> PixelLab 设置{' '}
@@ -483,6 +491,7 @@ export function ReferenceArtEditor() {
               用于制作序列帧 <ArrowRight size={16} />
             </button>
           </div>
+          {!png && !busy && <p className="wb-disabled-reason">生成或从资产库选用一张原图后，才能用于制作序列帧。</p>}
           {readyHref && <a href={readyHref}>继续制作序列帧 →</a>}
           {(message || selected?.error) && (
             <output className="ra-notice">{message || selected?.error}</output>

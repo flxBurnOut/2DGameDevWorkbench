@@ -505,6 +505,11 @@ function OpenMotionStudio({
       return { ...previous, ...value };
     });
   };
+  // What still blocks "制定方案", said in the footer instead of a silent grey button.
+  const planMissing = [
+    !motionObjectId(spec) ? '选择对象' : '',
+    spec.description.trim().length < 4 ? '描述动作（至少 4 个字）' : '',
+  ].filter(Boolean);
   const plan = () =>
     run(async () => {
       if (readOnly || work?.status === 'planning') return;
@@ -950,7 +955,7 @@ function OpenMotionStudio({
                         : '每个候选包含逐段检查和整段复核，需要 2 × 分段数 + 2 次视觉请求。'}</p>
                     </div>
                   </details>
-                  <div className="motion-notice">
+                  <div className="motion-notice motion-cost-note">
                     复核方式：{spec.review_protocol==='experts_v1'?'独立专家与争议复核':'基础视觉检查'}。{' '}
                     制定方案最多调用规划模型 {spec.budget.max_planning_calls}{' '}
                     次；此按钮不会生成动画。PixelLab 最多{' '}
@@ -1470,6 +1475,8 @@ function OpenMotionStudio({
               <LoaderCircle size={16} className="animate-spin" />
               正在保存操作…
             </>
+          ) : step === 0 && planMissing.length ? (
+            <span className="motion-missing">还需：{planMissing.join('、')}</span>
           ) : step === 0 ? (
             work ? (
               '修改保存在当前浏览器；重新制定方案会保留旧版本。'

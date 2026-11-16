@@ -249,6 +249,13 @@
   background: var(--ui-selected-bg);
 }
 .wb-width-notice { display: none; }
+/* One line under a disabled action saying what is still missing. */
+.wb-disabled-reason {
+  margin: 6px 0 0;
+  color: var(--wb-muted);
+  font-size: var(--ui-text-sm);
+  line-height: 1.5;
+}
 .wb-save-locations { display: grid; grid-template-columns: 90px 1fr; gap: 10px 16px; font-size: var(--ui-text-sm); }
 .wb-save-locations dt { font-weight: 600; }
 .wb-save-locations dd { color: var(--wb-muted); }
@@ -1071,8 +1078,22 @@
 .wb-history-actions { display: flex; gap: 8px; }
 .wb-danger { border-color: color-mix(in srgb, var(--theme-danger) 50%, var(--wb-line)); color: var(--theme-danger); }
 .wb-management-tabs, .wb-record-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0; }
-.wb-management-tabs { border-bottom: 1px solid var(--wb-line); padding-bottom: 16px; }
-.wb-management-tabs [aria-selected='true'], .wb-record-filters [aria-pressed='true'] { border-color: var(--ui-selected-border); color: var(--ui-selected-fg); background: var(--ui-selected-bg); }
+.wb-management-tabs { gap: 4px; border-bottom: 1px solid var(--wb-line); }
+/* Page tabs: plain text with a 2 px underline on the current tab. */
+.wb-management-tabs [role='tab'],
+.wb-management-tabs [role='tab']:hover:not(:disabled) { margin-bottom: -1px; padding: 8px 12px; border: 0; border-radius: var(--ui-radius-md) var(--ui-radius-md) 0 0; color: var(--wb-muted); background: transparent; box-shadow: inset 0 -2px 0 transparent; }
+.wb-management-tabs [role='tab']:hover:not(:disabled) { color: var(--wb-text); background: var(--ui-hover-bg); }
+.wb-management-tabs [role='tab'][aria-selected='true'], .wb-management-tabs [role='tab'][aria-selected='true']:hover:not(:disabled) { color: var(--wb-text); background: transparent; font-weight: 600; box-shadow: inset 0 -2px 0 var(--wb-accent); }
+.wb-management-tabs [role='tab']:focus-visible { outline-offset: -2px; }
+.wb-service-list { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px 16px; margin: 0 0 12px; }
+.wb-service-list dt { color: var(--wb-muted); }
+.wb-service-list dd { margin: 0; }
+.wb-service-status { display: inline-flex; align-items: center; gap: 6px; padding: 1px 8px; border-radius: var(--ui-radius-lg); font-size: var(--ui-text-xs); font-weight: 600; color: var(--wb-muted); background: var(--theme-surface); }
+.wb-service-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.wb-service-status[data-tone='ok'] { color: var(--theme-success); background: var(--theme-success-soft); }
+.wb-service-status[data-tone='warning'] { color: var(--theme-warning); background: var(--theme-warning-soft); }
+.wb-service-status[data-tone='error'] { color: var(--theme-danger); background: var(--theme-danger-soft); }
+.wb-record-filters [aria-pressed='true'] { border-color: var(--ui-selected-border); color: var(--ui-selected-fg); background: var(--ui-selected-bg); }
 .wb-service-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 24px 0; }
 .wb-management-card { padding: 24px; border: 1px solid var(--wb-line); border-radius: var(--ui-radius-lg); background: var(--wb-panel); box-shadow: var(--ui-shadow-sm); }
 .wb-management-card h2 { font-size: var(--ui-text-md); font-weight: 600; margin-bottom: 16px; }
@@ -1122,11 +1143,23 @@
 .wb-asset-scope { margin: 0 0 16px; }
 .wb-asset-filters { margin: 0 0 16px; gap: 8px; }
 .wb-asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-top: 16px; }
-.wb-asset-card { padding: 16px; border: 1px solid var(--wb-line); border-radius: var(--ui-radius-lg); background: var(--wb-panel); box-shadow: var(--ui-shadow-sm); transition: box-shadow var(--ui-duration) var(--ui-ease), border-color var(--ui-duration) var(--ui-ease); }
+.wb-asset-card { position: relative; padding: 12px; border: 1px solid var(--wb-line); border-radius: var(--ui-radius-lg); background: var(--wb-panel); box-shadow: var(--ui-shadow-sm); transition: box-shadow var(--ui-duration) var(--ui-ease), border-color var(--ui-duration) var(--ui-ease); }
 .wb-asset-card:hover { border-color: var(--theme-control-border); box-shadow: var(--ui-shadow-md); }
-.wb-asset-card > h2 { margin-top: 12px; font-size: var(--ui-text-md); font-weight: 600; }
-.wb-asset-card .wb-tool-links { gap: 8px; margin: 12px 0 0; }
-.wb-asset-preview { display: block; width: 100%; height: 170px; object-fit: contain; image-rendering: pixelated; background: var(--theme-canvas); border-radius: var(--ui-radius-md); }
+.wb-asset-card:has(.wb-asset-select input:checked) { border-color: var(--ui-selected-border); box-shadow: 0 0 0 1px var(--ui-selected-border), var(--ui-shadow-sm); }
+/* Selection appears on hover, on keyboard focus, once anything is selected, and always on touch screens. */
+.wb-asset-select { position: absolute; top: 20px; right: 20px; display: grid; place-items: center; width: 28px; height: 28px; margin: 0; border-radius: var(--ui-radius-md); background: var(--wb-panel); box-shadow: var(--ui-shadow-md); opacity: 0; cursor: pointer; transition: opacity var(--ui-duration) var(--ui-ease); }
+.wb-asset-card:hover .wb-asset-select, .wb-asset-select:focus-within, .wb-asset-select:has(input:checked), .wb-asset-grid[data-selecting] .wb-asset-select { opacity: 1; }
+@media (hover: none) { .wb-asset-select { opacity: 1; } }
+.wb-asset-card-foot { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.wb-asset-card-copy { flex: 1; min-width: 0; }
+.wb-asset-card-copy h2 { margin: 0; font-size: var(--ui-text-base); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-asset-card-copy h2 a { color: var(--wb-text); }
+.wb-asset-card-copy h2 a:hover { color: var(--wb-accent); }
+.wb-asset-card-copy p { margin: 2px 0 0; color: var(--wb-muted); font-size: var(--ui-text-xs); }
+.wb-asset-card-foot .wb-button { flex-shrink: 0; }
+.wb-asset-count { margin: 0; font-size: var(--ui-text-sm); }
+/* Transparent art sits on the same checkerboard as the editors. */
+.wb-asset-preview { display: block; width: 100%; height: 170px; object-fit: contain; image-rendering: pixelated; border-radius: var(--ui-radius-md); background-color: var(--theme-checker-a); background-image: conic-gradient(var(--theme-checker-b) 25%, transparent 0 50%, var(--theme-checker-b) 0 75%, transparent 0); background-size: 16px 16px; }
 .wb-asset-preview[data-detail] { height: 350px; max-height: 420px; }
 .wb-asset-placeholder { display: grid; place-items: center; min-height: 120px; color: var(--wb-muted); }
 .wb-asset-pages { margin-top: 24px; }

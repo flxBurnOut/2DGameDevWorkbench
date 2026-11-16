@@ -289,6 +289,13 @@
   margin-top: 20px;
   font-size: var(--ui-text-sm);
 }
+.motion-cost-note {
+  background: var(--theme-surface);
+}
+.motion-missing {
+  color: var(--theme-text);
+  font-weight: 600;
+}
 .motion-studio > .motion-notice {
   margin: 0;
   border-radius: 0;

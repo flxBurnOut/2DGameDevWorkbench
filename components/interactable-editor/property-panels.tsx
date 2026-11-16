@@ -1,6 +1,6 @@
 'use client';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { appearanceAnimation } from '@/features/interactable-editor/contract.mjs';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 import {
@@ -11,6 +11,36 @@ import {
   type Shape,
   type Appearance,
 } from '@/features/interactable-editor/contract.mjs';
+
+/**
+ * Tint as a swatch plus an editable hex value. White means "no tint", so it
+ * is labelled instead of showing an empty white bar.
+ */
+export function ColorField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const plain = value.toLowerCase() === '#ffffff';
+  return (
+    <div className="ie-color-field">
+      <span className="ie-field-label">颜色</span>
+      <span className="ie-color">
+        <input type="color" aria-label="选择颜色" value={value} onChange={(e) => { setDraft(null); onChange(e.target.value); }} />
+        <input
+          aria-label="颜色值"
+          value={draft ?? value}
+          maxLength={7}
+          spellCheck={false}
+          onChange={(e) => {
+            const next = e.target.value.startsWith('#') ? e.target.value : `#${e.target.value}`;
+            setDraft(next);
+            if (/^#[0-9a-f]{6}$/i.test(next)) onChange(next.toLowerCase());
+          }}
+          onBlur={() => setDraft(null)}
+        />
+        {plain && <small>不着色</small>}
+      </span>
+    </div>
+  );
+}
 
 export function Field({
   label,
@@ -390,13 +420,7 @@ function AppearanceFields({
           value={value.solidEnabled}
           onChange={(solidEnabled) => onChange({ ...value, solidEnabled })}
         />
-        <Field label="颜色">
-          <input
-            type="color"
-            value={value.tint}
-            onChange={(e) => onChange({ ...value, tint: e.target.value })}
-          />
-        </Field>
+        <ColorField value={value.tint} onChange={(tint) => onChange({ ...value, tint })} />
       </div>
     </>
   );

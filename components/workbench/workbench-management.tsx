@@ -7,6 +7,26 @@ import { TaskResultCard } from './task-result-card';
 import { GameDeliveryHistory } from './game-delivery-history';
 import { workStateLabels, operationLabel } from '@/lib/workbench/work-items';
 
+type ServiceTone = 'ok' | 'warning' | 'error' | 'checking';
+const checking = { tone: 'checking' as ServiceTone, text: '正在检查' };
+function online(value: boolean | null): { tone: ServiceTone; text: string } {
+  return value === null ? checking : value ? { tone: 'ok', text: '已连接' } : { tone: 'error', text: '未连接' };
+}
+
+/** One service check: name on the left, a coloured status label on the right. */
+function ServiceRow({ label, tone, text }: { label: string; tone: ServiceTone; text: string }) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>
+        <span className="wb-service-status" data-tone={tone}>
+          {text}
+        </span>
+      </dd>
+    </>
+  );
+}
+
 type Tab = 'services' | 'records' | 'deliveries' | 'data';
 const tabs: [Tab, string][] = [
   ['services', '服务状态'],
@@ -126,13 +146,9 @@ export function WorkbenchManagement() {
             <div className="wb-service-grid">
               <article className="wb-management-card">
                 <h2>任务服务</h2>
-                <strong>
-                  {wb.runtimeOnline === null
-                    ? '正在检查'
-                    : wb.runtimeOnline
-                      ? '已连接'
-                      : '未连接'}
-                </strong>
+                <dl className="wb-service-list">
+                  <ServiceRow label="连接" {...online(wb.runtimeOnline)} />
+                </dl>
                 <p>负责后台任务、制作记录和产物读取。</p>
                 {wb.runtimeOnline === false && (
                   <p>请启动本地任务服务后刷新。已有浏览器草稿仍可继续编辑。</p>
@@ -140,32 +156,27 @@ export function WorkbenchManagement() {
               </article>
               <article className="wb-management-card">
                 <h2>序列帧服务</h2>
-                <p>
-                  作业接口：
-                  {wb.spriteOnline === null
-                    ? '正在检查'
-                    : wb.spriteOnline
-                      ? '已连接'
-                      : '未连接'}
-                </p>
-                <p>
-                  编辑界面：
-                  {!health
-                    ? '正在检查'
-                    : health.error
-                      ? '无法确认'
-                      : health.uiReady
-                        ? '已就绪'
-                        : '尚未就绪'}
-                </p>
-                <p>
-                  图片生成配置：
-                  {!health || health.error
-                    ? '无法确认'
-                    : health.pixellabConfigured
-                      ? '已配置'
-                      : '尚未配置'}
-                </p>
+                <dl className="wb-service-list">
+                  <ServiceRow label="作业接口" {...online(wb.spriteOnline)} />
+                  <ServiceRow
+                    label="编辑界面"
+                    {...(!health
+                      ? checking
+                      : health.error
+                        ? { tone: 'warning', text: '无法确认' }
+                        : health.uiReady
+                          ? { tone: 'ok', text: '已就绪' }
+                          : { tone: 'warning', text: '尚未就绪' })}
+                  />
+                  <ServiceRow
+                    label="图片生成配置"
+                    {...(!health || health.error
+                      ? { tone: 'warning', text: '无法确认' }
+                      : health.pixellabConfigured
+                        ? { tone: 'ok', text: '已配置' }
+                        : { tone: 'warning', text: '尚未配置' })}
+                  />
+                </dl>
                 {health?.error && <p role="alert">{health.error}</p>}
                 {health && !health.error && !health.uiReady && (
                   <p>
@@ -173,19 +184,6 @@ export function WorkbenchManagement() {
                   </p>
                 )}
               </article>
-            </div>
-            <div className="wb-tool-links">
-              {wb.modules.map((module) => (
-                <a className="wb-button" key={module.id} href={module.href}>
-                  打开{module.shortName}
-                </a>
-              ))}
-              <button
-                className="wb-button"
-                onClick={() => void wb.navigate('/')}
-              >
-                回到首页选择制作目标
-              </button>
             </div>
           </>
         )}

@@ -8,6 +8,7 @@ import {
   type Interactable,
 } from '@/features/interactable-editor/contract.mjs';
 import {
+  ColorField,
   Field,
   Numeric,
   Check,
@@ -175,17 +176,14 @@ export function VisualPanel({
             })
           }
         />
-        <Field label="颜色">
-          <input
-            type="color"
-            value={o.visual.tint}
-            onChange={(e) =>
-              edit((v) => {
-                v.visual.tint = e.target.value;
-              })
-            }
-          />
-        </Field>
+        <ColorField
+          value={o.visual.tint}
+          onChange={(tint) =>
+            edit((v) => {
+              v.visual.tint = tint;
+            })
+          }
+        />
       </div>
       <div className="ie-row">
         {(['flipH', 'flipV', 'visible', 'float', 'dot'] as const).map(

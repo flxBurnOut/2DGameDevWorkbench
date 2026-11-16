@@ -799,45 +799,6 @@ export function InteractableEditor() {
         </aside>
         <Preview object={current} assets={project.assets} edit={edit} />
         <aside className="ie-inspector">
-          <button disabled={!ready || busy || !draftWritable || !current.visual.assetId || imageOpening} onClick={() => void openImageEdit()}>
-            {imageOpening ? '正在保存源工程…' : '局部调整默认图片'}
-          </button>
-          <ImagePropPanel
-            projectId={project.projectId}
-            definitionId={current.definitionId}
-            objectName={current.displayName}
-            imageId={current.visual.assetId}
-            disabled={!ready || busy || !draftWritable}
-            onBusy={setBusy}
-            beforeGenerate={async () => {
-              await persist(true);
-              const url = new URL(location.href);
-              url.searchParams.delete('task');
-              url.searchParams.set('project', latest.current.project.projectId);
-              url.searchParams.set('object', current.definitionId);
-              history.replaceState(null, '', url.pathname + url.search);
-            }}
-            onAdopt={(target, asset) => setProject(applyPropArt(latest.current.project, target, asset))}
-          />
-          <PropArtPanel
-            projectId={project.projectId}
-            definitionId={current.definitionId}
-            objectName={current.displayName}
-            imageId={current.visual.assetId}
-            disabled={!ready || busy || !draftWritable}
-            onBusy={setBusy}
-            beforeGenerate={async () => {
-              await persist(true);
-              const url = new URL(location.href);
-              url.searchParams.delete('task');
-              url.searchParams.set('project', latest.current.project.projectId);
-              url.searchParams.set('object', current.definitionId);
-              history.replaceState(null, '', url.pathname + url.search);
-            }}
-            onAdopt={(target, asset) => {
-              setProject(applyPropArt(latest.current.project, target, asset));
-            }}
-          />
           <Field label="物件名称">
             <input
               value={current.displayName}
@@ -864,6 +825,50 @@ export function InteractableEditor() {
               </button>
             ))}
           </fieldset>
+          {/* Kept mounted on other tabs so running generations keep polling. */}
+          <section className="ie-get-image" aria-label="获取图片" hidden={tab !== 'visual'}>
+            <h3>获取图片</h3>
+            <button disabled={!ready || busy || !draftWritable || !current.visual.assetId || imageOpening} onClick={() => void openImageEdit()}>
+              {imageOpening ? '正在保存源工程…' : '局部调整默认图片'}
+            </button>
+            {!current.visual.assetId && <p className="wb-disabled-reason">在下方“图片”中选定一张图后，可以局部调整。</p>}
+            <ImagePropPanel
+              projectId={project.projectId}
+              definitionId={current.definitionId}
+              objectName={current.displayName}
+              imageId={current.visual.assetId}
+              disabled={!ready || busy || !draftWritable}
+              onBusy={setBusy}
+              beforeGenerate={async () => {
+                await persist(true);
+                const url = new URL(location.href);
+                url.searchParams.delete('task');
+                url.searchParams.set('project', latest.current.project.projectId);
+                url.searchParams.set('object', current.definitionId);
+                history.replaceState(null, '', url.pathname + url.search);
+              }}
+              onAdopt={(target, asset) => setProject(applyPropArt(latest.current.project, target, asset))}
+            />
+            <PropArtPanel
+              projectId={project.projectId}
+              definitionId={current.definitionId}
+              objectName={current.displayName}
+              imageId={current.visual.assetId}
+              disabled={!ready || busy || !draftWritable}
+              onBusy={setBusy}
+              beforeGenerate={async () => {
+                await persist(true);
+                const url = new URL(location.href);
+                url.searchParams.delete('task');
+                url.searchParams.set('project', latest.current.project.projectId);
+                url.searchParams.set('object', current.definitionId);
+                history.replaceState(null, '', url.pathname + url.search);
+              }}
+              onAdopt={(target, asset) => {
+                setProject(applyPropArt(latest.current.project, target, asset));
+              }}
+            />
+          </section>
           {tab === 'visual' && (
             <VisualPanel
               object={current}

@@ -14,7 +14,7 @@ export function ContextHelp() {
           : tool?.id === 'reference-art'
             ? '描述角色外观并生成原图，检查后采用。已有角色原图也可直接进入角色动画制作。'
             : wb.pathname === '/assets'
-              ? '在资产库搜索、筛选并查看素材详情。导入 Forge 素材包会先检查可恢复内容；从编辑器选用素材会保留来源。'
+              ? '在资产库搜索、筛选并点击素材查看详情；动画的每个候选单独列出。交互物可回到编辑器继续修改，其他素材可下载或导出到游戏项目。悬停素材时右上角出现选择框，可批量下载或移入回收站。浏览器独有的交互物草稿和下载文件不会自动收录。导入 Forge 素材包会先检查可恢复内容；从编辑器选用素材会保留来源。'
               : '从顶栏或首页的工具卡进入制作工具；首页“继续制作”列出最近的作品，“制作记录”列出全部。';
   const session = wb.sessions.find((entry) => entry.capabilityId === tool?.id);
   const active = session?.items[0];

@@ -1,5 +1,6 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {imageEditRequest} from '../../lib/workbench/image-edits.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -190,6 +191,17 @@ try {
   const contextRun=await runConnector(manifest,capability,{operation:'get-motion-adjustment',openWorkId:workId,expectedRevision:1,candidateIndex:2});
   const selection=JSON.parse(await readFile(contextRun.task.outputs.find(p=>p.endsWith('/result.json')),'utf8'));
   assert.equal(selection.orderedFrames.length,8);
+  // Interactable panel routes stay inside the bounded proxy: exact token-bound frame sources and derived assets.
+  const context=selection.adjustmentContext;
+  const source=await proxy.GET(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/edit-source/1&revision=1&candidate=2&token=${context.token}`));
+  assert.equal(source.status,200);
+  assert.equal(createHash('sha256').update(Buffer.from(await source.arrayBuffer())).digest('hex'),context.frames[1].sha256);
+  assert.equal((await proxy.GET(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/edit-source/1&revision=1&candidate=2&token=bad`))).status,400);
+  const derivedList=await proxy.GET(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/derived&revision=1`));
+  assert.equal(derivedList.status,200);assert.deepEqual((await derivedList.json()).derived,[]);
+  const characterDerivation=await proxy.POST(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/derived`,{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({expected_revision:1,candidate_index:2,request_key:'character-derive-1',method:'reverse',stage_index:0})}));
+  assert.equal(characterDerivation.status,409,'routed to the service, which refuses derivations for characters');
   const altInput={operation:'create-motion-adjustment',openWorkId:workId,expectedRevision:1,candidateIndex:2,
     adjustmentStart:1,adjustmentEnd:2,adjustmentToken:selection.adjustmentContext.token,
     adjustmentRequest:'我希望涂选处颜色略亮，这是个人偏好，并非原版有错',adjustmentPreserveMotion:true,

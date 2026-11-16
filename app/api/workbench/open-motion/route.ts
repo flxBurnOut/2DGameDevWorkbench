@@ -9,10 +9,10 @@ const structureWrite = new RegExp(`^open-motion/structures(?:/${work}/correction
 const temporalRead = new RegExp(`^open-motion/(?:${work}/temporal|temporal-structures/${work}(?:/frames/[0-9]{1,3}(?:/parts/[a-z][a-z0-9_-]{0,63})?)?)$`);
 const temporalWrite = new RegExp(`^open-motion/(?:${work}/temporal|temporal-structures/${work}/(?:corrections|review))$`);
 const read = new RegExp(
-  `^(?:open-motion(?:/(?:settings|references(?:/[a-z0-9_]+)?|${work}(?:/reference|/targets/[0-3]|/progress-image|/adjustments(?:/${work}(?:/(?:source|proposed)/[0-9]{1,2})?)?|/candidates/[1-8]/stages/[0-3](?:/state-image|/frames/[0-9]{1,2}|/repairs/[0-1]/frames/[0-9]{1,2})?)?))?|jobs/${job}(?:/candidates/[1-8]/frames/[0-9]{1,2}/image|/exports/(?:sheet|preview|godot))?)$`,
+  `^(?:open-motion(?:/(?:settings|references(?:/[a-z0-9_]+)?|${work}(?:/reference|/targets/[0-3]|/progress-image|/adjustments(?:/${work}(?:/(?:source|proposed)/[0-9]{1,2})?)?|/edit-source/[0-9]{1,2}|/derived(?:/${work}/frames/[0-9]{1,2})?|/candidates/[1-8]/stages/[0-3](?:/state-image|/frames/[0-9]{1,2}|/repairs/[0-1]/frames/[0-9]{1,2})?)?))?|jobs/${job}(?:/candidates/[1-8]/frames/[0-9]{1,2}/image|/exports/(?:sheet|preview|godot))?)$`,
 );
 const write = new RegExp(
-  `^open-motion(?:/(?:settings|references|${work}/(?:revise|generate|pause|resume|review|review-stage|target|repair-stage|review-repair|export|recover|local-frame-edits|adjustments(?:/${work}/decision)?)))?$`,
+  `^open-motion(?:/(?:settings|references|${work}/(?:revise|generate|pause|resume|review|review-stage|target|repair-stage|review-repair|export|recover|local-frame-edits|adjustments(?:/${work}/decision)?|derived(?:/${work}/decision)?)))?$`,
 );
 
 async function proxy(request: Request) {
@@ -42,6 +42,12 @@ async function proxy(request: Request) {
   const candidate = url.searchParams.get('candidate');
   if (candidate && /^[1-8]$/.test(candidate))
     target.searchParams.set('candidate', candidate);
+  // Exact frame sources for deterministic panel tools are bound to their adjustment token.
+  const frameToken = url.searchParams.get('token');
+  if (frameToken !== null) {
+    if (!/^[0-9a-f]{64}$/.test(frameToken)) return Response.json({ error: '帧来源标识无效' }, { status: 400 });
+    target.searchParams.set('token', frameToken);
+  }
   const stage = url.searchParams.get('stage');
   if (stage !== null) {
     if (!/^[0-3]$/.test(stage)) return Response.json({error:'片段编号无效'},{status:400});

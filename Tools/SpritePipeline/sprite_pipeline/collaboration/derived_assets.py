@@ -99,9 +99,16 @@ def _png(image):
 
 class DerivedAssets:
     def __init__(self, service):
-        from .workspace import OpenMotionWorkspace
         self.s = service
-        self.ws = OpenMotionWorkspace(service)
+        self._ws = None
+
+    @property
+    def ws(self):
+        # Built on demand: catalog listing only needs the data root.
+        if self._ws is None:
+            from .workspace import OpenMotionWorkspace
+            self._ws = OpenMotionWorkspace(self.s)
+        return self._ws
 
     def root(self, work_id):
         return self.ws.directory(work_id) / 'derived'
@@ -279,7 +286,7 @@ class DerivedAssets:
 
     # Asset-library representation: accepted records only.
     def catalog_rows(self):
-        root = self.ws.root
+        root = self.s.settings.data_root / 'open-motion'
         if not root.is_dir():
             return []
         rows = []

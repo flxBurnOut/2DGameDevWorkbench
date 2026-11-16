@@ -6,6 +6,8 @@
 | --- | --- | --- |
 | 能力、适配器、任务状态 | `workbench/manifest.json`、`lib/workbench/runtime.mjs`、`lib/workbench/adapters/` | `test:adapters`、`test:task-isolation` |
 | MCP / CLI / HTTP 与 Agent 指导 | `scripts/workbench*.mjs`、`lib/workbench/agent-api.mjs`、`agent-guidance.mjs` | `test:mcp`、`test:http`；实际制作链变化再跑 `test:agent-acceptance` |
+| 前端外壳、导航与交互状态 | `components/workbench/`、`components/ui/`、`app/interaction.css`、`lib/workbench/navigation.ts` | `test:workbench-shell`、`test:frontend`；改顶栏或路由时加 `test:preview-follow`、`test:presentation` |
+| 主题配色 | `lib/workbench/theme-palette.json` → `npm run theme:sync` | `theme:check`、`test:theme`（两种模式的对比度） |
 | 预览和页面跟随 | `lib/workbench/*preview*`、前端跟随组件 | `test:preview-follow`、`test:presentation` |
 | 图片生成 / 局部编辑 | `lib/workbench/adapters/image-assets.mjs`、`image-edit*.mjs` | `test:image-assets`、受影响的 `tests/image-edit/` 用例 |
 | 局部编辑诊断与基线采集 | `scripts/image-edit-evaluation.mjs`、`scripts/image-edit-replay.mjs`；[P0 评测](local-edit-evaluation.md) | `test:image-edit-evaluation`；隔离 `test:image-edit`、`test:image-assets` |

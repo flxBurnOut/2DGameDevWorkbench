@@ -4,7 +4,7 @@
 
 角色动作的模型设置分别显示默认规划与视觉复核型号；服务状态和空白 Key 输入区默认展开，已保存凭据只显示来源与状态。新增型号、单专家覆盖与高级参数按需展开，保存按钮保持可达。方案页的动作约束与关键姿势默认收起；检查页默认显示视觉报告结论与帧证据，模型意见不能替代实际播放。播放确认绑定当前帧摘要，外部改帧后必须重新确认；视觉请求未结束时不能预先确认其提醒。
 
-外层工作台通过并列的角色制作与交互物入口组织资产生产。角色动画采用五阶段 React 主流程，交互物保留原有编辑方式。它是外部 Agent 的可视协作面：展示真实任务、进度和产物，并承载画布、图层、碰撞区等不适合纯对话操作的内容；页面不提供通用 Agent 对话框。
+外层工作台通过并列的角色制作与交互物入口组织资产生产。角色动画采用五阶段 React 主流程，交互物保留原有编辑方式；交互物的状态动画目前借用角色动画页制作，独立面板见[交互物动画独立面板方案](交互物动画独立面板方案.md)。它是外部 Agent 的可视协作面：展示真实任务、进度和产物，并承载画布、图层、碰撞区等不适合纯对话操作的内容；页面不提供通用 Agent 对话框。
 
 界面使用纯色背景（网格只出现在画布与预览区）和明确的角色美术/交互物色彩语义，不使用英文装饰眉标或仿 macOS 的窗口装饰。颜色、圆角（三档）、字号（六档）和控件高度来自 `lib/workbench/theme-palette.json` 生成的主题变量与 `app/globals.css` 中的 `--ui-*` 刻度；下拉统一使用 `components/ui/native-select.tsx`。中文操作名优先，协议参数集中到工具内部或高级页。界面按 1100 像素以上的桌面宽度设计，更窄时显示提示；样式断点只有 ≤1099px 与 ≤700px 两档。
 
@@ -15,7 +15,7 @@
 | `/` | 工作台首页：三个工具卡（角色原图、角色动画、交互物编辑）、继续制作（最近 5 条记录）、最近素材，以及导入素材包 |
 | `/player` | 重定向到首页；保留路由供旧链接和制作线入口使用 |
 | `/tools/reference-art` | 角色原图：输入描述 → 生成像素原图 → 移送为动画参考图 |
-| `/tools/sprite-generator` | 角色动画：准备与描述 → 查看制作方案 → 自动制作 → 检查与调整 → 导出与使用；旧版 `?legacy=1` |
+| `/tools/sprite-generator` | 角色动画：准备与描述 → 查看制作方案 → 自动制作 → 检查与调整 → 导出与使用；“已有对象”同时列出角色与交互物，交互物状态动画也在此制作；旧版 `?legacy=1` |
 | `/tools/interactable-editor` | 交互物编辑：按项目与对象定位恢复 |
 | `/assets` | 分页查找持久资产、精确候选详情及下载真实素材 ZIP |
 | `/advanced` | 服务连接、制作记录、游戏交付历史和本机数据；不承担 Agent 对话 |
@@ -77,6 +77,7 @@
 `workbench/manifest.json` 是路线与能力的唯一清单，`productionLines` 定义顶级入口，能力 `ui` 提供路线归属、入口说明和步骤。页面不直接导入完整清单（含全部输入 schema）：`lib/workbench/ui-manifest.json` 只保留品牌、导航、模块与路由，由 `lib/workbench/ui-manifest.mjs` 生成，构建与开发服务启动时自动同步，也可运行 `npm run ui-manifest:sync`，`npm run ui-manifest:check` 与 `test:workbench-shell` 校验其未过期。`lib/workbench/modules.ts` 从中派生前端数据；`lib/workbench/navigation.ts` 组织共享导航分组、当前页和安全来源返回目标。制作工具的 `name`、`shortName` 与 `entryTitle` 使用同一页面名称，操作按钮另用动作文案。
 
 - `components/workbench/`：首页（含内置示例像素图）、常驻外壳、记录、高级工具和样式。
+- `app/interaction.css`、`components/ui/`：共享交互状态（过渡、按下、选中、禁用、`aria-busy` 加载、焦点、三级阴影）、复选框与 `ui-switch` 开关、`ui-segmented` 分段控件，以及 `toast.tsx`、`tooltip.tsx`。新控件优先使用这些类与组件，不在模块样式里另写一套状态。
 - `components/workbench/shared-navigation.tsx`：唯一顶栏、制作记录角标和供工具栏使用的来源返回链接。
 - `components/workbench/workbench-help.tsx`：当前工具帮助。
 - `components/workbench/lazy-dialogs.tsx`、`godot-export-host.tsx`、`components/image-edit/lazy-image-edit-workspace.tsx`：素材选择、素材包导入、Godot 导出和局部调整在首次打开时才加载。大型编辑器通过 `useWorkbenchActions()` 只读取稳定回调，不随状态轮询重渲染。

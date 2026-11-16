@@ -1,6 +1,6 @@
 # 系统架构
 
-本文描述 `paper-vbyc` 分支的当前实现，核对基准为 `df043c0a4cc8`，更新于 2026-11-15。实施历史与验收记录见[论文分支执行计划](论文分支执行计划.md)和[工程问题清单](问题清单/README.md)。
+本文描述 `paper-vbyc` 分支的当前实现，核对基准为 `c501e63`，更新于 2026-11-16。实施历史与验收记录见[论文分支执行计划](论文分支执行计划.md)和[工程问题清单](问题清单/README.md)。
 
 Forge 是本地优先的资产制作工作台：Node 负责接入、任务适配、共享编辑与交付，Python SpritePipeline 负责原图服务、动画生产、检查点与备选。当前分支保留角色与交互物序列帧、物品图片、局部调整、交互物编辑和 Godot 交付；地图拼接、场景组装、场景协作、地图分层及可站面原型保留在 `new-arch`，不属于本分支运行架构。
 
@@ -45,7 +45,7 @@ flowchart TB
 
 | 服务 | 默认地址 | 职责与实现 |
 | --- | --- | --- |
-| Web | `http://localhost:3000` | React 工作台、Vinext/Vite 与服务端 API 路由；主动画界面位于 `components/sprite-generator/` |
+| Web | `http://localhost:3000` | React 工作台、Vinext/Vite 与服务端 API 路由；角色与交互物动画界面位于 `components/sprite-generator/` |
 | HTTP Bridge | `http://127.0.0.1:8790` | `scripts/workbench-http.mjs`；任务 API、共享文档、图片会话、资产与交付接口 |
 | SpritePipeline | `http://127.0.0.1:7860` | FastAPI/Uvicorn；开放动作、原图、原生 Job、像素编辑及导出接口；Gradio UI 与 API 共用服务实例 |
 
@@ -65,10 +65,13 @@ flowchart TB
 | 能力与配置清单 | [workbench/manifest.json](../workbench/manifest.json) | 能力 ID、输入 schema、连接器、产物、页面路由、工作流与数据目录 |
 | 接入层 | `scripts/workbench-mcp.mjs`、`scripts/workbench.mjs`、`scripts/workbench-http.mjs`、`app/api/workbench/` | STDIO MCP、CLI、HTTP 与 Web 代理 |
 | 共用业务层 | [agent-api.mjs](../lib/workbench/agent-api.mjs)、[runtime.mjs](../lib/workbench/runtime.mjs)、`lib/workbench/adapters/` | Agent 操作分派、任务校验与持久化、适配器执行和异步恢复 |
+| Web 外壳与交互层 | `components/workbench/`、`components/ui/`、`app/interaction.css`、`app/theme-tokens.css` | 统一顶栏与首页、制作记录与帮助、交互状态（悬停、按下、选中、禁用、加载、焦点）、Toast 与 Tooltip、主题变量 |
 | Web 编辑层 | `app/`、`components/`、`features/` | 页面、图形交互、播放、检查、草稿和共享编辑同步 |
 | 动画生产层 | `Tools/SpritePipeline/sprite_pipeline/`，开放动作位于 `collaboration/` | 对象、规划、生成、技术 QA、复核、检查点、修正与导出 |
 | 共享编辑层 | `lib/workbench/editor-documents.mjs`、`image-edits.mjs`、`features/editor-documents/` | 文档命令、版本、请求身份、图片会话、媒体与恢复 |
 | 资产与交付层 | `asset-catalog.mjs`、`asset-packages.mjs`、`game-export.mjs`、`features/godot-export/` | 资产发现、导入、打包、安装计划、备份与交付证据 |
+
+Web 页面为首页 `/`、角色原图 `/tools/reference-art`、角色动画 `/tools/sprite-generator`、交互物编辑 `/tools/interactable-editor`、资产库 `/assets` 和工作台管理 `/advanced`；旧的 `/player` 总览在服务端重定向到首页。所有页面共用 `components/workbench/shared-navigation.tsx` 的顶栏；页面只读取由 manifest 派生的精简 `lib/workbench/ui-manifest.json`。主题颜色以 `lib/workbench/theme-palette.json` 为源，经 `npm run theme:sync` 生成 `app/theme-tokens.css` 与 SpritePipeline 的同名文件，`test:theme` 检查两种模式的对比度。界面结构与交互规则见[工作台界面](workbench-interface.md)与[前端界面与交互优化方案](前端界面与交互优化方案.md)。
 
 manifest 是工作台级能力目录；各入口消费同一套能力 ID、输入 schema、连接器和产物声明。当前注册四项能力，适配器由 [adapters/index.mjs](../lib/workbench/adapters/index.mjs) 绑定：
 
@@ -211,7 +214,7 @@ flowchart TD
 
 `state_assets.py` 将确认状态图和已接受过渡纳入资产目录；`import-motion-asset` 经共享文档类型化命令写入指定切换槽或序列条目。`interactable-motion-import.mjs` 保留作品、素材版本、检查点令牌与帧哈希，核验来源后写入静态状态图或非循环过渡片段，不改变其他消费者。单独确认的状态图可按自身条件导入，过渡必须已接受；末尾停留帧按真实播放映射处理。
 
-前端复用现有资产选择入口，不增加独立的状态写回页面。`?document=<id>` 打开共享工程；繁忙、有本地修改、离线或版本冲突时保留草稿。`contentHash` 始终表示已存储内容，草稿不冒充服务端版本。
+前端复用现有资产选择入口，不增加独立的状态写回页面。交互物动画目前在角色动画页 `/tools/sprite-generator` 中选择交互物对象制作，入口是交互物编辑器“外观 → 获取图片 → 生成物品原图”下的“移送到物品动画”；以状态图为中心的独立面板与交互物专用编辑工具见[交互物动画独立面板方案](交互物动画独立面板方案.md)，尚未实施。`?document=<id>` 打开共享工程；繁忙、有本地修改、离线或版本冲突时保留草稿。`contentHash` 始终表示已存储内容，草稿不冒充服务端版本。
 
 交互物编辑器保留 inspect、toggle、pickup、sequence 四类行为和 proximity_press、pointer_click、automatic_enter、external_request 四类触发。生成与修正发生在序列帧工具；交接后配置行为、碰撞、范围、文本与音效。`simulation-replay.mjs` 提供有界事件模拟与期望检查，不证明 Godot 物理、真实音频或存档行为。导出仍走 `interactable-editor` 的 `export-godot`，不要求本机安装 Godot，也不调用生成 API。详见[交互物](interactable-editor.md)与[内部素材导入](internal-imports.md)。
 
@@ -243,7 +246,7 @@ Web 合并展示 runtime task、原生 Job 与浏览器草稿，提供图形编�
 
 ## 10. 实现状态与验证边界
 
-当前实现已包含对象泛化、128 像素物品图移送、交互物合同、状态链、状态/过渡写回与外部 B 图条件（N1–N6），以及动画帧修正、共用模型配置与界面接线（M1–M7）、冻结实验协议、对照流程和导出支撑（E1–E4）。M8 的角色结构蒙版建议仍为可选未实施项，不能当作自动选区来源。
+当前实现已包含对象泛化、128 像素物品图移送、交互物合同、状态链、状态/过渡写回与外部 B 图条件（N1–N6），以及动画帧修正、共用模型配置与界面接线（M1–M7）、冻结实验协议、对照流程和导出支撑（E1–E4）。M8 的角色结构蒙版建议仍为可选未实施项，不能当作自动选区来源。交互物动画的独立网页面板（第 6 节）为方案阶段。
 
 现有工程验收包含模拟提供方、隔离工程与归档真实帧回放。它们验证合同、来源、像素保护、版本冲突、恢复、播放和交付行为；真实生成下的跨段状态链有效性、固定部件/铰接测量对更多对象的适用性，以及论文实验规模和预算仍需另行验证。当前进度见[论文方向与方法](论文方向与方法.md)，历史验收见执行计划与工程问题清单。
 

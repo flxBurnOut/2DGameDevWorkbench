@@ -13,6 +13,7 @@ Complete the user's requested asset workflow using the shared workbench runtime.
 | --- | --- | --- |
 | Character image or existing PNG import | reference-art generate / import, then transfer when an animation reference is needed | [Reference art](../../../docs/reference-art.md) · reference-art |
 | New or continuing animation | sprite-generator plan-motion and its saved work/checkpoints | [Motion workflow](../../../workbench/guides/motion.md) · motion |
+| Interactable state animation (A → B states, then bind to the object) | reference-art subject=prop → transfer → plan-motion with the interactable object → review-motion-stage (accept_state / accept) → import-motion-asset on the shared document | [Motion workflow](../../../workbench/guides/motion.md) · motion; [Interactables](../../../docs/interactable-editor.md) · interactables |
 | Change selected animation frames | get-motion-adjustment → create-motion-adjustment → inspect → review-motion-adjustment | [Alternatives](../../../docs/motion-adjustments.md) · adjustments |
 | Transparent prop generation or whole-image editing | image-assets; PixelLab props can use reference-art subject=prop | [Image assets](../../../docs/prop-art.md) · image-generation |
 | Local or AI changes to an existing saved image | inspect_image_target → resolve_image_region → edit_image_region → inspect → apply_image_candidate | [Image editing](../../../docs/image-editing.md) · image-editing |

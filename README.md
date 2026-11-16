@@ -41,8 +41,7 @@ npm run dev
 
 ## 界面入口
 
-- `/player`：角色美术，进入 `/tools/reference-art` 或 `/tools/sprite-generator`。
-- `/tools/interactable-editor`：交互物编辑器，与角色制作并列在首页。
+- `/`：首页，直接进入角色原图 `/tools/reference-art`、角色动画 `/tools/sprite-generator` 和交互物编辑器 `/tools/interactable-editor`，并列出最近的作品与素材。
 - `/assets`：资产库；`/advanced`：服务与执行详情。
 
 单纯打开功能、浏览作品或讨论方案不创建任务。制作记录汇总可继续的工作，资产库面向实际作品，二者数量不相等。

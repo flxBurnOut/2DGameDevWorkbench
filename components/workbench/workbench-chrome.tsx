@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useWorkbench } from './workbench-provider';
-import { workStateLabels, type WorkItem } from '@/lib/workbench/work-items';
+import { workItemTitle, workStateLabels, type WorkItem } from '@/lib/workbench/work-items';
 import { ModuleIcon } from './module-icon';
 import { SharedWorkbenchNavigation, useRecordSummary } from './shared-navigation';
 import { currentWorkbenchPage } from '@/lib/workbench/navigation';
@@ -63,7 +63,7 @@ export function WorkItemRow({ item }: { item: WorkItem }) {
         )}
       </span>
       <div className="wb-work-copy">
-        <strong>{item.title}</strong>
+        <strong title={item.title}>{workItemTitle(item, capabilityModule?.name)}</strong>
         <span>
           {capabilityModule?.entryTitle} · {item.detail}
         </span>

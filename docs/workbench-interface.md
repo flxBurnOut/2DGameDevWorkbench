@@ -12,8 +12,8 @@
 
 | 页面 | 功能 |
 | --- | --- |
-| `/` | 工作台首页：两条制作线的入口卡片，卡片内直接列出各工具；继续上一次制作、导入 Forge 素材包 |
-| `/player` | 角色制作总览：选择角色原图或角色动画 |
+| `/` | 工作台首页：三个工具卡（角色原图、角色动画、交互物编辑）、继续制作（最近 5 条记录）、最近素材，以及导入素材包 |
+| `/player` | 重定向到首页；保留路由供旧链接和制作线入口使用 |
 | `/tools/reference-art` | 角色原图：输入描述 → 生成像素原图 → 移送为动画参考图 |
 | `/tools/sprite-generator` | 角色动画：准备与描述 → 查看制作方案 → 自动制作 → 检查与调整 → 导出与使用；旧版 `?legacy=1` |
 | `/tools/interactable-editor` | 交互物编辑：按项目与对象定位恢复 |
@@ -40,7 +40,7 @@
 
 ## 新手引导
 
-首页本身就是目标选择：每张制作线卡片列出所属工具（角色原图、角色动画、交互物编辑）及一句起步说明，点击直接进入；“导入 Forge 素材包”进入 `/assets?import=package`。首页不再弹出引导窗口，旧的 `workbench.onboarding.v1` 偏好不再读取。
+首页本身就是目标选择：三个工具卡并排，整张卡可点击，预览图取资产库中对应类型最新的一件（角色原图取角色，角色动画取动画，交互物编辑取交互物或物品原图），没有时显示内置示例像素图。下方“继续制作”按需要处理、制作中、编辑中、已保存、已完成的顺序列出最近 5 条记录，“全部记录”打开制作记录；“最近素材”列出资产库最新 6 件，资产库为空时不显示。右上角“导入素材包”进入 `/assets?import=package`。记录名称是生成的任务编号时，显示工具名代替，完整名称保留在悬停提示中。首页不再弹出引导窗口，旧的 `workbench.onboarding.v1` 偏好不再读取。
 
 “帮助”优先显示当前工具说明、可执行的下一步和当前保存状态；并区分浏览器本机草稿、本机服务保存的共享工程与动作任务、资产库素材、Godot 导出快照。帮助浮层中的“回到首页 · 选择制作目标”返回首页。资产库没有素材时只显示一句说明和导入按钮；工具空白状态同时说明可从何处开始。
 
@@ -76,7 +76,7 @@
 
 `workbench/manifest.json` 是路线与能力的唯一清单，`productionLines` 定义顶级入口，能力 `ui` 提供路线归属、入口说明和步骤。页面不直接导入完整清单（含全部输入 schema）：`lib/workbench/ui-manifest.json` 只保留品牌、导航、模块与路由，由 `lib/workbench/ui-manifest.mjs` 生成，构建与开发服务启动时自动同步，也可运行 `npm run ui-manifest:sync`，`npm run ui-manifest:check` 与 `test:workbench-shell` 校验其未过期。`lib/workbench/modules.ts` 从中派生前端数据；`lib/workbench/navigation.ts` 组织共享导航分组、当前页和安全来源返回目标。制作工具的 `name`、`shortName` 与 `entryTitle` 使用同一页面名称，操作按钮另用动作文案。
 
-- `components/workbench/`：首页、角色页、常驻外壳、记录、高级工具和样式。
+- `components/workbench/`：首页（含内置示例像素图）、常驻外壳、记录、高级工具和样式。
 - `components/workbench/shared-navigation.tsx`：唯一顶栏、面包屑、制作记录角标和来源返回。
 - `components/workbench/workbench-help.tsx`：当前工具帮助。
 - `components/workbench/lazy-dialogs.tsx`、`godot-export-host.tsx`、`components/image-edit/lazy-image-edit-workspace.tsx`：素材选择、素材包导入、Godot 导出和局部调整在首次打开时才加载。大型编辑器通过 `useWorkbenchActions()` 只读取稳定回调，不随状态轮询重渲染。
@@ -109,4 +109,4 @@ Web 的同源 API 通过 `WORKBENCH_RUNTIME_URL` 访问默认位于 `127.0.0.1:8
 
 ## 原图与序列帧路线
 
-首页的角色制作总览先进入 `/player`，可选择角色原图或角色动画。`/tools/reference-art` 提供描述、朝向、PixelLab Key 设置、真实任务进度与 PNG 预览。Key 与动画共用，生成操作进入 runtime ledger；`?task=` 可恢复原图记录。移送成功后进入动画的 `?character=` 链接并预选角色，尚未创建动画任务。未提交的原图提示词只保留在当前页面；生成后的提示词、名称和朝向随任务保存。
+首页直接进入角色原图或角色动画；旧的 `/player` 总览页已重定向到首页。`/tools/reference-art` 提供描述、朝向、PixelLab Key 设置、真实任务进度与 PNG 预览。Key 与动画共用，生成操作进入 runtime ledger；`?task=` 可恢复原图记录。移送成功后进入动画的 `?character=` 链接并预选角色，尚未创建动画任务。未提交的原图提示词只保留在当前页面；生成后的提示词、名称和朝向随任务保存。

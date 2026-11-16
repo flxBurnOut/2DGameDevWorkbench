@@ -7,7 +7,6 @@ export function WorkbenchBrand() {
       <WorkbenchBrandIcon />
       <span>
         <strong>{workbenchBrand.name}</strong>
-        <small>{workbenchBrand.tagline}</small>
       </span>
     </>
   );

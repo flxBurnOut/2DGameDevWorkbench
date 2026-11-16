@@ -51,6 +51,17 @@ export type SpriteJob = {
   open_work_id?: string;
 };
 
+/** A run identifier such as `20261110_reference_71f8…_001` is not a name. */
+function looksGenerated(part: string) {
+  return part.length >= 24 && !/\s/.test(part) && /[0-9a-f]{8,}/i.test(part) && !/[\u4e00-\u9fff]/.test(part);
+}
+
+/** Display name for a record: generated identifiers are dropped in favour of the tool name. */
+export function workItemTitle(item: Pick<WorkItem, 'title'>, toolName = '未命名作品') {
+  const parts = item.title.split(' · ').filter((part) => part.trim() && !looksGenerated(part.trim()));
+  return parts.join(' · ') || toolName;
+}
+
 export const workStateLabels: Record<WorkItemState, string> = {
   saved: '已保存，可继续',
   editing: '正在编辑',

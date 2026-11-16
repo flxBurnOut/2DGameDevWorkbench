@@ -613,17 +613,21 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
           <span className="ie-label">视图</span>
           <div className="ie-tool-buttons"><Button size="sm" variant={tool === 'pan' ? 'secondary' : 'ghost'} aria-pressed={tool === 'pan'} onClick={() => chooseTool('pan')}>平移</Button></div>
           {toolOptions.length > 0 && <div className="ie-tool-settings">{toolOptions}</div>}
-          <hr />
-          <span className="ie-label">历史</span>
-          <div className="ie-tool-buttons">
-            <Button size="sm" variant="outline" disabled={blocked || !controller.canUndo} title="Ctrl+Z" onClick={() => local(() => controller.undo())}>撤销</Button>
-            <Button size="sm" variant="outline" disabled={blocked || !controller.canRedo} title="Ctrl+Shift+Z" onClick={() => local(() => controller.redo())}>重做</Button>
+          {/* Pinned to the bottom of the column: history and saving never need scrolling. */}
+          <div className="ie-tools-footer">
+            <span className="ie-label">历史</span>
+            <div className="ie-tool-buttons">
+              <Button size="sm" variant="outline" disabled={blocked || !controller.canUndo} title="Ctrl+Z" onClick={() => local(() => controller.undo())}>撤销</Button>
+              <Button size="sm" variant="outline" disabled={blocked || !controller.canRedo} title="Ctrl+Shift+Z" onClick={() => local(() => controller.redo())}>重做</Button>
+            </div>
+            {controller.dirty && <>
+              <p className="ie-hint" title="执行其他操作或应用时会自动存为新版本">未保存笔划 {controller.dirtyPixelCount.toLocaleString()} 像素</p>
+              <div className="ie-tool-buttons">
+                <Button size="sm" disabled={blocked} onClick={savePixels}>保存为新版本</Button>
+                <Button size="sm" variant="ghost" disabled={!!busy || !!pending} onClick={() => local(() => controller.discardPixels())}>舍弃未保存笔划</Button>
+              </div>
+            </>}
           </div>
-          {controller.dirty && <>
-            <p className="ie-hint">未保存笔划 {controller.dirtyPixelCount.toLocaleString()} 像素。执行其他操作或应用时会自动存为新版本。</p>
-            <Button size="sm" disabled={blocked} onClick={savePixels}>保存为新版本</Button>
-            <Button size="sm" variant="ghost" disabled={!!busy || !!pending} onClick={() => local(() => controller.discardPixels())}>舍弃未保存笔划</Button>
-          </>}
         </aside>
         <section className="ie-center">
           <div className="ie-modebar" role="tablist" aria-label="修改方式">

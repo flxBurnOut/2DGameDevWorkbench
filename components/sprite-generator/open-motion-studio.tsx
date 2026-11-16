@@ -802,6 +802,7 @@ function OpenMotionStudio({
                   <label className="motion-check">
                     <input
                       type="checkbox"
+                      className="ui-switch"
                       checked={spec.loop}
                       onChange={(e) => edit({ loop: e.target.checked })}
                       disabled={readOnly}
@@ -811,6 +812,7 @@ function OpenMotionStudio({
                   <label className="motion-check">
                     <input
                       type="checkbox"
+                      className="ui-switch"
                       checked={spec.return_to_reference || false}
                       onChange={(e) =>
                         edit({ return_to_reference: e.target.checked })

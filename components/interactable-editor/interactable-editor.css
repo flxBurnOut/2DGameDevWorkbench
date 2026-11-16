@@ -32,20 +32,34 @@
   color: var(--theme-text);
   cursor: pointer;
 }
-.ie-workspace button:hover {
-  background: var(--theme-surface);
+.ie-workspace button:hover:not(:disabled) {
+  border-color: var(--theme-control-border);
+  background: var(--ui-hover-bg);
+}
+.ie-workspace button:active:not(:disabled) {
+  background: var(--ui-press-bg);
 }
 .ie-workspace button:disabled {
-  opacity: 0.45;
-  cursor: default;
+  opacity: 0.5;
 }
+/* Selected objects and inspector tabs are tinted chips; the filled style is
+   reserved for the export action. */
 .ie-workspace button[aria-pressed='true'],
+.ie-workspace button[aria-pressed='true']:hover:not(:disabled) {
+  border-color: var(--ui-selected-border);
+  color: var(--ui-selected-fg);
+  background: var(--ui-selected-bg);
+}
 .ie-workspace .ie-primary {
   border-color: var(--theme-primary-hover);
   color: var(--theme-on-primary);
   background: var(--theme-primary);
 }
-.ie-workspace input,
+.ie-workspace .ie-primary:hover:not(:disabled) {
+  border-color: var(--theme-primary-hover);
+  background: var(--theme-primary-hover);
+}
+.ie-workspace input:not([type='checkbox']),
 .ie-workspace select,
 .ie-workspace textarea {
   min-width: 0;
@@ -57,16 +71,12 @@
   min-height: var(--ui-control-height);
   padding: 6px 8px;
 }
-.ie-workspace input[type='checkbox'] {
-  width: auto;
-  accent-color: var(--theme-primary);
-}
 .ie-workspace input[type='color'] {
   height: 35px;
   padding: 3px;
 }
 .ie-workspace :focus-visible {
-  outline: 2px solid var(--theme-success);
+  outline: 2px solid var(--theme-accent);
   outline-offset: 2px;
 }
 .ie-workspace label {
@@ -380,7 +390,7 @@
   padding: 4px;
 }
 
-.ie-workspace button[aria-pressed="true"] small { color: var(--theme-on-primary); }
+.ie-workspace button[aria-pressed="true"] small { color: var(--ui-selected-fg); }
 
 .ie-prop-art { margin-bottom: 18px; border: 1px solid var(--theme-border); border-radius: var(--ui-radius-lg); overflow: hidden; }
 .ie-prop-art > summary { display: flex; align-items: center; gap: 7px; padding: 10px; cursor: pointer; color: var(--ie-accent); font-weight: 600; }

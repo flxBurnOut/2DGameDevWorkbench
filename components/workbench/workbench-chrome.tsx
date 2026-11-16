@@ -127,24 +127,27 @@ function ProductionRecords() {
           </DialogHeader>
           <div className="wb-record-tabs">
             <a className="wb-button wb-ghost" href="/advanced?tab=data">管理本机数据</a>
-            <button
-              className="wb-button"
-              aria-pressed={!history}
-              onClick={() => setHistory(false)}
-            >
-              制作中 · {active.length}
-            </button>
-            <button
-              className="wb-button"
-              aria-pressed={history}
-              onClick={() => setHistory(true)}
-            >
-              已完成 · {wb.items.length - active.length}
-            </button>
+            <fieldset className="ui-segmented" aria-label="记录范围">
+              <button
+                className="wb-button"
+                aria-pressed={!history}
+                onClick={() => setHistory(false)}
+              >
+                制作中 · {active.length}
+              </button>
+              <button
+                className="wb-button"
+                aria-pressed={history}
+                onClick={() => setHistory(true)}
+              >
+                已完成 · {wb.items.length - active.length}
+              </button>
+            </fieldset>
             <button
               className="wb-button wb-ghost"
               onClick={() => void wb.refresh()}
               disabled={wb.refreshing}
+              aria-busy={wb.refreshing}
             >
               {wb.refreshing ? '刷新中…' : '刷新'}
             </button>

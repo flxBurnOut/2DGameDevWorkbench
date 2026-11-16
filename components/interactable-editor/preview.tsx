@@ -9,6 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { RotateCcw, Play } from 'lucide-react';
+import { Tooltip } from '@/components/ui/tooltip';
 import {
   type Asset,
   type Interactable,
@@ -369,9 +370,11 @@ export function Preview({
           <Play size={14} />按 {object.activation.key}
         </button>
         <button onClick={() => sim.request()}>外部调用</button>
-        <button title="重置预览" onClick={() => sim.reset()}>
-          <RotateCcw size={14} />
-        </button>
+        <Tooltip label="重置预览">
+          <button aria-label="重置预览" onClick={() => sim.reset()}>
+            <RotateCcw size={14} />
+          </button>
+        </Tooltip>
       </div>
       <p className="ie-note">
         绿色：感知 · 蓝色：点击 · 橙色：实体碰撞。拖动白色来源可模拟进出范围。

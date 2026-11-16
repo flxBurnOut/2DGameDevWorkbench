@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { toast } from '@/components/ui/toast';
 import { gameHandoff } from '@/features/godot-export/handoff.mjs';
 import {
   deliveryKinds, deliveryStates, readGameDeliveries, readGameDelivery,
@@ -117,8 +118,10 @@ export function GameDeliveryHistory() {
       <button className="wb-button" disabled={loading || reading} onClick={() => setReload((value) => value + 1)}>刷新交付记录</button>
     </div>
     <div className="wb-record-filters" aria-label="交付筛选">
-      <button className="wb-button" aria-pressed={!pendingOnly} onClick={() => navigate('', false)}>全部交付</button>
-      <button className="wb-button" aria-pressed={pendingOnly} onClick={() => navigate('', true)}>待接入或需处理</button>
+      <fieldset className="ui-segmented" aria-label="交付范围">
+        <button className="wb-button" aria-pressed={!pendingOnly} onClick={() => navigate('', false)}>全部交付</button>
+        <button className="wb-button" aria-pressed={pendingOnly} onClick={() => navigate('', true)}>待接入或需处理</button>
+      </fieldset>
       {page && <span className="wb-muted">已显示 {page.deliveries.length} / {page.total} 条</span>}
     </div>
     {error && <p className="wb-notice" role="alert">{error} 已加载的记录仍保留，可刷新列表重试。</p>}
@@ -132,7 +135,7 @@ export function GameDeliveryHistory() {
           <small>{time(item.createdAt)}</small>
         </button>)}
         {!loading && !error && page?.total === 0 && <p className="wb-muted">{pendingOnly ? '暂无待接入或需要处理的交付。' : '尚无游戏交付记录。可从资产详情或制作工具导出到 Godot 项目。'}</p>}
-        {page?.nextOffset != null && <button className="wb-button" disabled={loading || loadingMore} onClick={() => void loadMore()}>{loadingMore ? '读取中…' : '加载更早交付'}</button>}
+        {page?.nextOffset != null && <button className="wb-button" disabled={loading || loadingMore} aria-busy={loadingMore} onClick={() => void loadMore()}>{loadingMore ? '读取中…' : '加载更早交付'}</button>}
       </section>
       <section className="wb-task-detail" aria-label="游戏交付详情" aria-busy={reading}>
         {reading && <output>正在读取此交付…</output>}
@@ -157,7 +160,7 @@ export function GameDeliveryHistory() {
           <p className="wb-muted">这里显示保存的结果；查看和刷新不会重新导出、安装资源或启动 Agent。</p>
           {delivery.status !== 'integrated' && <>
             <button className="wb-button" onClick={() => {
-              void navigator.clipboard.writeText(handoff.prompt).then(() => setNotice('接入请求已复制。')).catch(() => setNotice('自动复制不可用，请展开下方完整接入请求并手动复制。'));
+              void navigator.clipboard.writeText(handoff.prompt).then(() => { setNotice(''); toast.success('接入请求已复制', '粘贴给 WorkBuddy 完成接入。'); }).catch(() => setNotice('自动复制不可用，请展开下方完整接入请求并手动复制。'));
             }}>复制给 WorkBuddy</button>
             <details><summary>完整接入请求</summary><textarea aria-label="历史交付接入请求" readOnly rows={6} value={handoff.prompt} /></details>
           </>}

@@ -62,6 +62,7 @@ import { SharedDocumentPicker } from '@/components/workbench/shared-document-pic
 import { sharedDocumentHref } from '@/features/editor-documents/library';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { toast } from '@/components/ui/toast';
 import type { WorkItem } from '@/lib/workbench/work-items';
 import { useWorkbenchActions } from '@/components/workbench/workbench-provider';
 import { isUntouchedStarterProject } from '@/features/interactable-editor/draft-activity';
@@ -609,13 +610,13 @@ export function InteractableEditor() {
             <ChevronDown size={14} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="ie-menu">
-            <DropdownMenuItem disabled={!draftWritable} onClick={() => void persist(true).then(() => setMessage('草稿已保存在当前浏览器。'), (e: Error) => setMessage(e.message))}>
+            <DropdownMenuItem disabled={!draftWritable} onClick={() => void persist(true).then(() => { setMessage(''); toast.success('草稿已保存', '保存在当前浏览器，可从制作记录继续。'); }, (e: Error) => setMessage(e.message))}>
               <span><strong>保存草稿</strong><small>保存在当前浏览器，编辑时也会自动保存。从制作记录继续。</small></span>
             </DropdownMenuItem>
-            <DropdownMenuItem disabled={busy || !draftWritable} onClick={() => void run(async () => { await saveProjectToLibrary(latest.current.project); await persist(true); setMessage('交互物源项目已保存到资产库；尚未导出 Godot。'); })}>
+            <DropdownMenuItem disabled={busy || !draftWritable} onClick={() => void run(async () => { await saveProjectToLibrary(latest.current.project); await persist(true); toast.success('已保存到资产库', '其他工具可以选用；尚未导出 Godot。'); })}>
               <span><strong>保存到资产库</strong><small>交给本机服务登记，其他工具和其他浏览器都能选用；不导出 Godot。</small></span>
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => { downloadJson(project); void persist(true).catch(() => undefined); }}>
+            <DropdownMenuItem onClick={() => { downloadJson(project); toast.success('源文件已开始下载', '工程 JSON 可在其他电脑上打开。'); void persist(true).catch(() => undefined); }}>
               <span><strong>下载源文件</strong><small>下载工程 JSON 到本机，用于备份或在其他电脑上打开。</small></span>
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -845,7 +846,7 @@ export function InteractableEditor() {
               }
             />
           </Field>
-          <div className="ie-tabs">
+          <fieldset className="ie-tabs ui-segmented" aria-label="物件设置">
             {[
               ['visual', '外观'],
               ['trigger', '触发'],
@@ -860,7 +861,7 @@ export function InteractableEditor() {
                 {label}
               </button>
             ))}
-          </div>
+          </fieldset>
           {tab === 'visual' && (
             <VisualPanel
               object={current}

@@ -91,6 +91,7 @@ export function WorkbenchManagement() {
         {tab !== 'deliveries' && <button
           className="wb-button"
           disabled={wb.refreshing}
+          aria-busy={wb.refreshing}
           onClick={() => void wb.refresh()}
         >
           {wb.refreshing ? '刷新中…' : '刷新状态'}
@@ -190,7 +191,7 @@ export function WorkbenchManagement() {
         )}
         {tab === 'records' && (
           <>
-            <div className="wb-record-filters" aria-label="筛选制作记录">
+            <fieldset className="wb-record-filters ui-segmented" aria-label="筛选制作记录">
               {[
                 ['all', '全部'],
                 ['running', '进行中'],
@@ -214,7 +215,7 @@ export function WorkbenchManagement() {
                     : wb.items.filter((entry) => entry.state === id).length}
                 </button>
               ))}
-            </div>
+            </fieldset>
             {(wb.runtimeOnline === false || wb.spriteOnline === false) && (
               <p className="wb-notice">
                 部分服务未连接，记录可能不是最新状态。

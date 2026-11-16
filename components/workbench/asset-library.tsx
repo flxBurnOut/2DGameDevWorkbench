@@ -2,6 +2,7 @@
 /* oxlint-disable next/no-img-element -- Preserve animated asset previews. */
 /* oxlint-disable next/no-html-link-for-pages -- Native links use the workbench draft guard. */
 import { useEffect, useRef, useState } from 'react';
+import { toast } from '@/components/ui/toast';
 import { assetLocationHref, readAssetLocation, type AssetLocation } from '@/lib/workbench/asset-navigation';
 import { AssetPackageImport } from './lazy-dialogs';
 import {offerGodotExport} from '@/lib/workbench/godot-export';
@@ -66,6 +67,7 @@ export function AssetLibrary() {
   const [kind, setKind] = useState('');
   const [page, setPage] = useState({ offset: 0, snapshot: '' });
   const [reload, setReload] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [assetId, setAssetId] = useState('');
   const [asset, setAsset] = useState<Asset | null>(null);
@@ -158,6 +160,8 @@ export function AssetLibrary() {
         else setCatalog(data);
       } catch (e) {
         if (!controller.signal.aborted) setError((e as Error).message);
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
       }
     })();
     return () => controller.abort();
@@ -173,7 +177,7 @@ export function AssetLibrary() {
       });
       const data = await response.json() as { count: number; error?: string };
       if (!response.ok) throw new Error(data.error || '回收站更新失败，请重试。');
-      setNotice(pending.operation === 'trash' ? `已将 ${data.count} 件素材移入回收站，源文件已保留。` : `已恢复 ${data.count} 件素材。`);
+      toast.success(pending.operation === 'trash' ? `已将 ${data.count} 件素材移入回收站` : `已恢复 ${data.count} 件素材`, pending.operation === 'trash' ? '源文件已保留，可在回收站恢复。' : undefined);
       setPending(null);
       setSelected([]);
       updateListing({ offset: 0, snapshot: '' });
@@ -204,8 +208,9 @@ export function AssetLibrary() {
       a.download = 'forge-assets.zip';
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setNotice(
-        `已下载 ${response.headers.get('x-asset-count') || ids.length} 件资产的素材包，解压后即可查看和使用。`,
+      toast.success(
+        `已下载 ${response.headers.get('x-asset-count') || ids.length} 件资产的素材包`,
+        '解压后即可查看和使用。',
       );
     } catch (e) {
       setNotice((e as Error).message);
@@ -254,7 +259,9 @@ export function AssetLibrary() {
           <button className="wb-button wb-primary" onClick={() => setPackageOpen(true)}>导入 Forge 素材包</button>
           <button
             className="wb-button"
+            aria-busy={loading}
             onClick={() => {
+              setLoading(true);
               updateListing({ offset: 0, snapshot: '' });
               setReload((v) => v + 1);
               setFailedPreviews([]);
@@ -361,7 +368,7 @@ export function AssetLibrary() {
           </div>
         ) : (
         <>
-          <nav className="wb-tool-links wb-asset-scope" aria-label="资产范围">
+          <nav className="wb-asset-scope ui-segmented" aria-label="资产范围">
             {(['active', 'trashed'] as const).map((value) => <button key={value} className="wb-button" aria-pressed={scope === value} onClick={() => { updateListing({ scope: value, offset: 0, snapshot: '' }); }}>{value === 'active' ? '已保存素材' : '回收站'}</button>)}
           </nav>
           {scope === 'trashed' && <p className="wb-notice">这里的素材可以恢复。源文件仍保留在原处，不释放磁盘空间。</p>}

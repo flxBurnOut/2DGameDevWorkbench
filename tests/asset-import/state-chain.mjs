@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { loadManifest, repositoryRoot } from '../../lib/workbench/runtime.mjs';
 import { listAssets, getAsset } from '../../lib/workbench/asset-catalog.mjs';
-import { createDocument, applyDocumentCommands, getDocument } from '../../lib/workbench/editor-documents.mjs';
+import { createDocument, applyDocumentCommands, getDocument, getMotionBindings } from '../../lib/workbench/editor-documents.mjs';
 import { createObject, createProject } from '../../features/interactable-editor/contract.mjs';
 import { InteractionSimulation, stateAppearance } from '../../features/interactable-editor/simulator.mjs';
 
@@ -30,7 +30,7 @@ await createDocument(repositoryRoot, manifest, { kind: 'interactable', commandId
 const command = async (motionSource, stageIndex, object, index) => {
   const { assets } = await listAssets(manifest, { motionSource, purposes: motionSource === 'state' ? 'image' : 'animation' });
   assert.ok(assets.every(row => row.motionSource === motionSource));
-  const row = assets.find(a => a.stageIndex === stageIndex);
+  const row = assets.find(a => a.stageIndex === stageIndex && !a.derivation);
   assert.ok(row);
   const { asset } = await getAsset(manifest, { assetId: row.id });
   return {
@@ -93,4 +93,49 @@ assert.deepEqual((await read()).document, head);
 const applied = await apply({ ...request, expectedRevision: 2, commandId: 'explicit-rebind' });
 assert.deepEqual(applied.document.content, head.content);
 assert.equal((await apply(request)).currentRevision, 3);
-console.log('Verified both destinations, archived pixels and playback, atomic conflicts, concurrent replay and rebinding.');
+
+// B4: the read-only binding view reports what each slot last received and whether it is still in place.
+const bindings = async () => (await getMotionBindings(repositoryRoot, manifest, { documentId })).objects;
+let [toggleSlots, sequenceSlots] = await bindings();
+assert.equal(toggleSlots.target, 'toggle-state');
+assert.equal(toggleSlots.slots[1].state.current, true);
+assert.equal(toggleSlots.slots[1].transition.current, true);
+assert.equal(toggleSlots.slots[1].transition.stageIndex, 0);
+assert.equal(toggleSlots.slots[0].state, null);
+assert.equal(sequenceSlots.slots[0].transition.frameHashes.length, 6);
+
+// T6/T7: per-frame durations and ping-pong playback are writeback settings; source frames stay as they are.
+const durations = [1, 1, 1, 1, 2, 3];
+const paced = { ...commands[3], durations, playback: 'ping_pong' };
+const pacedResult = await apply({ expectedRevision: 3, commandId: 'paced-transition', commands: [paced] });
+const pacedObject = pacedResult.document.content.objects[1];
+const pacedStep = pacedObject.behavior.entries[0].feedback.find(step => step.importedTransition);
+const pacedClip = pacedObject.visual.clips.find(clip => clip.name === pacedStep.animation);
+assert.equal(pacedClip.frames.length, 10);
+assert.deepEqual(pacedClip.frames.map(f => f.duration), [...durations, 2, 1, 1, 1]);
+assert.equal(pacedClip.frames[6].assetId, pacedClip.frames[4].assetId);
+assert.equal(pacedResult.document.commandResults[0].playback, 'ping_pong');
+sequenceSlots = (await bindings())[1];
+assert.equal(sequenceSlots.slots[0].transition.current, true);
+assert.equal(sequenceSlots.slots[0].transition.playback, 'ping_pong');
+await assert.rejects(apply({ expectedRevision: 4, commandId: 'bad-durations', commands: [{ ...commands[3], durations: [1, 2] }] }), /逐帧时长/);
+await assert.rejects(apply({ expectedRevision: 4, commandId: 'state-durations', commands: [{ ...commands[0], durations: [2] }] }), /静态图片/);
+
+// A derived reverse transition (B2), accepted after review, binds to the return transition of the toggle.
+const { assets: derived } = await listAssets(manifest, { motionSource: 'transition', purposes: 'animation' });
+const reverse = derived.find(row => row.derivation === 'reverse');
+assert.ok(reverse, 'accepted derived transition is listed');
+const { asset: reverseDetail } = await getAsset(manifest, { assetId: reverse.id });
+const back = { type: 'import-motion-asset', definitionId: toggle.definitionId, target: 'toggle-state', index: 0, assetId: reverse.id, assetRevision: reverseDetail.revision };
+const backResult = await apply({ expectedRevision: 4, commandId: 'derived-return', commands: [back] });
+assert.equal(backResult.document.commandResults[0].derivation, 'reverse');
+toggleSlots = (await bindings())[0];
+assert.equal(toggleSlots.slots[0].transition.derivation, 'reverse');
+assert.equal(toggleSlots.slots[0].transition.current, true);
+assert.deepEqual(toggleSlots.slots[0].transition.frameHashes, [...toggleSlots.slots[1].transition.frameHashes].reverse());
+
+// Replacing the state image elsewhere keeps the record but marks it as no longer in place.
+await apply({ expectedRevision: 5, commandId: 'manual-image', commands: [{ type: 'bind-asset', definitionId: toggle.definitionId, assetId: 'idle-frame', target: 'toggle-state', index: 1 }] });
+toggleSlots = (await bindings())[0];
+assert.equal(toggleSlots.slots[1].state.current, false);
+console.log('Verified both destinations, archived pixels and playback, atomic conflicts, concurrent replay, rebinding, slot bindings, writeback rhythm and derived transitions.');

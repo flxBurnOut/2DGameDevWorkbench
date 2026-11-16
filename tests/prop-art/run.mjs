@@ -188,7 +188,7 @@ try {
   const transferred = await runConnector(manifest, capability, {operation:'transfer', sourceTaskId:task.id});
   assert.equal(transferred.task.status, 'completed');
   const handoff = JSON.parse(await readFile(transferred.task.outputs.find(p => p.endsWith('/result.json')), 'utf8'));
-  assert.equal(handoff.href, '/tools/sprite-generator?object=' + handoff.objectId);
+  assert.equal(handoff.href, '/tools/interactable-motion?object=' + handoff.objectId);
   assert.equal(handoff.sourceTaskId, task.id);
   assert.equal(imports, 1);
   const request = async (url) => {

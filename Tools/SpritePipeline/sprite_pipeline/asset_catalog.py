@@ -46,7 +46,15 @@ class AssetCatalog:
                 rows.append(dict(row, status='approved', statusLabel='已确认状态图' if row['kind'] == 'prop' else '已确认过渡',
                                  createdAt=job['created_at'], updatedAt=job['updated_at'], previewKind='image',
                                  availability='available' if path.is_file() else 'missing', hasArtwork=True))
+        from .collaboration.derived_assets import DerivedAssets
+        rows.extend(DerivedAssets(self.service).catalog_rows())
         return {"assets": rows, "issues": [{"source": "sprite-pipeline", "message": "部分作业摘要损坏，作品目录可能不完整。"}] if any(j.get("status") == "invalid" for j in summaries.values()) else []}
+
+    def _motion_asset(self, asset_id):
+        if asset_id.startswith('motion-derived:'):
+            from .collaboration.derived_assets import DerivedAssets
+            return DerivedAssets(self.service).resolve(asset_id)
+        return resolve_asset(self.service, asset_id)
 
     def paths(self, asset_id):
         row = self.library.get(asset_id)
@@ -67,8 +75,8 @@ class AssetCatalog:
         return row, files
 
     def file(self, asset_id, key):
-        if asset_id.startswith(('motion-state:', 'motion-transition:')):
-            _, registered = resolve_asset(self.service, asset_id)
+        if asset_id.startswith(('motion-state:', 'motion-transition:', 'motion-derived:')):
+            _, registered = self._motion_asset(asset_id)
             if key not in registered:
                 raise NotFoundError('状态链资产没有此文件')
             path, expected = registered[key]
@@ -88,7 +96,7 @@ class AssetCatalog:
         if asset is None:
             raise NotFoundError("所选资产不存在或无法读取")
         if asset.get('motionSource'):
-            row, registered = resolve_asset(self.service, asset_id)
+            row, registered = self._motion_asset(asset_id)
             files = []
             for key, (path, expected) in registered.items():
                 if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:

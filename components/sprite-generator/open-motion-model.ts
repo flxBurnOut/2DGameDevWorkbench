@@ -32,6 +32,8 @@ export type MotionSpec = MotionObjectIdentity & {
   review_protocol?: 'baseline' | 'experts_v1';
   seed?: number | null;
   visual_structure?: { analysis_id: string; token: string } | null;
+  /** Ordered interactable states; the planner segments one stage per transition. */
+  interactable_skeleton?: { states: { name: string; appearance: string }[]; hold?: string } | null;
 };
 export type MotionStage = {
   name: string;
@@ -86,7 +88,7 @@ export type MotionReview = MotionReviewOpinion & {
     state: string;
     verdict: 'pass' | 'fail' | 'uncertain';
     motion_evidence?: {
-      tracked_parts?: {unavailable?:string; reference_radius_px?:number|null; tolerance_px?:number|null;
+      tracked_parts?: {unavailable?:string; reference_radius_px?:number|null; tolerance_px?:number|null; pivot_xy?:[number,number]|null;
         frames?:{frame:number;radius_px?:number|null;fixed_changed_pixels:Record<string,number>}[]};
       alpha_changes?: {region: string; frame: number; compared_to: number | 'reference'; lost_pixels: number; gained_pixels: number}[];
     };

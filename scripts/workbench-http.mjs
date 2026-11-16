@@ -104,6 +104,8 @@ const server = http.createServer(async (request, response) => {
           const documentId = decodeURIComponent(parts[0]);
           if (parts.length === 1 && request.method === 'GET') {
             operation = 'document-get'; input = { documentId, ...(url.searchParams.has('revision') ? { revision: Number(url.searchParams.get('revision')) } : {}), ...(['metadata', 'metadataOnly'].some(key => url.searchParams.get(key) === 'true') ? { metadataOnly: true } : {}) };
+          } else if (parts.length === 2 && request.method === 'GET' && parts[1] === 'motion-bindings') {
+            operation = 'document-motion-bindings'; input = { documentId, ...(url.searchParams.has('definitionId') ? { definitionId: url.searchParams.get('definitionId') } : {}) };
           } else if (parts.length === 2 && request.method === 'POST' && ['apply', 'save', 'restore', 'validate', 'simulate', 'adopt-image'].includes(parts[1])) {
             operation = `document-${parts[1]}`; input = { ...await readJsonBody(request, 350 * 1024 * 1024), documentId };
           }

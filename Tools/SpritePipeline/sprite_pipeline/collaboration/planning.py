@@ -162,6 +162,18 @@ stage reaches quality.interactable.target_state. All decisions still require
 review on the real generated pixels.
 """
 
+SKELETON_INSTRUCTIONS = """
+STATE SKELETON: original_request.interactable_skeleton is the user's ordered
+list of states. states[0] is the reference image. Plan exactly one stage per
+consecutive pair, in order, and no other stage. Stage i ends at states[i+1]:
+name that state in checkpoint.endpoint and describe only that change in the
+drawing brief. quality.interactable.initial_state describes states[0] and
+target_state the last state. If the reference contradicts states[0], or a
+transition cannot be planned within the limits, ask in plan.questions instead
+of merging, splitting or dropping states. The local validator rejects a
+different stage count.
+"""
+
 PROP_ROLES = {
     'appearance': 'Independently inspect viewpoint, initial state, attachments, seams, fixed surfaces and their visibility. Cite contrary or ambiguous pixels.',
     'motion': 'Independently identify the moving and fixed parts, movement type, path, endpoint, hold and compatibility with the actual starting image.',
@@ -234,6 +246,8 @@ The two final calls inspect the WHOLE clip, including seams.
 """ + suffix
         if work.frame_budget:
             instructions += '\nRespect hard_drawing_limits in TASK DATA in every proposal and final plan. Do not rely on the ending field for resource limits.'
+        if prop and work.spec.interactable_skeleton is not None:
+            instructions += SKELETON_INSTRUCTIONS
         role_instructions = PROP_ROLES.get(role, ROLES[role]) if prop else ROLES[role]
         if prop:
             instructions += "\nFor the labelled drawing brief, Facing is the view of the prop, Support is its mount, and Drive describes the changing part."

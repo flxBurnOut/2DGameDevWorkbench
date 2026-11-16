@@ -1,3 +1,4 @@
+import { interactableMotionRoute } from './motion-routes';
 import type { WorkbenchModule } from './modules';
 export function operationLabel(operation: unknown): string {
   const labels: Record<string, string> = { generate: '生成素材', import: '导入素材', transfer: '导入角色', 'save-project': '保存项目', 'export-godot': '导出 Godot', create: '创建作业', submit: '提交生成', get: '更新状态', review: '检查素材', export: '导出素材', approve: '确认素材', prepare: '准备输入' };
@@ -131,8 +132,10 @@ export function spriteWorkItem(job: SpriteJob, href: string): WorkItem {
   };
 }
 
-export type OpenMotionSummary = { id: string; title: string; status: string; job_status?: string; updated_at: string };
+export type OpenMotionSummary = { id: string; title: string; status: string; job_status?: string; updated_at: string; object_type?: string };
 export function openMotionWorkItem(work: OpenMotionSummary, href: string): WorkItem {
+  // Interactable works open in the state-graph panel; the record stays one work item.
+  if (work.object_type === 'interactable') href = interactableMotionRoute;
   const state = work.job_status ? spriteState(work.job_status) : {
     state: work.status === 'planning' ? 'running' as const : 'attention' as const,
     detail: work.status === 'planning' ? '正在制定制作方案' : work.status === 'ready' ? '方案已保存，等待确认制作' : '方案需要处理', stage: 1,
@@ -189,7 +192,7 @@ export function taskWorkItems(
                   : input.operation === 'transfer'
                     ? '原图已移送序列帧'
                     : input.subject === 'prop' ? '物品原图' : '角色原图',
-              href: propObjectId ? `${capabilityModule.href}?object=${encodeURIComponent(propObjectId)}` : input.subject === 'prop'
+              href: propObjectId ? `${interactableMotionRoute}?object=${encodeURIComponent(propObjectId)}` : input.subject === 'prop'
                 ? `${modules.find((m) => m.id === 'interactable-editor')?.href || capabilityModule.href}?artTask=${encodeURIComponent(task.id)}`
                 : `${capabilityModule.href}?task=${encodeURIComponent(typeof input.sourceTaskId === 'string' ? input.sourceTaskId : task.id)}`,
             },

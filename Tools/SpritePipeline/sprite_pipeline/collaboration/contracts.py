@@ -32,6 +32,34 @@ class VisualStructureSelection(Contract):
     token: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
+class SkeletonState(Contract):
+    name: str = Field(min_length=1, max_length=40)
+    appearance: str = Field(min_length=1, max_length=200)
+
+
+class InteractableSkeleton(Contract):
+    """Ordered interactable states; one planned stage per consecutive pair."""
+    states: list[SkeletonState] = Field(min_length=2, max_length=5)
+    hold: str = Field(default='', max_length=120)
+
+    @model_validator(mode='after')
+    def distinct(self):
+        names = [s.name.strip() for s in self.states]
+        # Only a final return to the initial state may repeat a name.
+        inner = names[:-1] if len(names) > 2 and names[-1] == names[0] else names
+        if any(not n for n in names) or len(set(inner)) != len(inner):
+            raise ValueError('状态骨架的名称不能为空或重复')
+        return self
+
+    def transitions(self):
+        return len(self.states) - 1
+
+    def summary(self):
+        chain = ' → '.join(s.name for s in self.states)
+        details = '；'.join(f'{s.name}：{s.appearance}' for s in self.states)
+        return f'{chain}。{details}' + (f'。结束：{self.hold}' if self.hold else '')
+
+
 class TaskSpec(ObjectIdentity, Contract):
     object_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_]*$", max_length=100)
     description: str = Field(min_length=4, max_length=2000)
@@ -47,6 +75,8 @@ class TaskSpec(ObjectIdentity, Contract):
     # Missing on historical records: preserve their hash and two-call behavior.
     review_protocol: Literal['baseline', 'experts_v1'] | None = None
     visual_structure: VisualStructureSelection | None = None
+    # Interactables only. Missing on earlier records: their hashes stay unchanged.
+    interactable_skeleton: InteractableSkeleton | None = None
 
     @model_serializer(mode='wrap')
     def preserve_legacy_spec(self, handler):
@@ -54,7 +84,14 @@ class TaskSpec(ObjectIdentity, Contract):
         if self.review_protocol is None:
             data.pop('review_protocol', None)
         if self.visual_structure is None:data.pop('visual_structure',None)
+        if self.interactable_skeleton is None:data.pop('interactable_skeleton',None)
         return self.preserve_identity_shape(data)
+
+    @model_validator(mode='after')
+    def skeleton_object(self):
+        if self.interactable_skeleton is not None and self.object_type != 'interactable':
+            raise ValueError('状态骨架只适用于交互物')
+        return self
 
 
 def review_calls_per_check(spec):
@@ -374,19 +411,31 @@ def digest(value: Any) -> str:
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+def user_source(spec):
+    """Every text the user actually supplied; a user requirement must quote it."""
+    source = spec.description + "\n" + spec.ending
+    if spec.interactable_skeleton is not None:
+        source += "\n" + spec.interactable_skeleton.summary()
+    return source
+
+
 def bind_original_requirements(plan: PlanProposal, spec: TaskSpec) -> PlanProposal:
     """Never let a model paraphrase masquerade as the user's quoted instruction.
 
     Keep the model interpretation, label it as such, and attach the actual
     original input in full. This changes provenance, not stages or budgets.
     """
-    source = spec.description + "\n" + spec.ending
+    source = user_source(spec)
     requirements = []
     for item in plan.requirements:
         if item.source == "user" and item.evidence not in source:
             item = item.model_copy(update={"source":"expert", "evidence":("专家对需求的解读，非用户逐字原话：" + item.evidence)[:300]})
         requirements.append(item)
-    for label, text in (("用户原始动作要求",spec.description),("用户指定结束姿势",spec.ending)):
+    originals = [("用户原始动作要求",spec.description),("用户指定结束姿势",spec.ending)]
+    if spec.interactable_skeleton is not None:
+        # Freezing the skeleton into the plan puts it under plan_sha256.
+        originals.append(("用户状态骨架", spec.interactable_skeleton.summary()))
+    for label, text in originals:
         for offset in range(0,len(text),300):
             requirements.append(Requirement(text=label + (f"（{offset//300+1}）" if len(text)>300 else ""), source="user", evidence=text[offset:offset+300]))
     # Revalidate the complete object, preserving every proposed requirement.
@@ -425,6 +474,18 @@ def motion_transport_schema(schema_type, interactable):
 
 def prop_contract(plan):
     return plan.quality.interactable if plan and plan.quality else None
+
+
+def skeleton_problem(plan, spec):
+    """The planner must segment by the user's state skeleton (one stage per transition)."""
+    skeleton = spec.interactable_skeleton
+    if skeleton is None or plan is None:
+        return None
+    if len(plan.stages) != skeleton.transitions():
+        names = ' → '.join(s.name for s in skeleton.states)
+        return (f'状态骨架 {names} 有 {skeleton.transitions()} 段过渡，方案需要恰好 {skeleton.transitions()} 段，'
+                f'每段只完成一次相邻状态的过渡，当前为 {len(plan.stages)} 段。不能合并或拆分状态，也不能提高预算。')
+    return None
 
 
 class PlanBinding(Contract):
@@ -507,7 +568,7 @@ class PlanBinding(Contract):
         reviews = review_calls_per_check(self.spec) * checks
         if self.plan.quality and self.spec.candidate_count * reviews > self.spec.budget.max_review_calls:
             raise ValueError(f'Each candidate needs {reviews} visual calls for segment checks and final review; respect the review budget')
-        source = self.spec.description + "\n" + self.spec.ending
+        source = user_source(self.spec)
         for requirement in self.plan.requirements:
             if requirement.source == "user" and requirement.evidence not in source:
                 raise ValueError("A user requirement must quote the user's actual input")

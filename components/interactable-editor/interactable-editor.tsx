@@ -476,6 +476,14 @@ export function InteractableEditor() {
         target:current.behavior.kind === 'toggle' ? 'toggle-state' : 'sequence-entry'}});
     } catch (cause) {setError(true); setMessage(describeError(cause));}
   };
+  // The state-animation panel writes back through the shared document, so save it first and pass its identity.
+  const openStateMotion = async () => {
+    try {
+      await persist(true);
+      const guard = await shared.flushSaved();
+      await navigate('/tools/interactable-motion?' + new URLSearchParams({document: guard.document.id, definition: current.definitionId}));
+    } catch (cause) {setError(true); setMessage(describeError(cause));}
+  };
   const importMotion = async (asset: LibraryAsset) => {
     const slot = library?.motion;
     if (!slot || asset.motionSource !== slot.source) throw new Error('请选择当前用途的状态链素材。');
@@ -770,6 +778,7 @@ export function InteractableEditor() {
               </NativeSelectOptGroup>)}
             </NativeSelect></label>}
             <button disabled={busy || !ready || !draftWritable} onClick={()=>void openLibrary()}>从资产库选用原图 / 动画</button>
+            {!!slotEntries.length && <button disabled={busy || !ready || !draftWritable} onClick={()=>void openStateMotion()}>制作状态动画</button>}
             <div className="ie-asset-list">
               {project.assets.map((a) => (
                 <div key={a.id}>

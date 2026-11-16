@@ -259,6 +259,11 @@ def test_archive_writeback_to_shared_document(chain):
     decide(client, 0, 'accept', 2)
     engine.advance(work.job_id, provider, wait=True)
     decide(client, 1, 'accept')
+    # A reviewed reverse transition (B2) is written back as the toggle's return.
+    record = client.post('derived', json={'expected_revision': 1, 'candidate_index': 1, 'request_key': 'writeback-reverse',
+                                          'method': 'reverse', 'stage_index': 0}).json()['derived']
+    assert client.post(f"derived/{record['id']}/decision", json={'token': record['token'], 'decision': 'accept',
+                       'note': 'Scripted archive decision', 'played': True}).status_code == 200
     server = uvicorn.Server(uvicorn.Config(create_api(service=service), lifespan='off', log_level='error'))
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))

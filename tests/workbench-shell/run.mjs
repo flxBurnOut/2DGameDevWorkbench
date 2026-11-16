@@ -34,7 +34,7 @@ try {
   const { restoreTaskProject } = await server.ssrLoadModule('/features/interactable-editor/task-project.ts');
   test('shared navigation names every tool once and resolves compatibility deep links', () => {
     assert.deepEqual(workspaceGroups.flatMap((group) => group.tools.map((tool) => tool.id)).sort(), modules.map((tool) => tool.id).sort());
-    assert.deepEqual(new Set(modules.map((tool) => tool.name)), new Set(['角色原图', '角色动画', '交互物编辑']));
+    assert.deepEqual(new Set(modules.map((tool) => tool.name)), new Set(['角色原图', '角色动画', '交互物动画', '交互物编辑']));
     for (const tool of modules) {
       assert.equal(tool.name, tool.shortName);
       assert.equal(tool.name, tool.entryTitle);
@@ -43,6 +43,8 @@ try {
     }
     assert.equal(currentWorkbenchPage('/player').name, '角色制作总览');
     assert.equal(currentWorkbenchPage('/tools/interactable-editor').group.id, 'interactable');
+    assert.equal(currentWorkbenchPage('/tools/interactable-motion').tool.id, 'interactable-motion');
+    assert.deepEqual(workspaceGroups.find((group) => group.id === 'interactable').tools.map((tool) => tool.id), ['interactable-motion', 'interactable-editor']);
   });
   test('asset return links preserve list and detail state and reject other navigation targets', () => {
     const source = '/assets?q=城门&kind=interactable&scope=active&offset=40&asset=example#selected';
@@ -190,7 +192,7 @@ try {
         .filter((m) => m.productionLine === 'interactable')
         .map((m) => m.id)
         .sort(),
-      ['interactable-editor'],
+      ['interactable-editor', 'interactable-motion'],
     );
   });
   test('pages read a current UI manifest without capability schemas', async () => {

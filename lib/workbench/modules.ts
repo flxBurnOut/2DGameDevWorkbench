@@ -3,6 +3,7 @@ import manifest from './ui-manifest.json';
 export type WorkbenchModuleIcon =
   | 'frames'
   | 'interactable'
+  | 'interactable-motion'
   | 'reference';
 
 export type WorkbenchModule = {
@@ -22,6 +23,8 @@ export type WorkbenchModule = {
   starterHint: string;
   entryActions?: readonly { label: string; href: string }[];
   stages: readonly string[];
+  /** Position inside its production line in the header; unset keeps manifest order. */
+  navOrder?: number;
 };
 
 /**
@@ -40,7 +43,9 @@ export const workbenchModules: readonly WorkbenchModule[] = manifest.modules.fil
   entryActions: ('entryActions' in capability.ui ? capability.ui.entryActions : undefined) as WorkbenchModule['entryActions'],
   stages: capability.ui.stages,
   href: capability.ui.route,
-  icon: capability.ui.icon === 'reference' ? 'reference' : capability.ui.icon === 'interactable' ? 'interactable' : 'frames',
+  icon: capability.ui.icon === 'reference' ? 'reference' : capability.ui.icon === 'interactable' ? 'interactable'
+    : capability.ui.icon === 'interactable-motion' ? 'interactable-motion' : 'frames',
+  navOrder: 'navOrder' in capability.ui && typeof capability.ui.navOrder === 'number' ? capability.ui.navOrder : undefined,
   accent: capability.ui.accent === 'cyan' ? 'cyan' : 'violet',
   capabilities: capability.ui.capabilities,
   status:

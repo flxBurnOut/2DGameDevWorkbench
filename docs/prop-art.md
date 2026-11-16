@@ -89,7 +89,7 @@ get_task 查询同一任务，get_result 直达 `/tools/interactable-editor?imag
 
 用户只要图片时，在图片交付处结束。需要完整交互物时，读取真实 PNG 和结果 metadata，将其绑定到原项目中正确物件的 visual.assetId；资产 source 使用实际工作区路径或内嵌 data URL，可附 generation 来源字段，再执行 interactable-editor 的 save-project / export-godot。沿用 projectId / definitionId，不新建同名物件代替原目标。默认图更新不应静默覆盖状态专用图片。
 
-从 PixelLab 物品面板选择已完成的 128×128 原图，点击“移送到物品动画”。MCP 可用 `reference-art` 的 `transfer`，传入已完成的物品生成任务 `sourceTaskId`。服务核对登记产物、尺寸、透明度和 SHA-256，重复移送复用同一交互物预设。打开返回的 `?object=` 链接后规划动画。
+从 PixelLab 物品面板选择已完成的 128×128 原图，点击“移送到交互物动画”（交互物动画面板内也可直接生成并移送）。MCP 可用 `reference-art` 的 `transfer`，传入已完成的物品生成任务 `sourceTaskId`。服务核对登记产物、尺寸、透明度和 SHA-256，重复移送复用同一交互物预设。打开返回的 `/tools/interactable-motion?object=` 链接后按状态图规划动画。
 
 ## 兼容与输出
 

@@ -41,6 +41,7 @@ import {
 } from '@/lib/workbench/editor-session';
 import { offerGodotExport } from '@/lib/workbench/godot-export';
 import type { WorkbenchModule } from '@/lib/workbench/modules';
+import { interactableMotionRoute } from '@/lib/workbench/motion-routes';
 import type { MotionConfiguration as Configuration } from './motion-model-settings';
 
 // Secondary surfaces load when opened: model settings and the legacy workspace.
@@ -77,6 +78,7 @@ import { MotionPanel } from './motion-panel';
 import { MotionTemporalStructure } from './motion-temporal-structure';
 import { MotionVisualReview } from './motion-visual-review';
 import { MotionStructure } from './motion-structure';
+import { ExpertRecord, motionPlanningRoles as roles } from './motion-expert-record';
 
 type Recent = {
   id: string;
@@ -84,13 +86,6 @@ type Recent = {
   updated_at: string;
   diagnostic_only: boolean;
   revision: number;
-};
-const roles: Record<string, string> = {
-  appearance: '外观专家',
-  motion: '动作专家',
-  strategy: '生成策略专家',
-  coordinator: '协调专家',
-  validator: '本机方案校验',
 };
 const stageLabels: Record<string, string> = {
   created: '等待制作',
@@ -321,6 +316,7 @@ function OpenMotionStudio({
       motionRequest<Configuration>('open-motion/settings'),
       motionRequest<{ works: Recent[] }>('open-motion'),
     ]);
+    // Interactables are made in their own panel; this page lists characters only.
     const available = motionReferenceObjects(refs).filter(item => item.valid && item.id !== 'diagnostic_dummy');
     setObjects(available);
     setConfiguration(config);
@@ -340,6 +336,11 @@ function OpenMotionStudio({
             version ? { revision: String(version) } : {},
           );
           if (!live) return;
+          if (motionObjectType(value.spec) === 'interactable' && new URLSearchParams(location.search).get('layout') !== 'studio') {
+            // Interactable works open in their state-graph panel by default.
+            location.replace(`${interactableMotionRoute}${location.search}`);
+            return;
+          }
           applyWork(value);
           setSpec(value.spec);
           loaded = value;
@@ -374,6 +375,10 @@ function OpenMotionStudio({
         const available = await refreshLists();
         if (live && objectId) {
           const reference = available.find(item => item.id === objectId);
+          if (reference?.object_type === 'interactable') {
+            location.replace(`${interactableMotionRoute}${location.search}`);
+            return;
+          }
           if (reference) setSpec(current => selectMotionObject(current, reference.id, reference.object_type));
         }
       } catch (e) {
@@ -697,10 +702,10 @@ function OpenMotionStudio({
                       onChange={(e) => { const selected = objects.find(item => item.id === e.target.value); edit({ object_id: e.target.value, object_type: selected?.object_type ?? 'character' }); setUploadIdentity(''); }}
                     >
                       <NativeSelectOption value="">请选择对象</NativeSelectOption>
-                      {objects.map((c) => (
+                      {objects.filter((c) => c.object_type !== 'interactable').map((c) => (
                         <NativeSelectOption key={c.id} value={c.id}>
-                          {c.name} · {c.object_type === 'interactable' ? '交互物' : '角色'} · {c.width}px
-                          {c.object_type !== 'interactable' && c.facing ? ` · 朝${c.facing === 'left' ? '左' : '右'}` : ''}
+                          {c.name} · 角色 · {c.width}px
+                          {c.facing ? ` · 朝${c.facing === 'left' ? '左' : '右'}` : ''}
                         </NativeSelectOption>
                       ))}
                     </NativeSelect>
@@ -1627,36 +1632,6 @@ function OpenMotionStudio({
         </div>
       </footer>
     </div>
-  );
-}
-
-function ExpertRecord({ work }: { work: MotionWork }) {
-  return (
-    <details>
-      <summary>专家协作记录 · {work.planning_calls.length} 次调用</summary>
-      <div className="motion-expert-record">
-        {work.messages.map((m, i) => (
-          <article key={i}>
-            <b>
-              {roles[m.role]} ·{' '}
-              {
-                (
-                  {
-                    propose: '提出建议',
-                    consult: '请求协作',
-                    inspect_reference: '观察参考图',
-                    finalize: '形成方案',
-                    validation_feedback: '返回校验意见',
-                  } as Record<string, string>
-                )[m.response.action]
-              }
-            </b>
-            <p>{m.response.summary}</p>
-            {m.response.question && <p>{m.response.question}</p>}
-          </article>
-        ))}
-      </div>
-    </details>
   );
 }
 

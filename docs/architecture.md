@@ -45,7 +45,7 @@ flowchart TB
 
 | 服务 | 默认地址 | 职责与实现 |
 | --- | --- | --- |
-| Web | `http://localhost:3000` | React 工作台、Vinext/Vite 与服务端 API 路由；角色与交互物动画界面位于 `components/sprite-generator/` |
+| Web | `http://localhost:3000` | React 工作台、Vinext/Vite 与服务端 API 路由；角色动画界面位于 `components/sprite-generator/`，交互物动画面板位于 `components/interactable-motion/` |
 | HTTP Bridge | `http://127.0.0.1:8790` | `scripts/workbench-http.mjs`；任务 API、共享文档、图片会话、资产与交付接口 |
 | SpritePipeline | `http://127.0.0.1:7860` | FastAPI/Uvicorn；开放动作、原图、原生 Job、像素编辑及导出接口；Gradio UI 与 API 共用服务实例 |
 
@@ -214,7 +214,7 @@ flowchart TD
 
 `state_assets.py` 将确认状态图和已接受过渡纳入资产目录；`import-motion-asset` 经共享文档类型化命令写入指定切换槽或序列条目。`interactable-motion-import.mjs` 保留作品、素材版本、检查点令牌与帧哈希，核验来源后写入静态状态图或非循环过渡片段，不改变其他消费者。单独确认的状态图可按自身条件导入，过渡必须已接受；末尾停留帧按真实播放映射处理。
 
-前端复用现有资产选择入口，不增加独立的状态写回页面。交互物动画目前在角色动画页 `/tools/sprite-generator` 中选择交互物对象制作，入口是交互物编辑器“外观 → 获取图片 → 生成物品原图”下的“移送到物品动画”；以状态图为中心的独立面板与交互物专用编辑工具见[交互物动画独立面板方案](交互物动画独立面板方案.md)，尚未实施。`?document=<id>` 打开共享工程；繁忙、有本地修改、离线或版本冲突时保留草稿。`contentHash` 始终表示已存储内容，草稿不冒充服务端版本。
+交互物动画在 `/tools/interactable-motion` 面板制作（manifest `editorModules` 中的 `interactable-motion`，不是新能力）：数据仍是 `sprite-generator` 的开放动作作品，`object_type=interactable` 的作品默认在此打开。写回页签与编辑器“导入位置”都只提交 `import-motion-asset`；只读的 `document-motion-bindings` 由命令历史与当前内容给出各槽绑定。确定性帧工具在浏览器用精确 PNG 编解码计算，经 `local-frame-edits` 提交；派生过渡与非生成状态图由 `derived_assets.py` 记录来源，人工接受后以 `motion-derived:` 资产进入目录。详见[交互物动画独立面板方案](交互物动画独立面板方案.md)。`?document=<id>` 打开共享工程；繁忙、有本地修改、离线或版本冲突时保留草稿。`contentHash` 始终表示已存储内容，草稿不冒充服务端版本。
 
 交互物编辑器保留 inspect、toggle、pickup、sequence 四类行为和 proximity_press、pointer_click、automatic_enter、external_request 四类触发。生成与修正发生在序列帧工具；交接后配置行为、碰撞、范围、文本与音效。`simulation-replay.mjs` 提供有界事件模拟与期望检查，不证明 Godot 物理、真实音频或存档行为。导出仍走 `interactable-editor` 的 `export-godot`，不要求本机安装 Godot，也不调用生成 API。详见[交互物](interactable-editor.md)与[内部素材导入](internal-imports.md)。
 
@@ -246,7 +246,7 @@ Web 合并展示 runtime task、原生 Job 与浏览器草稿，提供图形编�
 
 ## 10. 实现状态与验证边界
 
-当前实现已包含对象泛化、128 像素物品图移送、交互物合同、状态链、状态/过渡写回与外部 B 图条件（N1–N6），以及动画帧修正、共用模型配置与界面接线（M1–M7）、冻结实验协议、对照流程和导出支撑（E1–E4）。M8 的角色结构蒙版建议仍为可选未实施项，不能当作自动选区来源。交互物动画的独立网页面板（第 6 节）为方案阶段。
+当前实现已包含对象泛化、128 像素物品图移送、交互物合同、状态链、状态/过渡写回与外部 B 图条件（N1–N6），以及动画帧修正、共用模型配置与界面接线（M1–M7）、冻结实验协议、对照流程和导出支撑（E1–E4）。M8 的角色结构蒙版建议仍为可选未实施项，不能当作自动选区来源。交互物动画的独立网页面板、专用工具与 B1–B5 后端扩展已实施，见[实施记录](交互物动画独立面板方案.md#8-实施记录)。
 
 现有工程验收包含模拟提供方、隔离工程与归档真实帧回放。它们验证合同、来源、像素保护、版本冲突、恢复、播放和交付行为；真实生成下的跨段状态链有效性、固定部件/铰接测量对更多对象的适用性，以及论文实验规模和预算仍需另行验证。当前进度见[论文方向与方法](论文方向与方法.md)，历史验收见执行计划与工程问题清单。
 

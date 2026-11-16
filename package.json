@@ -43,6 +43,7 @@
     "test:workbench-shell": "node tests/workbench-shell/run.mjs",
     "test:frontend": "node tests/frontend-service/run.mjs",
     "test:open-motion": "node tests/open-motion/run.mjs && node tests/authoring-gaps/run.mjs",
+    "test:interactable-motion": "node tests/interactable-motion/run.mjs",
     "test:dev-supervisor": "node tests/sprite-pipeline-supervisor/run.mjs",
     "lint": "oxlint",
     "format": "oxfmt",

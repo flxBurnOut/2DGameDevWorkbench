@@ -19,6 +19,7 @@ from .workspace import OpenMotionWorkspace
 from .model_config import ModelRegistry, ModelConfiguration
 from .adjustments import Adjustments, AdjustmentInput
 from .local_frame_edits import LocalFrameEdit, create_local
+from .derived_assets import DerivedAssets, DerivedCreate, DerivedDecision
 from .structure_contracts import StructureProposal
 from .tracking_corrections import TrackingCorrection
 
@@ -455,6 +456,25 @@ def create_router(service):
     @router.post('/{work_id}/local-frame-edits')
     def local_frame_edit(work_id: str, body: LocalFrameEdit):
         return {'adjustment':create_local(adjustments,work_id,body)}
+
+    derived = DerivedAssets(service)
+
+    @router.get('/{work_id}/derived')
+    def derived_list(work_id: str, revision: int | None = None):
+        workspace.load(work_id, revision)
+        return {'derived': derived.listing(work_id, revision)}
+
+    @router.post('/{work_id}/derived')
+    def derived_create(work_id: str, body: DerivedCreate):
+        return {'derived': derived.create(work_id, body)}
+
+    @router.get('/{work_id}/derived/{derived_id}/frames/{frame}')
+    def derived_frame(work_id: str, derived_id: str, frame: int):
+        return Response(derived.frame_bytes(derived.load(work_id, derived_id), frame), media_type='image/png', headers={'Cache-Control': 'no-store'})
+
+    @router.post('/{work_id}/derived/{derived_id}/decision')
+    def derived_decide(work_id: str, derived_id: str, body: DerivedDecision):
+        return {'derived': derived.decide(work_id, derived_id, body)}
 
     @router.get('/{work_id}/adjustments')
     def adjustment_context(work_id: str, revision: int, candidate: int = 1, stage: int | None = None):

@@ -27,12 +27,14 @@ else:
     service.open_motion_model = Planner()
 from test_interactable_motion import PropPlanner
 character_planner = service.open_motion_model
+# The scripted prop plan defaults to a hinge (needs a checked structure); --prop-item lamp plans an appearance change.
+prop_item = sys.argv[sys.argv.index('--prop-item') + 1] if '--prop-item' in sys.argv else 'lever'
 class ObjectPlanner:
     configuration = character_planner.configuration
     configured = character_planner.configured
 
     def __call__(self, role, work, reference, **kwargs):
-        planner = PropPlanner('lever') if work.spec.object_type == 'interactable' else character_planner
+        planner = PropPlanner(prop_item) if work.spec.object_type == 'interactable' else character_planner
         return planner(role, work, reference, **kwargs)
 
 service.open_motion_model = ObjectPlanner()

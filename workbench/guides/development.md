@@ -15,6 +15,7 @@
 | 单候选视觉复核与诊断 | `lib/workbench/image-edit-critic.mjs`、`components/image-edit/candidate-check.tsx`、[使用指南](image-attribute-editing.md#独立复核成品) | `test:image-attribute-plan` 覆盖独立上下文、候选身份与中断恢复，`tests/image-edit/transport.mjs` 验证 MCP 图片输出 |
 | 交互物共享文档 | `features/interactable-editor/`、`features/editor-documents/`、`lib/workbench/document-*.mjs`、`interactable-document*.mjs` | `test:editor-documents`、`test:interactable`；保存与模拟变化加相应测试 |
 | 开放动作 | `Tools/SpritePipeline/sprite_pipeline/collaboration/`、`components/sprite-generator/` | 受影响的 Python 测试、`test:open-motion` |
+| 交互物动画面板 | `components/interactable-motion/`、`features/interactable-motion/`、`derived_assets.py`、`interactable-motion-bindings.mjs` | `test:interactable-motion`、`test_interactable_panel_backend.py`、`test_interactable_state_chain.py`（含跨服务写回）；网页验收 `tests/interactable-motion/browser.mjs` |
 | 游戏交付 / 工程 helper | `features/godot-export/`、`lib/workbench/game-export*.mjs`、工程 Skill 的脚本 | `test:game-export`、`test:engineering` |
 | 启动器与平台支持 | `scripts/dev.mjs`、服务 supervisor、平台凭据模块 | `test:frontend`、`test:dev-supervisor`、`test:desktop-services` 或凭据测试 |
 

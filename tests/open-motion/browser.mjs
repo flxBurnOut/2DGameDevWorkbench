@@ -48,12 +48,9 @@ try {
   await page.goto((process.env.FORGE_TEST_WEB_URL||'http://localhost:3000')+'/tools/sprite-generator?character=test_hero');
   await page.getByLabel('已有对象').waitFor();
   const objectPicker = page.getByLabel('已有对象');
-  const objectOption = await objectPicker.locator('option[value="fixture_door"]').textContent();
-  assert.match(objectOption, /交互物/); assert.doesNotMatch(objectOption, /朝左|朝右/);
-  await objectPicker.selectOption('fixture_door');
-  await page.getByAltText('所选对象参考图', { exact: true }).waitFor();
-  assert.equal(await page.locator('.motion-reference .motion-structure').count(), 1, 'Interactables expose their reference structure controls.');
-  assert.equal(await page.getByText('上传角色原图', { exact: true }).count(), 1, 'N1 does not add object-reference admission.');
+  // Interactables are made in /tools/interactable-motion; this page lists characters only.
+  assert.equal(await objectPicker.locator('option[value="fixture_door"]').count(), 0);
+  assert.equal(await page.getByText('上传角色原图', { exact: true }).count(), 1);
   await objectPicker.selectOption('test_hero');
 
   await page.getByText('模型设置',{exact:true}).click();

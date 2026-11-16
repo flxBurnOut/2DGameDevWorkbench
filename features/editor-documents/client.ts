@@ -64,3 +64,19 @@ export function saveDocument<T>(id: string, expectedRevision: number, content: T
 export function applyDocument<T>(id: string, expectedRevision: number, commands: Array<Record<string, unknown>>, commandId: string = crypto.randomUUID()) {
   return request<DocumentResult<T>>(`/${encodeURIComponent(id)}/apply`, { expectedRevision, commands, commandId });
 }
+
+export type MotionSlotBinding = {
+  assetId: string; assetRevision: string; workId: string; workRevision: number; candidateIndex: number; stageIndex: number | null;
+  checkpointToken: string; frameHashes: string[]; documentRevision: number; current: boolean;
+  derivation?: string; durations?: number[]; playback?: 'once' | 'ping_pong';
+};
+export type MotionBindings = {
+  documentId: string; revision: number; contentHash: string;
+  objects: { definitionId: string; name: string; kind: 'toggle' | 'sequence'; target: 'toggle-state' | 'sequence-entry'; initialToggle?: boolean;
+    slots: { index: number; name: string; state: MotionSlotBinding | null; transition: MotionSlotBinding | null; otherImage: string | null }[] }[];
+};
+/** Read-only: motion assets bound to each toggle state or sequence entry. */
+export function readMotionBindings(id: string, definitionId?: string) {
+  const query = definitionId ? `?${new URLSearchParams({ definitionId })}` : '';
+  return request<MotionBindings>(`/${encodeURIComponent(id)}/motion-bindings${query}`);
+}

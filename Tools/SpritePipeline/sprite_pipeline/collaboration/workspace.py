@@ -255,7 +255,8 @@ class OpenMotionWorkspace:
                             blockers.append(structure_problem)
                             structure_problem = None
                         units, problem = plan_cost(work, plan)
-                        problem = problem or structure_problem
+                        from .contracts import skeleton_problem
+                        problem = problem or structure_problem or skeleton_problem(plan, work.spec)
                         calls = len(plan.stages) * work.spec.candidate_count
                         if calls > work.spec.budget.max_generation_calls:
                             problem = f"方案需要 {calls} 次生成，但用户上限是 {work.spec.budget.max_generation_calls} 次。合并非必要片段，不能提高预算。"
@@ -417,7 +418,7 @@ class OpenMotionWorkspace:
             from .state_chain import state_images
             for candidate, view in zip(job.candidates, result["job"]["candidates"], strict=True):
                 view["state_chain"] = state_images(job, candidate)
-        result["view_path"] = "/tools/sprite-generator?work=" + work.id
+        result["view_path"] = ("/tools/interactable-motion?work=" if work.spec.object_type == "interactable" else "/tools/sprite-generator?work=") + work.id
         result["diagnostic_only"] = work.spec.provider == "fixture" or bool(result["job"] and any(c["diagnostic_only"] for c in result["job"]["candidates"]))
         from .adjustments import Adjustments
         adjustments=Adjustments(self.service).listing(work.id)

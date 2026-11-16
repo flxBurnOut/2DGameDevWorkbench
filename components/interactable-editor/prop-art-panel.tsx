@@ -380,8 +380,8 @@ export function PropArtPanel({
                   下载 PNG
                 </a>
                 {motionTarget && motionTarget.source === selectedId
-                  ? <a href={`/tools/sprite-generator?object=${motionTarget.id}`} target="_blank" rel="noreferrer">打开物品动画</a>
-                  : <button disabled={busy || disabled} onClick={() => void transfer()}>移送到物品动画</button>}
+                  ? <a href={`/tools/interactable-motion?object=${motionTarget.id}`} target="_blank" rel="noreferrer">打开交互物动画</a>
+                  : <button disabled={busy || disabled} onClick={() => void transfer()}>移送到交互物动画</button>}
               </div>
               <button
                 className="ie-primary"

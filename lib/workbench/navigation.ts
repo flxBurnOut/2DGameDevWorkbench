@@ -10,7 +10,11 @@ export const workbenchDestinations = {
 
 export const workspaceGroups = productionLines.map((line) => ({
   ...line,
-  tools: workbenchModules.filter((tool) => tool.productionLine === line.id),
+  // Stable: tools without navOrder keep manifest order after ordered ones.
+  tools: workbenchModules.filter((tool) => tool.productionLine === line.id)
+    .map((tool, index) => ({ tool, index }))
+    .sort((a, b) => (a.tool.navOrder ?? Infinity) - (b.tool.navOrder ?? Infinity) || a.index - b.index)
+    .map(({ tool }) => tool),
 }));
 
 export function currentWorkbenchPage(pathname: string) {

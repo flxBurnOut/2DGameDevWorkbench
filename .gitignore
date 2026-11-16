@@ -131,6 +131,7 @@ logs/
 !/docs/论文-序列帧长动作生成.md
 !/docs/论文分支执行计划.md
 !/docs/前端优化方案.md
+!/docs/前端界面与交互优化方案.md
 # Share written issue records. Keep raw runs and attachments in their existing locations.
 !/docs/问题清单/
 /docs/问题清单/**

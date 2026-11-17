@@ -156,6 +156,7 @@ export type MotionWork = {
   messages: {
     role: string;
     call?: number;
+    reused_from?: { revision: number; call: number; request_id: string };
     response: { action: string; summary: string; question?: string };
   }[];
   planning_calls: { role: string; state: string; requested_model?: string }[];
@@ -190,7 +191,11 @@ export function motionPlanningProgress(
     return { state: 'pending', label: running ? '等待最终方案' : '未完成校验' };
   }
   const callIndex = work.planning_calls.findLastIndex(c => c.role === role);
-  if (callIndex < 0) return { state: 'pending', label: running ? '等待处理' : '未执行' };
+  if (callIndex < 0) {
+    const reused = work.messages.find(m => m.role === role && m.reused_from)?.reused_from;
+    if (reused) return { state: 'complete', label: `沿用第 ${reused.revision} 版意见` };
+    return { state: 'pending', label: running ? '等待处理' : '未执行' };
+  }
   const call = work.planning_calls[callIndex];
   if (call.state === 'invalid_response') return { state: 'failed', label: '返回格式无效' };
   if (['failed_request', 'failed'].includes(call.state)) return { state: 'failed', label: '请求失败' };

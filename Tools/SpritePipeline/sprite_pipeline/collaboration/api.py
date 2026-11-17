@@ -14,9 +14,9 @@ from pydantic import Field
 from ..errors import ConflictError, ValidationHarnessError
 from ..models import ExportOptions
 from ..vision_review import VisionReviewer, PROVIDERS
-from .contracts import Contract, TaskSpec, digest
+from .contracts import Contract, Role, TaskSpec, digest
 from .workspace import OpenMotionWorkspace
-from .model_config import ModelRegistry, ModelConfiguration
+from .model_config import ModelRegistry, ModelConfiguration, PlanningModelChoice
 from .adjustments import Adjustments, AdjustmentInput
 from .local_frame_edits import LocalFrameEdit, create_local
 from .derived_assets import DerivedAssets, DerivedCreate, DerivedDecision
@@ -24,19 +24,23 @@ from .structure_contracts import StructureProposal
 from .tracking_corrections import TrackingCorrection
 
 
-class Create(Contract):
+class PlanRequest(Contract):
     spec: TaskSpec
     request_key: str = Field(min_length=8, max_length=128)
     planning_authorized: bool = False
     auto_execute: bool = False
 
 
+class Create(PlanRequest):
+    planning_models: dict[Role, PlanningModelChoice] = Field(default_factory=dict)
+
+
 class Revision(Contract):
     expected_revision: int = Field(ge=1)
 
 
-class Revise(Create, Revision):
-    pass
+class Revise(PlanRequest, Revision):
+    auto_execute: Literal[False] = False
 
 
 class TargetRevision(Revision):
@@ -301,7 +305,8 @@ def create_router(service):
 
     @router.post("", status_code=201)
     def create(body: Create):
-        work = workspace.create(body.spec, body.request_key, planning_authorized=body.planning_authorized, auto_execute=body.auto_execute)
+        work = workspace.create(body.spec, body.request_key, planning_authorized=body.planning_authorized,
+                                auto_execute=body.auto_execute, planning_models=body.planning_models)
         return view(work.id)
 
     @router.get("/{work_id}")
@@ -327,8 +332,6 @@ def create_router(service):
 
     @router.post("/{work_id}/revise")
     def revise(work_id: str, body: Revise):
-        if body.auto_execute:
-            raise ValidationHarnessError("修改后的方案需要重新查看并确认制作")
         workspace.revise(work_id, body.expected_revision, body.spec, body.request_key, planning_authorized=body.planning_authorized)
         return view(work_id)
 
@@ -378,7 +381,7 @@ def create_router(service):
         from .checkpoints import Checkpoints
         work = workspace.load(work_id,revision)
         if not work.job_id: raise ConflictError('尚无生成片段')
-        return Checkpoints(service).view(work.job_id,candidate,stage)
+        return {**Checkpoints(service).view(work.job_id,candidate,stage), 'work_revision': work.revision}
 
     @router.get('/{work_id}/candidates/{candidate}/stages/{stage}/frames/{frame}')
     def stage_image(work_id: str, candidate: int, stage: int, frame: int, revision: int | None = None):

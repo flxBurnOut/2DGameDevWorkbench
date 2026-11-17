@@ -260,7 +260,7 @@ export function WorkbenchManagement() {
                       {workStateLabels[item.state]} · {time(item.updatedAt)}
                     </p>
                     <p>
-                      {tasks.some((task) => task.error || task.refreshError)
+                      {item.state !== 'not_submitted' && tasks.some((task) => task.error || task.refreshError)
                         ? '执行遇到问题，请进入制作工具处理；具体原因见技术详情。'
                         : item.detail}
                     </p>
@@ -273,7 +273,7 @@ export function WorkbenchManagement() {
                       <a className="wb-button" href={item.href}>
                         {item.state === 'completed'
                           ? '查看制作成果'
-                          : '继续制作'}
+                          : item.state === 'not_submitted' ? '查看原请求' : '继续制作'}
                       </a>
                     )}
                     <h3>制作成果</h3>
@@ -311,7 +311,7 @@ export function WorkbenchManagement() {
                                   ? '已准备，尚未执行'
                                   : task.status === 'awaiting_configuration'
                                     ? '等待配置'
-                                    : '需要处理'}
+                                    : task.status === 'not_submitted' ? '未提交' : '需要处理'}
                           </p>
                         ))}
                       </>

@@ -2,7 +2,7 @@
 /* oxlint-disable next/no-img-element -- generated pixel art preview */
 import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle } from 'lucide-react';
-import type { StoredTask } from '@/lib/workbench/work-items';
+import { referenceProgress, type StoredTask } from '@/lib/workbench/work-items';
 import { isPropArtTask, propArtJson, propImagePath } from '@/features/interactable-editor/prop-art.mjs';
 import { PropReferenceTools } from '@/components/interactable-editor/prop-reference-tools';
 
@@ -71,8 +71,8 @@ export function PropReferenceGenerator({ objectName, onTransferred }: { objectNa
     {configured === false && <p className="motion-notice">请先在交互物编辑器或角色原图页配置 PixelLab API Key。</p>}
     <label>物品外观描述<textarea rows={3} maxLength={1000} value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="例如：木制底座的金属拉杆，侧视，拉杆在左侧" /></label>
     <button disabled={busy || running || configured !== true || prompt.trim().length < 4} onClick={() => void generate()}>生成物品原图（计费一次）</button>
-    {running && <p><LoaderCircle size={14} className="animate-spin" />正在生成…</p>}
-    {task?.status === 'failed' && <p className="motion-danger">生成失败，请修改描述后重试。</p>}
+    {running && <p><LoaderCircle size={14} className="animate-spin" />{referenceProgress(task) || '正在生成…'}</p>}
+    {task?.error && <p className="motion-danger">{task.error}</p>}
     {png && <><img src={artifact(png)} alt="物品原图" width={128} height={128} style={{ imageRendering: 'pixelated' }} />
       <button className="motion-primary" disabled={busy} onClick={() => void transfer()}>用作交互物动画对象</button></>}
     {message && <p className="motion-danger">{message}</p>}

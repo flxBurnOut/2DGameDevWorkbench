@@ -308,7 +308,7 @@ registerTool(
   {
     title: 'Get a 2D workbench task',
     description:
-      'Read a workbench task. If its adapter job is still running, poll that existing job once and persist the refreshed status and artifacts without starting new generation.',
+      'Poll the existing task without starting generation. An open-motion task can be polled across checkpoint decisions. presentation.reviewProgress shows the current visual check, recorded call count and decision readiness. Follow workbench_get_result for the exact next action and tokens.',
     inputSchema: {
       taskId: z.string().min(1).describe('Task ID returned by this server.'),
     },
@@ -323,9 +323,9 @@ registerTool(
     const manifest = await loadManifest();
     const refreshed = await refreshTask(manifest, taskId);
     return {
-      task: refreshed.task,
       presentation: (await agentRequest(manifest, 'result', { taskId }))
         .presentation,
+      task: refreshed.task,
       ...(refreshed.refreshError
         ? { refreshError: refreshed.refreshError }
         : {}),
@@ -383,7 +383,7 @@ const discoveryTools = [
   [
     'workbench_get_result',
     'result',
-    'Read a workbench taskId OR a native sprite jobId (exactly one). Optional candidateIndex selects an existing candidate. Returns a concise presentation and exact viewUrl plus structured results. Does not refresh, generate, create tasks or open a browser.',
+    'Read a saved taskId or a native sprite jobId (exactly one). Sprite results default to a compact summary with next actions, issues and available stage tokens. Request detail:true for bounded technical pages. This read creates no tasks or generation.',
     {
       taskId: z.string().min(1).optional(),
       jobId: z.string().min(1).max(200).optional(),
@@ -392,8 +392,11 @@ const discoveryTools = [
         .boolean()
         .optional()
         .describe(
-          'Return full technical JSON in text content for clients without structuredContent; use for frame review or debugging.',
+          'Fetch one technical page for sprite results. Concatenate detailPage.json across pages before parsing. Other capabilities return their full technical result.',
         ),
+      section: z.string().max(2000).optional().describe('Sprite detail JSON Pointer, e.g. /result/orderedFrames, /result/stage/review, /result/work/plan, or /artifacts. Omit for the complete detail document.'),
+      offset: z.number().int().min(0).optional().describe('Sprite detail starts at 0. For the next page, send detailPage.nextOffset and detailPage.snapshot with the same selection.'),
+      snapshot: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('detailPage.snapshot for a continuation of the same sprite detail selection.'),
     },
   ],
   [

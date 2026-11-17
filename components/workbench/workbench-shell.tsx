@@ -23,9 +23,10 @@ type HomeAsset = {
 
 const lineLabels: Record<string, string> = { player: '角色', interactable: '交互物' };
 const kindLabels: Record<string, string> = { character: '角色原图', prop: '物品原图', animation: '动画', interactable: '交互物' };
-const statePriority: Record<WorkItemState, number> = { attention: 0, running: 1, editing: 2, saved: 3, completed: 4 };
-const stateLabels: Record<WorkItemState, string> = { attention: '需要处理', running: '制作中', editing: '编辑中', saved: '已保存', completed: '已完成' };
-const actionLabels: Record<WorkItemState, string> = { attention: '处理', running: '查看进度', editing: '继续', saved: '继续', completed: '查看' };
+type RecentWorkState = Exclude<WorkItemState, 'not_submitted'>;
+const statePriority: Record<RecentWorkState, number> = { attention: 0, running: 1, editing: 2, saved: 3, completed: 4 };
+const stateLabels: Record<RecentWorkState, string> = { attention: '需要处理', running: '制作中', editing: '编辑中', saved: '已保存', completed: '已完成' };
+const actionLabels: Record<RecentWorkState, string> = { attention: '处理', running: '查看进度', editing: '继续', saved: '继续', completed: '查看' };
 
 /** Which asset kinds can stand in for each tool's preview, most specific first. */
 const previewKinds: Record<string, string[]> = {
@@ -180,7 +181,7 @@ export function WorkbenchShell() {
 function RecentWork({ items, onShowAll }: { items: WorkItem[]; onShowAll: () => void }) {
   const wb = useWorkbench();
   const { running, attention } = useRecordSummary();
-  const shown = [...items]
+  const shown = items.filter((item): item is WorkItem & { state: RecentWorkState } => item.state !== 'not_submitted')
     .sort((a, b) => statePriority[a.state] - statePriority[b.state] || b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 5);
   const counts = [attention ? `需要处理 ${attention}` : '', running ? `制作中 ${running}` : ''].filter(Boolean).join(' · ');

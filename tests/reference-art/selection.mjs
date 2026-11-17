@@ -9,6 +9,8 @@ const compile = async (path) => ts.transpileModule(await readFile(new URL(path, 
 const component = await compile('../../components/reference-art/reference-art-editor.tsx');
 const identity = { exports: {} };
 runInNewContext(await compile('../../components/sprite-generator/character-identity.ts'), identity);
+const workItems = { exports: {}, require: () => ({}) };
+runInNewContext(await compile('../../lib/workbench/work-items.ts'), workItems);
 const jsx = (type, props, key) => ({ type, props, key });
 const task = (id, status = 'completed') => ({
   id, capabilityId: 'reference-art', status,
@@ -62,6 +64,7 @@ function fixture(initial = a) {
     '@/lib/workbench/asset-import': { clearImportQuery() {} },
     '@/components/sprite-generator/character-identity-field': { CharacterIdentityField: 'CharacterIdentityField' },
     '@/components/sprite-generator/character-identity': identity.exports,
+    '@/lib/workbench/work-items': workItems.exports,
     '@/components/ui/input': { Input: 'Input' },
     '@/components/ui/textarea': { Textarea: 'Textarea' },
     '@/components/ui/native-select': { NativeSelect: 'NativeSelect', NativeSelectOption: 'NativeSelectOption' },

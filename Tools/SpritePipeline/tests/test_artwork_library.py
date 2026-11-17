@@ -41,10 +41,14 @@ def test_animation_cards_are_per_material_and_catalog_remains_lazy(library_setup
     job = service.create_job(request)
     paths = fixture.write_sequence(fixture.root / 'inputs')
     service.ingest_candidate(job.job_id, 2, fixture.root / 'inputs')
+    with service.store.locked_job(job.job_id) as updated:
+        updated.character.display_name = '红袍法师'
+        updated.action.display_name = '红袍法师原地举杖施法循环'
     with patch.object(service.store, 'load', side_effect=AssertionError('must not open tasks')), patch.object(Image, 'open', side_effect=AssertionError('must not decode frames')):
         rows = library.list_artworks()
     animations = [row for row in rows if row['kind'] == 'animation']
     assert len(animations) == 1
+    assert animations[0]['title'] == '红袍法师原地举杖施法循环'
     assert animations[0]['candidate_index'] == 2
     assert animations[0]['job_id'] == job.job_id
     assert 'review' in animations[0]['actions']

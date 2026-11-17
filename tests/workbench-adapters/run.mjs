@@ -4,6 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 
 import sharp from 'sharp';
+import { getTaskResult } from '../../lib/workbench/agent-api.mjs';
 import { planImageGenerationSize, imageAspectMatches } from '../../lib/workbench/adapters/image-generation-size.mjs';
 
 import {
@@ -68,6 +69,12 @@ const server = http.createServer(async (request, response) => {
     response.end(
       JSON.stringify({ ok: true, data: { job: spriteJob('review_required') } }),
     );
+    return;
+  }
+  if (request.method === 'GET' && ['/v1/jobs/queued', '/v1/jobs/not_submitted'].includes(request.url)) {
+    const status = request.url.split('/').at(-1);
+    const job = { job_id: status, status, motion_control: { state: 'waiting' }, candidates: [] };
+    response.end(JSON.stringify({ ok: true, data: { job } }));
     return;
   }
   if (
@@ -148,6 +155,16 @@ try {
   ).metadata();
   assert.equal(frameMetadata.width, 2);
   assert.equal(frameMetadata.height, 2);
+  for (const [jobId, state, nextActions] of [
+    ['queued', 'running', ['workbench_get_task']],
+    ['not_submitted', 'not_submitted', []],
+  ]) {
+    const current = await runConnector(manifest, sprite, { operation: 'get', jobId });
+    assert.equal(current.task.status, state);
+    const summary = await getTaskResult(manifest, { taskId: current.task.id });
+    assert.equal(summary.presentation.state, state);
+    assert.deepEqual(summary.result.nextActions, nextActions);
+  }
 
   const submissionCount = requests.filter(
     (r) => r.url === '/v1/jobs' || r.url.endsWith('/generate'),

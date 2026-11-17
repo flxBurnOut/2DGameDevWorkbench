@@ -82,7 +82,7 @@
   color: var(--theme-muted);
   font-size: var(--ui-text-xs);
 }
-.ra-controls input,
+.ra-controls input:not([type="checkbox"]),
 .ra-controls textarea,
 .ra-controls select {
   height: auto;

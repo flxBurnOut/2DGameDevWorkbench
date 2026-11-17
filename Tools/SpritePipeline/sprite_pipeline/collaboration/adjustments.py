@@ -16,6 +16,7 @@ from .visual_review import frame_digest, evidence_panels
 from .checkpoints import Checkpoints
 from ..errors import ConflictError, NotFoundError, ValidationHarnessError, ProviderError
 from ..jsonio import atomic_write_json, read_json, inside
+from ..providers.account import AccountSlotBusy, PixelLabSlot
 from ..providers.base import ProviderRequest, PollStatus
 from ..models import CandidateStatus
 from .targets import checked_png
@@ -243,7 +244,7 @@ class Adjustments:
                 from .structure_control import require_current_structure
                 require_current_structure(self.s,work.visual_structure,work.reference_sha256)
                 task['visual_structure']=copy.deepcopy(work.visual_structure)
-                if work.planning_format_version in (2,3):task['structure_context_version']=2
+                if work.planning_format_version in (2,3,4):task['structure_context_version']=2
             folder=self.folder(task);(folder/'source').mkdir(parents=True)
             for i,png in enumerate(data):(folder/'source'/f'{i:03d}.png').write_bytes(png)
             (folder/'reference.png').write_bytes(reference)
@@ -408,8 +409,8 @@ class Adjustments:
         prompt=drawing_prompt(task,intent['method'],intent['provider_prompt'],data)
         if intent['method']=='appearance':
             context=data[task['start']-1] if tail else data[task['end']+1]
-            request=ProviderRequest(reference_image=ref,edit_frames=(ref,*window,context),prompt=prompt,frame_count=len(window)+2,seed=task['seed'])
-        else:request=ProviderRequest(reference_image=data[task['start']-1] if tail else window[0],last_frame=None if tail else window[-1],prompt=prompt,frame_count=len(window),seed=task['seed'])
+            request=ProviderRequest(reference_image=ref,edit_frames=(ref,*window,context),prompt=prompt,frame_count=len(window)+2,seed=task['seed'],local_submission_id=f"adjustment:{task['id']}")
+        else:request=ProviderRequest(reference_image=data[task['start']-1] if tail else window[0],last_frame=None if tail else window[-1],prompt=prompt,frame_count=len(window),seed=task['seed'],local_submission_id=f"adjustment:{task['id']}")
         if len(prompt)>1000:raise ValidationHarnessError('本次修改描述超过绘图上限，未截断或提交')
         task['input_count']=request.frame_count
         call={'id':uuid.uuid4().hex,'state':'submitting','prompt':prompt,'frame_count':request.frame_count,
@@ -421,6 +422,9 @@ class Adjustments:
                 call.update(state='submitted',provider_job_id=result.provider_job_id)
                 task.update(state='pending',provider_job_id=result.provider_job_id);self.save(task)
                 atomic_write_json(folder/'provider-request.json',result.request_record);atomic_write_json(folder/'provider-response.json',result.raw_response)
+            except AccountSlotBusy as exc:
+                task['generation_calls'].pop()
+                task.update(state='queued',message=exc.message);self.save(task)
             except Exception as exc:
                 unknown=not isinstance(exc,ProviderError) or exc.details.get('submission_unknown')
                 call['state']='unknown' if unknown else 'failed';task.update(state=call['state'],message='绘图未确认完成，记录保留，不自动重发');self.save(task)
@@ -474,6 +478,13 @@ class Adjustments:
     def advance(self, work_id, task_id, provider=None):
         with self.store.global_lock('adjustment-'+task_id,timeout_seconds=.1):
             task=self.load(work_id,task_id)
+            if task['state']=='submitting' and task.get('generation_account') and self.s.settings.pixellab_api_key:
+                slot=PixelLabSlot(self.s.settings,self.store)
+                if slot.key!=task['generation_account']:return task
+                receipt=slot.accepted_receipt(f"adjustment:{task['id']}")
+                if receipt and task['generation_calls']:
+                    task['generation_calls'][-1].update(state='submitted',provider_job_id=receipt['jobId'])
+                    task.update(state='pending',provider_job_id=receipt['jobId'],usage=receipt['usage']);self.save(task)
             if task['state'] in {'planning','submitting','reviewing'}:
                 task.update(state='unknown',message='上次请求中断，未自动重发；已有结果保留');self.save(task);return task
             if task['state'] not in {'queued','pending'}:return task
@@ -482,8 +493,12 @@ class Adjustments:
                 if provider is None:
                     from ..providers import get_provider
                     provider=get_provider(self.store.load(task['source_job']).request.provider,self.s.settings)
+                account=getattr(provider,'account_fingerprint',None)
+                if task.get('generation_account') and task['generation_account']!=account:return task
+                if account and not task.get('generation_account'):
+                    task['generation_account']=account;self.save(task)
                 if task['state']=='queued':
-                    if self.plan(task):self.submit(task,provider)
+                    if task.get('intent') or self.plan(task):self.submit(task,provider)
                 if task['state']=='pending':self.collect(task,provider)
             except Exception as exc:
                 task.update(state='failed',message=str(exc) if isinstance(exc,(ConflictError,ValidationHarnessError)) else '修改未完成；原版与请求记录保留，不自动重试')

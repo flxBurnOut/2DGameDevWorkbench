@@ -196,7 +196,10 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     publishEditorSession({
       capabilityId: 'interactable-motion', dirty: !work, busy,
       items: work ? [{ id: `motion:${work.id}`, capabilityId: 'sprite-generator', title: work.plan?.title || work.spec.description.slice(0, 60),
-        detail: work.job?.plan_control.message || work.message, state: work.status === 'planning' ? 'running' : candidate?.status === 'approved' ? 'completed' : 'attention',
+        detail: work.job?.plan_control.message || work.message,
+        state: work.job?.status === 'not_submitted' ? 'not_submitted'
+          : work.status === 'planning' || work.job?.status === 'queued' ? 'running'
+          : candidate?.status === 'approved' ? 'completed' : 'attention',
         href: panelHref({ work: work.id }, context), updatedAt: work.job?.updated_at || work.updated_at, stage: 1 }] : [],
       save: async () => {
         try { if (!submitted.current) localStorage.setItem(draftKey, JSON.stringify({ draft, requestKey: requestKey.current, objectId })); } catch { /* best effort */ }
@@ -208,7 +211,7 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
   }, [work, busy, candidate?.status, context, draft, draftKey, objectId]);
 
   const plan = () => run(async () => {
-    if (!configuration?.planning_configured) { settingsRef.current?.setAttribute('open', ''); throw new Error('先配置规划模型，再制定方案。'); }
+    if (!work && !configuration?.planning_configured) { settingsRef.current?.setAttribute('open', ''); throw new Error('先配置规划模型，再制定方案。'); }
     const problems = draftProblems(draft);
     if (!objectId || problems.length) throw new Error(problems[0] || '请选择交互物对象');
     const { description, ending } = draftDescription(draft);

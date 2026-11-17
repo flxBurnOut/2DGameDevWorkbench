@@ -16,7 +16,7 @@ import { AssetImportPicker } from '@/components/workbench/lazy-dialogs';
 import { clearImportQuery, type ImportBundle } from '@/lib/workbench/asset-import';
 import { CharacterIdentityField } from '@/components/sprite-generator/character-identity-field';
 import { referenceIdentityDescription, referenceIdentityLimit, referenceTransferInput } from '@/components/sprite-generator/character-identity';
-import type { StoredTask } from '@/lib/workbench/work-items';
+import { referenceProgress, type StoredTask } from '@/lib/workbench/work-items';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -52,6 +52,8 @@ const taskLabels: Record<string, string> = {
   running: '正在生成',
   completed: '原图已保存',
   failed: '生成失败',
+  attention_required: '需要核对原请求',
+  not_submitted: '未提交',
   awaiting_configuration: '等待配置',
 };
 
@@ -60,6 +62,8 @@ export function ReferenceArtEditor() {
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [facing, setFacing] = useState('right');
+  const [checkOrientation, setCheckOrientation] = useState(false);
+  const [orientationNotes, setOrientationNotes] = useState<Record<string, string>>({});
   const [size, setSize] = useState(128);
   const [apiKey, setApiKey] = useState('');
   const [configured, setConfigured] = useState<boolean | null>(null);
@@ -77,6 +81,9 @@ export function ReferenceArtEditor() {
   const selectionMounted = useRef(true);
   const selectionEpoch = useRef(0);
   const selectedId = selected?.id;
+  const orientationReview = selected?.adapter?.orientationReview;
+  const needsObservation = Boolean(orientationReview && orientationReview.status !== 'matched');
+  const observation = selectedId ? orientationNotes[selectedId]?.trim() || '' : '';
   const identityDescription = selectedId ? referenceIdentityDescription(tasks, selectedId, identityDrafts) : '';
 
   const checkSettings = useCallback(async () => {
@@ -236,6 +243,7 @@ export function ReferenceArtEditor() {
       return;
     }
     if (operation === 'transfer' && selected?.status !== 'completed') return;
+    if (operation === 'transfer' && needsObservation && observation.length < 4) return;
     busyRef.current = true;
     setBusy(true);
     setMessage('');
@@ -253,9 +261,10 @@ export function ReferenceArtEditor() {
                   prompt: prompt.trim(),
                   facing,
                   size,
+                  ...(checkOrientation ? { checkOrientation: true } : {}),
                   ...(name.trim() ? { name: name.trim() } : {}),
                 }
-              : referenceTransferInput(selected!.id, identityDescription),
+              : { ...referenceTransferInput(selected!.id, identityDescription), ...(needsObservation ? { confirmation: { note: observation } } : {}) },
         }),
       });
       if (operation === 'generate') {
@@ -293,7 +302,7 @@ export function ReferenceArtEditor() {
   };
 
   const png =
-    selected?.status === 'completed'
+    selected && (selected.status === 'completed' || selected.adapter?.orientationPending)
       ? selected.outputs?.find((path) => path.endsWith('/reference.png'))
       : undefined;
   // Why the generate button is unavailable, shown under it instead of a silent grey button.
@@ -371,6 +380,10 @@ export function ReferenceArtEditor() {
               </NativeSelect>
             </div>
           </div>
+          <label>
+            <input type="checkbox" checked={checkOrientation} onChange={(event) => setCheckOrientation(event.target.checked)} disabled={busy || selectionLoading || selected?.status === 'running'} />
+            生成后调用一次视觉模型核对视角与朝向（使用模型额度）
+          </label>
           <button
             className="wb-button wb-primary ra-generate"
             disabled={
@@ -454,7 +467,7 @@ export function ReferenceArtEditor() {
             </div>
             <span className="ra-status" aria-live="polite">
               {selectionLoading ? '正在读取所选原图…' : selected
-                ? selected.input?.operation === 'import' ? '已导入' : taskLabels[selected.status] || '等待处理'
+                ? selected.adapter?.orientationPending ? '正在核对视角与朝向' : selected.input?.operation === 'import' ? '已导入' : referenceProgress(selected) || taskLabels[selected.status] || '等待处理'
                 : '等待你的第一个角色'}
             </span>
           </div>
@@ -477,7 +490,7 @@ export function ReferenceArtEditor() {
                 )}
                 <strong>
                   {selected?.status === 'running'
-                    ? '正在绘制你的角色'
+                    ? referenceProgress(selected) || '正在绘制你的角色'
                     : '角色会出现在这里'}
                 </strong>
                 <p>
@@ -488,9 +501,13 @@ export function ReferenceArtEditor() {
               </div>
             )}
           </div>
-          <p className="ra-note">
-            移送前请确认角色与武器完整、朝向正确。此处按整数倍放大显示。
-          </p>
+          <p className="ra-note">{orientationReview?.summary || '移送前请确认角色与武器完整、朝向正确。此处按整数倍放大显示。'}</p>
+          {png && selectedId && needsObservation && <>
+            <label htmlFor="ra-orientation-note">实际视角、朝向及采用理由</label>
+            <Textarea id="ra-orientation-note" rows={2} maxLength={1000} value={orientationNotes[selectedId] || ''}
+              placeholder="查看原图后填写，至少 4 字" disabled={busy || selectionLoading}
+              onChange={(event) => setOrientationNotes(previous => ({ ...previous, [selectedId]: event.target.value }))} />
+          </>}
           {png && selectedId && <>
             <CharacterIdentityField value={identityDescription} onChange={(value) => setIdentityDrafts((previous) => ({ ...previous, [selectedId]: value }))} maxLength={referenceIdentityLimit} disabled={busy || selectionLoading} />
             <p className="ra-note">此说明只用于移送角色。已移送的同一原图会复用角色身份；修改这里的说明不会覆盖已保存角色的外观约束。</p>
@@ -504,7 +521,7 @@ export function ReferenceArtEditor() {
             )}
             <button
               className="wb-button wb-primary"
-              disabled={!png || busy || selectionLoading}
+              disabled={!png || selected?.status !== 'completed' || busy || selectionLoading || (needsObservation && observation.length < 4)}
               onClick={() => void run('transfer')}
             >
               用于制作序列帧 <ArrowRight size={16} />
@@ -532,7 +549,7 @@ export function ReferenceArtEditor() {
                 onClick={() => { if (!busyRef.current) void selectTask(task.id); }}
               >
                 <strong>{textField(task.input?.name, '角色原图')}</strong>
-                <span>{task.input?.operation === 'import' ? '导入素材 · 已保存' : taskLabels[task.status] || task.status}</span>
+                <span>{task.input?.operation === 'import' ? '导入素材 · 已保存' : referenceProgress(task) || taskLabels[task.status] || task.status}</span>
                 <p>{textField(task.input?.prompt)}</p>
               </button>
             ))}

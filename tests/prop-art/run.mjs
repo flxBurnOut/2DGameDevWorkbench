@@ -308,10 +308,13 @@ try {
   );
   disconnect = true;
   const count = submits;
-  await assert.rejects(
-    runConnector(manifest, capability, input),
-    /未自动重试|无法确认/,
-  );
+  const missingReply = (await runConnector(manifest, capability, input)).task;
+  assert.equal(missingReply.adapter.referenceStage, 'checking_receipt');
+  missingReply.adapter.lastPolledAt = 0;
+  await persistTask(manifest, missingReply);
+  const unknown = (await refreshTask(manifest, missingReply.id)).task;
+  assert.equal(unknown.status, 'attention_required');
+  assert.match(unknown.error, /无法确认/);
   assert.equal(submits, count + 1);
   console.log(
     JSON.stringify(

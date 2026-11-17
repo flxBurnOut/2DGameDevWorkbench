@@ -80,7 +80,9 @@ MCP `repair-motion-stage` 要求准确 `stageToken`、零基闭区间 `repairSta
 
 交互物方案会列出描述与参考图的差异、影响和处理方式。仅外观描述不一致时采用参考图。铰接和形变需选择已核对的结构（交互物动画面板在状态图下方的“部件结构”中选择），铰接需有可见固定轴点和端点部件。检查页可展开逐帧测量，对照固定部件像素变化、半径与模型意见。测量与通过意见相冲突时需人工裁决，原始意见保留。
 
-绘图预算支持单次帧数上限和所有候选合计帧数上限。规划前读取 PixelLab 余额，定稿按每个分段分别向上取整估算单位。余额或用户上限连每个候选最少 4 帧也无法覆盖时，停止规划调用。读取失败时显示“额度未知”，用户上限仍然生效。
+绘图预算支持单次帧数上限和所有候选合计帧数上限。规划前读取 PixelLab 余额，定稿按每个分段分别向上取整估算单位。只有订阅次数可用时按剩余次数折算可规划帧数。有美元余额时保留用户帧数上限，实际费用由 PixelLab 确认。可核实的余额或用户上限连每个候选最少 4 帧也无法覆盖时，停止规划调用。读取失败时显示“额度未知”，用户上限仍然生效。
+
+同一 PixelLab 凭据的原图和动画共享生成空位。原生动画状态 `queued` 表示服务正在等待空位，工作台显示等待原因，可继续查询原任务。状态 `not_submitted` 表示本次请求在生成前被阻止，或提供方明确拒绝且没有产物、受理回执与用量。该记录可在历史中查看。人工选择的局部修复遇到占用时保留片段与尝试预算，空位释放后可从原片段再次发起。
 
 新前端默认每候选最多 25 次视觉请求，`experts_v1` 预留 `5 ×（分段数 + 1）× 候选数`，覆盖最多四段和整段；基础协议为 `2 ×（分段数 + 1）× 候选数`。上限最高 200，修复后的复查和历史请求继续计入。准备页展开预算可切换协议；采用旧协议不会删除旧报告。MCP 新请求未给协议和视觉上限时默认增强协议；仅显式给出旧视觉上限而未声明协议的请求沿用基础协议。旧任务的冻结内容和哈希不变。方案超预算会停止或提问，不应为省检查额度压缩必要的动作分段。这是调用上限，不是金额保证。未知或失败请求不自动重发；暂停阻止后续绘制提交，已提交请求仍保存回执。
 
@@ -88,7 +90,9 @@ MCP `repair-motion-stage` 要求准确 `stageToken`、零基闭区间 `repairSta
 
 TokenHub Kimi K3 系列使用 `max_completion_tokens`，不发送固定采样值冲突的 temperature；其他兼容型号可手动指定 Token 参数。新型号仍须支持图片输入和结构化 JSON，未知权限、HTTP 失败或无效结构不会自动降级/换模型。参数依据 [TokenHub Kimi 官方说明](https://cloud.tencent.com/document/product/1823/132232)；用户可在配置中选择实际已开通的型号。
 
-MCP / CLI 使用同一能力的新操作：`plan-motion`、`revise-motion`、`get-motion`、`generate-motion`、`pause-motion`、`resume-motion`。输入由 manifest 的 `motionSpec` 约束；规划须 `planningAuthorized=true`，制作须 `expectedRevision` 与返回的 `planSha256`。仅在用户已授权预算内直接制作时使用 `autoExecute=true`。异步查询沿用 `workbench_get_task`，不要重复 run。作品链接为 `?work=<openWorkId>`；生成后继续用现有 check / review / approve / export 原生作业接口。
+MCP / CLI 使用同一能力的新操作：`plan-motion`、`revise-motion`、`get-motion`、`generate-motion`、`pause-motion`、`resume-motion`。输入由 manifest 的 `motionSpec` 约束；规划须 `planningAuthorized=true`，制作须 `expectedRevision` 与返回的 `planSha256`。只有初次 `plan-motion` 且用户已授权预算内直接制作时才传 `autoExecute=true`。`revise-motion` 省略此字段或传 false，查看新方案后，用新 revision 和 planSha256 调用 `generate-motion`。异步查询沿用 `workbench_get_task`，不要重复 run。作品链接为 `?work=<openWorkId>`；生成后继续用现有 check / review / approve / export 原生作业接口。
+
+`plan-motion` 可通过 `planningModels` 按角色指定本作品的模型。键可用 `appearance`、`motion`、`strategy` 和 `coordinator`，值至少包含 `model`。例如 `{"strategy": {"model": "kimi-k3.1-pro", "provider": "tokenhub"}}`。省略 `provider` 时沿用该角色的服务，其他省略项使用模型配置默认值。服务使用本机已配置的凭据。实际配置可查作品的 `planning_config`，并由后续 `revise-motion` 继承。原生 HTTP 创建请求的对应字段为 `planning_models`。
 
 分段补充操作：`get-motion-stage` 读取指定 `candidateIndex` 与零基 `stageIndex`，返回实际帧文件、检查标准与 `stage.token`；`review-motion-stage` 使用 `expectedRevision`、原 `stageToken`、`stageDecision=accept|reject` 与实际 `reviewNote`。未通过或不确定的模型报告还需 `acknowledgeWarnings`。确认只解锁原任务的后续执行，不生成替代任务；模糊响应可按原 token 重试确认，不会重复提交绘图。片段通过不代表完整动画通过，最终采用仍需完整播放与人工结论。`get-motion-stage` 的 `stage.review` 和 `get-motion` 的候选 `quality_review` 包含 `protocol`、基础结论、独立意见、争议分类及实际请求账本；现有接口即可读取，不增加新 operation。页面默认显示结论和检查进度，依据与复核过程按需展开。
 
@@ -104,7 +108,9 @@ TokenHub 可选列表包含 `glm-5.3-flash`（多模态），可与 Kimi 规划�
 
 ## 原图参考入口
 
-开放动作的 `return_to_reference` 默认为 false；只有用户勾选“结束时回到原图姿势”时才允许绑定原图为末帧，循环播放本身不代表该授权。用户原始描述会完整附入方案；模型改写但冒标为原话的文字会标记为“专家解读”，不作为用户逐字要求。本机方案校验可以在本次已授权的规划调用上限内，把预算/终态等明确错误反馈给协调专家；网络失败、无效结构或超限则停下，不重复动画请求。
+开放动作的 `return_to_reference` 默认为 false。用户勾选“结束时回到原图姿势”后才允许绑定原图为末帧。用户原始描述会完整附入方案，模型对用户原话的改写会标记为“专家解读”。规划发现完整模型响应中的字段错误，或本机发现预算、终态等方案错误时，可在本次授权上限内请出错角色修正一次，且需要为剩余专家预留调用。超时、请求失败、响应未完成和用尽规划预算时停止并保留回执。
+
+明确修订作品时，原图、结构、配置及适用的规划协议一致，才可沿用角色原图的独立外观观察。动作观察及交互物外观观察还要求任务描述、预算和有效绘图上限一致。沿用的观察会标明来源版本并节省本次模型调用。
 
 `/tools/reference-art` 可用 PixelLab 生成 128×128 透明角色图，并与本工具共用一次保存的 Key。点击“用于制作序列帧”后，创建可复用角色并在生成页预选参考图、名称和外观提示词；不会创建或提交动画任务。详见 [角色原图](reference-art.md)。
 

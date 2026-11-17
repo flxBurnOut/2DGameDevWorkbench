@@ -8,6 +8,7 @@ from ..attack_timeline import is_context_frame
 from ..errors import ConflictError, ValidationHarnessError, ProviderError
 from ..jsonio import atomic_write_json
 from ..models import CandidateStatus, utc_now
+from ..providers.account import AccountSlotBusy
 from ..providers.base import ProviderRequest, PollStatus
 
 
@@ -108,6 +109,16 @@ class LocalRepairs:
                 self.s._refresh_job_status(current);current.touch('motion_local_repair_requested',stage=stage,candidate_index=index)
             try:
                 submitted=provider.submit(request)
+            except AccountSlotBusy:
+                with self.store.locked_job(job_id) as current:
+                    restored=self.run(current,index,stage)
+                    restored.repairs.pop()
+                    restored.state=run.state
+                    c=self.s._candidate(current,index)
+                    c.status=candidate.status;c.error=candidate.error;c.submission_attempts=candidate.submission_attempts
+                    current.plan_control.enabled=job.plan_control.enabled;current.plan_control.message=job.plan_control.message
+                    self.s._refresh_job_status(current);current.touch('motion_local_repair_not_submitted',stage=stage,candidate_index=index)
+                raise
             except Exception as exc:
                 with self.store.locked_job(job_id) as current:
                     a=self.run(current,index,stage).repairs[number]

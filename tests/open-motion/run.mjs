@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import {imageEditRequest} from '../../lib/workbench/image-edits.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, readFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { loadManifest, findCapability, validateInput, runConnector, refreshTask } from '../../lib/workbench/runtime.mjs';
@@ -13,13 +13,15 @@ import { createTestViteServer } from '../helpers/vite-server.mjs';
 import { verifyPlanningProgress } from './planning-progress.mjs';
 import { verifyMotionObjects } from './object-model.mjs';
 import { listPresets } from '../../lib/workbench/agent-api.mjs';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const root = path.resolve('work/test-runs', process.env.WORKBENCH_TEST_RUN, 'open-motion');
 await mkdir(root, { recursive: true });
 const reservation = net.createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
 const port = reservation.address().port; await new Promise(r => reservation.close(r));
 const python = process.env.SPRITE_TEST_PYTHON || path.resolve('Tools/SpritePipeline/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
-const child = spawn(python, ['Tools/SpritePipeline/tests/open_motion_server.py', root, String(port), '--checkpoints', '--expert-reviews'], { windowsHide: true, stdio: ['ignore','pipe','pipe'] });
+const child = spawn(python, ['Tools/SpritePipeline/tests/open_motion_server.py', root, String(port), '--checkpoints', '--expert-reviews', '--hold-first-reviews'], { windowsHide: true, stdio: ['ignore','pipe','pipe'] });
 let log = ''; child.stdout.on('data', d => { log += d; }); child.stderr.on('data', d => { log += d; });
 const base = `http://127.0.0.1:${port}`;
 const request = async (route, body) => {
@@ -28,14 +30,53 @@ const request = async (route, body) => {
 };
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const previous = process.env.SPRITE_PIPELINE_API_URL;
-let vite;
+let vite, client;
+async function mcp(name, args) {
+  const response = await client.callTool({ name, arguments: args });
+  assert.ok(!response.isError, JSON.stringify(response));
+  return response.structuredContent;
+}
+async function observeHeldReview(taskId, scope, fixtureScope) {
+  const marker = path.join(root, `${fixtureScope}.entered`);
+  for (let n = 0; n < 150; n++) {
+    if (await access(marker).then(() => true, () => false)) break;
+    assert.ok(n < 149, `fixture did not enter ${fixtureScope}`);
+    await delay(100);
+  }
+  try {
+    const polled = await mcp('workbench_get_task', { taskId });
+    assert.equal(polled.task.status, 'running');
+    assert.equal(polled.presentation.state, 'running');
+    assert.match(polled.presentation.summary, /逐帧观察，已用 1\/5 次/);
+    assert.deepEqual(polled.presentation.reviewProgress, {
+      candidateIndex: 1, scope, ...(scope === 'stage' ? { stageIndex: 0 } : {}),
+      state: 'running', phase: 'observe', callsUsed: 1, callsCompleted: 0, maxCalls: 5, verdict: 'uncertain',
+    });
+    const presented = await mcp('workbench_present', { taskId });
+    assert.equal(presented.summary, polled.presentation.summary);
+    for (const [identity, pollTool] of [[{ taskId }, 'workbench_get_task'], [{ jobId: polled.task.adapter.remoteJobId }, 'workbench_get_result']]) {
+      const summary = await mcp('workbench_get_result', identity);
+      assert.equal(summary.presentation.reviewProgress.phase, 'observe');
+      assert.deepEqual(summary.result.nextActions, [pollTool]);
+      assert.ok(JSON.stringify(summary).length < 5000);
+    }
+  } finally {
+    await writeFile(path.join(root, `${fixtureScope}.released`), '');
+  }
+}
 try {
   for (let n=0; n<100; n++) { try { await request('/health'); break; } catch { if (child.exitCode !== null || n===99) throw new Error(log || 'Test API startup failed'); await delay(100); } }
   process.env.SPRITE_PIPELINE_API_URL = base;
   const manifest = await loadManifest(), capability = findCapability(manifest, 'sprite-generator');
   const motionSpec = { character_id:'test_hero', description:'角色低头检查手套，最后保持低头', provider:'fixture', review_protocol:'experts_v1', candidate_count:2, budget:{max_planning_calls:8,max_generation_calls:5,max_review_calls:35} };
-  const input = { operation:'plan-motion', motionSpec, planningAuthorized:true };
+  const planningModels = { strategy: { model: 'kimi-k3.1-pro', provider: 'tokenhub' } };
+  const input = { operation:'plan-motion', motionSpec, planningAuthorized:true, planningModels };
   assert.deepEqual(validateInput(capability,input),[]);
+  const revisionInput = { operation: 'revise-motion', motionSpec, planningAuthorized: true, openWorkId: 'a'.repeat(32), expectedRevision: 1 };
+  assert.deepEqual(validateInput(capability, { ...input, autoExecute: true }), []);
+  assert.deepEqual(validateInput(capability, revisionInput), []);
+  assert.deepEqual(validateInput(capability, { ...revisionInput, autoExecute: false }), []);
+  assert.match(validateInput(capability, { ...revisionInput, autoExecute: true }).join(' '), /generate-motion/);
   const { character_id: legacyCharacterId, ...commonSpec } = motionSpec;
   const modernSpec = { ...commonSpec, object_id: legacyCharacterId, object_type: 'character' };
   assert.deepEqual(validateInput(capability, { ...input, motionSpec: modernSpec }), []);
@@ -59,6 +100,9 @@ try {
   assert.ok(validateInput(capability,{...input,motionSpec:{...motionSpec,review_protocol:'invented'}}).length);
   assert.ok(validateInput(capability,{...input,motionSpec:{...motionSpec,visual_structure:{analysis_id:'not-an-id',token:'0'.repeat(64)}}}).length);
   assert.ok(validateInput(capability,{...input,motionSpec:{...motionSpec,visual_structure:{analysis_id:'0'.repeat(32),token:'0'.repeat(64),sourcePath:'unexpected'}}}).length);
+  assert.ok(validateInput(capability, { ...input, planningModels: { reviewer: planningModels.strategy } }).length);
+  assert.ok(validateInput(capability, { ...input, planningModels: { strategy: { ...planningModels.strategy, apiKey: 'must-not-be-stored' } } }).length);
+  assert.ok(validateInput(capability, { ...input, planningModels: { strategy: { timeout_seconds: 30 } } }).length);
   let outcome = await runConnector(manifest,capability,input);
   const taskId = outcome.task.id;
   for (let n=0;n<100 && outcome.task.status==='running';n++) { await delay(100); outcome=await refreshTask(manifest,taskId); }
@@ -67,6 +111,8 @@ try {
   assert.equal(taskViewPath(manifest,outcome.task),`/tools/sprite-generator?work=${workId}&version=1`);
   const work=await request(`/v1/open-motion/${workId}`);
   assert.equal(work.status,'ready'); assert.equal(work.planning_calls.length,4);
+  assert.equal(work.planning_config.roles.strategy.model, planningModels.strategy.model);
+  assert.ok(validateInput(capability, { ...input, operation: 'revise-motion', openWorkId: workId, expectedRevision: 1 }).length);
   const presentation = taskPresentation(manifest,outcome.task,{result:{work}});
   assert.equal(presentation.state,'saved'); assert.match(presentation.summary,/方案已保存/);
   assert.ok(validateInput(capability,{operation:'generate-motion',openWorkId:workId}).length);
@@ -78,6 +124,10 @@ try {
   await assert.rejects(runConnector(manifest,capability,{operation:'generate-motion',openWorkId:workId,expectedRevision:1,planSha256:work.plan_sha256,targetSetSha256:work.target_set_sha256}),/409/);
   const generated=await runConnector(manifest,capability,{operation:'generate-motion',openWorkId:workId,expectedRevision:1,planSha256:work.plan_sha256,targetSetSha256:withTarget.target_set_sha256});
   assert.ok(generated.task.id);
+  client = new Client({ name: 'open-motion-review-test', version: '1.0.0' });
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: ['scripts/workbench-mcp.mjs'],
+    env: { WORKBENCH_TEST_RUN: process.env.WORKBENCH_TEST_RUN, SPRITE_PIPELINE_API_URL: base }, stderr: 'pipe' }));
+  await observeHeldReview(generated.task.id, 'stage', 'open_motion_checkpoint');
   for (let candidateIndex=1;candidateIndex<=2;candidateIndex++) for(let stageIndex=0;stageIndex<2;stageIndex++) {
     for(let n=0;n<150;n++) {
       const current=await request(`/v1/open-motion/${workId}`);
@@ -88,6 +138,18 @@ try {
     const inspected=await runConnector(manifest,capability,{operation:'get-motion-stage',openWorkId:workId,candidateIndex,stageIndex});
     const evidence=JSON.parse(await readFile(inspected.task.outputs.find(p=>p.endsWith('/result.json')),'utf8'));
     assert.equal(evidence.orderedFrames.length,4);assert.equal(evidence.stage.state,'awaiting_review');
+    const polled = await mcp('workbench_get_task', { taskId: generated.task.id });
+    assert.equal(polled.presentation.state, 'attention_required');
+    assert.equal(polled.presentation.reviewProgress.readyForDecision, true);
+    const result = await mcp('workbench_get_result', { taskId: generated.task.id, candidateIndex });
+    assert.deepEqual(result.result.nextActions, ['get-motion-stage', 'review-motion-stage']);
+    const checkpoint = result.result.pendingCheckpoints.find(item => item.stageIndex === stageIndex);
+    assert.equal(checkpoint.stageToken, evidence.stage.token);
+    assert.equal(checkpoint.readyForDecision, true);
+    assert.equal(result.result.workRevision, 1);
+    const stageResult = await mcp('workbench_get_result', { taskId: inspected.task.id, candidateIndex });
+    assert.equal(stageResult.result.stage.token, checkpoint.stageToken);
+    assert.equal(stageResult.result.workRevision, 1);
     assert.equal(evidence.stage.review.protocol,'experts_v1');
     assert.equal(evidence.stage.review.expert_review.calls_used,5);
     assert.equal(evidence.stage.review.expert_review.simulated,true);
@@ -111,6 +173,7 @@ try {
     await runConnector(manifest,capability,{operation:'review-motion-stage',openWorkId:workId,expectedRevision:1,candidateIndex,stageIndex,
       stageToken:evidence.stage.token,stageDecision:'accept',reviewNote:'已查看诊断片段与末姿势，仅验收工具流程',acknowledgeWarnings:true,
       ...(candidateIndex===1&&stageIndex===0?{anchorFrame:2,acknowledgeTrim:true}:{})});
+    if (candidateIndex === 1 && stageIndex === 1) await observeHeldReview(generated.task.id, 'clip', 'open_motion_quality');
   }
   // The offline service restores diagnostic flags after publishing the review.
   // Wait for its final receipt before checking provenance, rather than racing it.
@@ -121,6 +184,20 @@ try {
   assert.ok(complete.job.candidates.every(c=>c.quality_review.protocol==='experts_v1'&&c.quality_review.expert_review.calls_used===5));
   const reviewCalls=complete.job.candidates.reduce((sum,c)=>sum+c.quality_review.requests.length+c.plan_execution.stages.reduce((n,s)=>n+s.review.requests.length+s.review_history.reduce((n,r)=>n+r.requests.length,0),0),0);
   assert.equal(reviewCalls,35);
+  const clip = await mcp('workbench_get_task', { taskId: generated.task.id });
+  assert.equal(clip.presentation.reviewProgress.scope, 'clip');
+  assert.equal(clip.presentation.reviewProgress.readyForApproval, true);
+  assert.equal(clip.presentation.reviewProgress.callsUsed, 5);
+  assert.match(clip.presentation.summary, /检查完整播放后可以提交采用/);
+  const compact = await mcp('workbench_get_result', { taskId: generated.task.id });
+  const stored = JSON.parse(await readFile(clip.task.outputs.find(item => item.endsWith('/result.json')), 'utf8'));
+  assert.ok(JSON.stringify(stored).length > 100000);
+  assert.ok(JSON.stringify(compact).length < 5000);
+  assert.ok(compact.result.nextActions.includes('approve'));
+  console.log(`MCP animation result: ${JSON.stringify(stored).length} saved JSON characters, ${JSON.stringify(compact).length} summary characters.`);
+  const approved = await runConnector(manifest, capability, { operation: 'approve', jobId: complete.job.job_id,
+    candidateIndex: clip.presentation.reviewProgress.candidateIndex, acknowledgeWarnings: true, reviewNote: '已播放诊断用完整动画，测试一次提交采用。' });
+  assert.equal(approved.task.status, 'completed');
   // Local image workspace -> bounded animation alternative -> new version; keep the other tests on candidate 1.
   const editReq=(op,input)=>imageEditRequest(process.cwd(),manifest,op,input);
   const frameRef={kind:'motion-frame',workId,workRevision:1,candidateIndex:2,frameIndex:1};
@@ -248,6 +325,7 @@ try {
   const old=await request(`/v1/open-motion/${workId}?revision=1`);assert.equal(old.job.job_id,before.job.job_id);
   console.log('Open motion: nested input rejection, real Python API + shared adapter planning/generation, exact preview, candidate completion, idempotency and bounded frontend proxy passed; paid calls=0.');
 } finally {
+  if (client) await client.close();
   if (vite) await vite.close();
   child.kill();
   if (previous === undefined) delete process.env.SPRITE_PIPELINE_API_URL; else process.env.SPRITE_PIPELINE_API_URL=previous;

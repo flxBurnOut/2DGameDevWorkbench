@@ -307,6 +307,7 @@
         "workbench_present",
         "workbench_get_frontend_context",
         "workbench_list_presets",
+        "workbench_get_motion_bindings",
         "workbench_interactable_template",
         "workbench_list_tasks",
         "workbench_list_assets",
@@ -677,6 +678,11 @@
             ],
             "default": "right"
           },
+          "checkOrientation": {
+            "type": "boolean",
+            "default": false,
+            "description": "仅生成角色原图。已获准调用一次视觉模型时设 true，检查实际 PNG 的侧视和朝向。省略时人工核对；未核实或不符的原图，移送时用 confirmation.note 说明观察与采用理由。"
+          },
           "seed": {
             "type": "integer",
             "minimum": 0,
@@ -713,7 +719,7 @@
                 "maxLength": 1000
               }
             },
-            "description": "仅 transfer；导入与转换来源必须填写，说明实际核对的视角、初始状态、部件完整和透明背景。仅用户明确委托检查时 Agent 可提交。"
+            "description": "仅 transfer。角色生成结果提示需人工核对时，记录实际视角、朝向及采用理由。物品导入与转换来源须核对视角、初始状态、部件完整和透明背景。"
           },
           "recipe": {
             "type": "object",
@@ -942,7 +948,8 @@
           },
           "expectedRevision": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "description": "使用当前作品版本执行写入。get-motion-stage 可显式传入版本以读取该版的片段与帧。"
           },
           "allowUnsupportedMotion": {
             "type": "boolean",
@@ -989,9 +996,54 @@
             "type": "boolean",
             "description": "仅在用户已授权规划模型调用时为 true。"
           },
+          "planningModels": {
+            "type": "object",
+            "description": "仅 plan-motion 可选。按角色指定本作品的规划模型，配置随作品冻结并由 revise-motion 继承。省略 provider 时沿用该角色的服务。使用已配置的服务凭据。",
+            "propertyNames": {
+              "type": "string",
+              "enum": ["appearance", "motion", "strategy", "coordinator"]
+            },
+            "additionalProperties": {
+              "type": "object",
+              "required": ["model"],
+              "additionalProperties": false,
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$"
+                },
+                "provider": {
+                  "type": ["string", "null"],
+                  "enum": ["tokenhub", "openai", null]
+                },
+                "max_output_tokens": {
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 32768,
+                  "default": 8000
+                },
+                "timeout_seconds": {
+                  "type": "integer",
+                  "minimum": 30,
+                  "maximum": 600,
+                  "default": 180
+                },
+                "token_parameter": {
+                  "type": "string",
+                  "enum": ["auto", "max_tokens", "max_completion_tokens"],
+                  "default": "auto"
+                },
+                "reasoning_effort": {
+                  "type": "string",
+                  "enum": ["auto", "low", "medium", "high", "max"],
+                  "default": "auto"
+                }
+              }
+            }
+          },
           "autoExecute": {
             "type": "boolean",
-            "description": "用户已授权预算内直接制作时可启用；否则仅出方案。修改方案后需重新确认。"
+            "description": "仅 plan-motion 可传 true，在已授权预算内规划后直接制作。revise-motion 须省略或传 false；查看新方案后，用新的 expectedRevision 与 planSha256 调用 generate-motion。"
           },
           "motionSpec": {
             "type": "object",

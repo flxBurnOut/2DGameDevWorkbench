@@ -57,6 +57,8 @@ assert.equal(
 );
 for (const [remoteStatus, state] of [
   ["created", "saved"],
+  ["queued", "running"],
+  ["not_submitted", "not_submitted"],
   ["review_required", "attention_required"],
   ["approved", "saved"],
   ["exported", "completed"],

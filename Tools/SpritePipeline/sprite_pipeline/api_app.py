@@ -135,7 +135,7 @@ def create_api(
     app.state.sprite_pipeline_recovery = recovery_worker
     from .reference_art import create_reference_router
 
-    app.include_router(create_reference_router(service))
+    app.include_router(create_reference_router(service, recovery_worker.reference_queue))
     from .canvas_api import create_canvas_router
 
     app.include_router(create_canvas_router(service))
@@ -474,7 +474,12 @@ def create_api(
 
     @app.post("/v1/jobs/{job_id}/generate")
     def generate(job_id: str, body: GenerateBody) -> dict[str, Any]:
-        job = service.generate_job(job_id, wait=body.wait, candidate_index=body.candidate_index)
+        try:
+            job = service.generate_job(job_id, wait=body.wait, candidate_index=body.candidate_index)
+        except ValidationHarnessError:
+            job = service.get_job(job_id)
+            if job.status.value != "not_submitted":
+                raise
         return {"schema_version": 1, "ok": True, "data": {"job": _job(job)}}
 
     @app.post("/v1/jobs/{job_id}/candidates/{candidate_index}/recover")

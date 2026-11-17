@@ -204,7 +204,7 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         self.assertIsNotNone(blocked.quota_before)
         self.assertEqual(blocked.events[-1]["event"], "generation_blocked_by_quota")
         self.assertFalse(blocked.events[-1]["chargeable_submission_created"])
-        self.assertEqual(blocked.status, JobStatus.attention_required)
+        self.assertEqual(blocked.status, JobStatus.not_submitted)
         self.assertEqual(
             blocked.candidates[0].error["code"],
             "insufficient_quota",

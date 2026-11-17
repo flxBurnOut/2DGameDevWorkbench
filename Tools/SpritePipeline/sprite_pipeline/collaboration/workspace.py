@@ -8,10 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from pydantic import ValidationError
 
-from ..errors import ConflictError, NotFoundError, ValidationHarnessError
+from ..errors import ConflictError, InvalidPlanningResponse, NotFoundError, ValidationHarnessError
 from ..jsonio import atomic_write_json, read_json
+from ..vision_review import planning_validation_fields
 from .contracts import ExpertTurn, OpenWork, PlanBinding, TaskSpec, digest, bind_original_requirements, default_new_review, review_calls_per_check
-from .planning import PlanningModel
+from .model_config import ModelConfiguration, ModelRegistry
+from .planning import PLANNING_FORMAT_VERSION, PlanningModel
+from .planning_observations import REFERENCE_CROP_FOLLOWUP, reusable_observations
 from .generation_conditions import DEFAULT_GENERATION_POLICY
 from .visibility_review import DEFAULT_VISIBILITY_REVIEW
 
@@ -64,6 +67,11 @@ class OpenMotionWorkspace:
             raise ConflictError("作品参考图已改变，已停止执行")
         return data
 
+    def planning_configured(self, snapshot):
+        if isinstance(self.model, PlanningModel):
+            return self.model.registry.configured_for(snapshot)
+        return self.model.configured
+
     def listing(self):
         rows = []
         jobs = {j['job_id']: j for j in self.store.list_jobs()}
@@ -80,13 +88,17 @@ class OpenMotionWorkspace:
                 continue
         return sorted(rows, key=lambda row: row["updated_at"], reverse=True)
 
-    def create(self, spec, request_key, *, planning_authorized=False, auto_execute=False):
+    def create(self, spec, request_key, *, planning_authorized=False, auto_execute=False, planning_models=None):
         spec = TaskSpec.model_validate(spec)
         if not planning_authorized:
             raise ValidationHarnessError("制定方案会调用模型，请先授权本次规划额度")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", request_key):
             raise ValidationHarnessError("请求标识无效")
-        fingerprint = digest({"spec": spec.model_dump(mode="json"), "auto_execute": auto_execute})
+        requested = {"spec": spec.model_dump(mode="json"), "auto_execute": auto_execute}
+        if planning_models:
+            requested['planning_models'] = {role: profile.model_dump(mode='json', exclude_unset=True, exclude_none=True)
+                                            for role, profile in planning_models.items()}
+        fingerprint = digest(requested)
         request_path = self.root / "requests" / (hashlib.sha256(request_key.encode()).hexdigest() + ".json")
         with self.store.global_lock("open-work-creation"):
             if request_path.exists():
@@ -98,7 +110,14 @@ class OpenMotionWorkspace:
             minimum = 2 * review_calls_per_check(spec) * spec.candidate_count
             if spec.provider != 'fixture' and spec.budget.max_review_calls < minimum:
                 raise ValidationHarnessError(f'所选复核协议至少需要 {minimum} 次视觉额度（每候选一个片段检查和整段复核）；尚未调用规划模型，请先调整预算')
-            if not self.model.configured:
+            planning_config = self.model.configuration
+            if planning_models:
+                config = ModelConfiguration.model_validate(planning_config) if 'default' in planning_config else ModelRegistry(self.service.settings).load()
+                try:
+                    planning_config = config.with_planning_models(planning_models).model_dump(mode='json')
+                except ValidationError as exc:
+                    raise ValidationHarnessError('本次规划的模型参数不适用：' + exc.errors(include_input=False)[0]['msg']) from None
+            if not self.planning_configured(planning_config):
                 raise ValidationHarnessError("请先在模型设置中配置规划模型；不会创建空生成任务")
             character, preset_path = self.service.presets.load_object(spec.object_id, object_type=spec.object_type)
             source = preset_path.parent / character.reference_frame
@@ -109,7 +128,7 @@ class OpenMotionWorkspace:
             work = OpenWork(id=uuid.uuid4().hex, request_key=request_key, request_sha256=fingerprint,
                             spec=spec, character=self.service.presets.object_snapshot(character), reference_sha256=hashlib.sha256(data).hexdigest(),
                             created_at=now(), updated_at=now(), planning_authorized=True, auto_execute=auto_execute,
-                            planning_config=self.model.configuration,planning_format_version=3,visual_structure=structure,
+                            planning_config=planning_config,planning_format_version=PLANNING_FORMAT_VERSION,visual_structure=structure,
                             generation_policy_version=DEFAULT_GENERATION_POLICY if spec.provider != 'fixture' else None,
                             visibility_review_version=DEFAULT_VISIBILITY_REVIEW if spec.provider != 'fixture' and spec.review_protocol=='experts_v1' else None)
             directory = self.directory(work.id); directory.mkdir(parents=True)
@@ -141,6 +160,11 @@ class OpenMotionWorkspace:
                 raise ValidationHarnessError(f'所选复核协议至少需要 {minimum} 次视觉额度；未创建新版本或调用规划模型')
             if work.status == "planning":
                 raise ConflictError("规划尚在执行，请等待结果后修改")
+            planning_config = work.planning_config
+            if not planning_config or (isinstance(self.model, PlanningModel) and 'default' not in planning_config):
+                planning_config = self.model.configuration
+            if not self.planning_configured(planning_config):
+                raise ValidationHarnessError('请在模型设置中补齐此作品所用规划服务的凭据，再修改方案')
             character, preset_path = self.service.presets.load_object(spec.object_id, object_type=spec.object_type)
             source = preset_path.parent / character.reference_frame
             self.service._validate_reference_image(source, character.cell_width, character.cell_height)
@@ -168,14 +192,28 @@ class OpenMotionWorkspace:
             work.frame_budget = None
             work.planning_calls = []; work.messages = []; work.status = "planning"
             work.message = "正在按新要求制定方案"; work.auto_execute = False
-            work.planning_config = self.model.configuration
-            work.planning_format_version = 3
+            work.planning_config = planning_config
+            work.planning_format_version = PLANNING_FORMAT_VERSION
             work.generation_policy_version = DEFAULT_GENERATION_POLICY if spec.provider != 'fixture' else None
             work.visibility_review_version = DEFAULT_VISIBILITY_REVIEW if spec.provider != 'fixture' and spec.review_protocol=='experts_v1' else None
             work.visual_structure=structure
             self.service._atomic_write_bytes(self.directory(work.id) / f"reference-{work.revision}.png", data)
             self.save(work)
             return work
+
+    @staticmethod
+    def _schedule_correction(work, queue, request, problem):
+        role, _, _ = request
+        index = len(work.planning_calls)
+        work.messages.append({"role": "validator", "target_role": role, "call": index,
+                              "response": {"action": "validation_feedback", "summary": problem}})
+        if any(call['role'] == role and 'corrects_call' in call for call in work.planning_calls):
+            raise ValidationHarnessError('该专家的一次校验修正未通过；已保留原结果。' + problem)
+        remaining = work.spec.budget.max_planning_calls - index
+        if remaining <= len(queue):
+            raise ValidationHarnessError('规划额度不足以修正该专家结果并完成剩余专家；已保留原结果。' + problem)
+        queue.insert(0, request)
+        return index
 
     def plan(self, work_id, *, stopping=lambda: False):
         # This OS-backed lock spans the model call; a second process cannot run
@@ -191,6 +229,9 @@ class OpenMotionWorkspace:
             queue = [(role, "", None) for role in ("appearance", "motion", "strategy", "coordinator")]
             contributed = set()
             last_invalid_plan = None
+            current_format = work.planning_format_version == PLANNING_FORMAT_VERSION
+            correction_of = None
+            correction_draft = None
             try:
                 from .frame_budget import planning_limits, plan_cost
                 work.frame_budget = planning_limits(self.service, work)
@@ -201,6 +242,11 @@ class OpenMotionWorkspace:
                     self.save(work)
                     return work
                 reference = self.reference(work)
+                if current_format and work.revision > 1:
+                    previous = self.load(work.id, work.revision - 1)
+                    work.messages = reusable_observations(previous, work)
+                    contributed.update(message['role'] for message in work.messages)
+                    queue = [request for request in queue if request[0] not in contributed]
                 while queue:
                     if stopping():
                         return work
@@ -209,18 +255,51 @@ class OpenMotionWorkspace:
                         self.save(work); return work
                     from .structure_control import require_current_structure
                     require_current_structure(self.service,work.visual_structure,work.reference_sha256)
-                    role, question, crop = queue.pop(0)
+                    request = queue.pop(0)
+                    role, question, crop = request
+                    model_question = question
                     work.message = {"appearance": "正在核对原图特征", "motion": "正在安排动作与衔接", "strategy": "正在制定生成策略", "coordinator": "正在协调并校验方案"}[role]
                     work.planning_calls.append({"role": role, "state": "submitting", "started_at": now(), "request_id": uuid.uuid4().hex,
                                                 "reference_sha256": work.reference_sha256, "crop": crop})
+                    if correction_of is not None:
+                        work.planning_calls[-1]['corrects_call'] = correction_of
+                        if work.planning_calls[correction_of - 1]['state'] == 'completed':
+                            # Keep the coordinator's existing local-validation question
+                            # contract. The saved peer transcript keeps the original question.
+                            problem = work.messages[-1]['response']['summary']
+                            model_question = (question + '\nLocal validator rejected the proposal. '
+                                              'Correct ONLY the invalid plan, preserve the original task and return finalize: ' + problem).strip()
+                        correction_of = None
                     if work.visual_structure:work.planning_calls[-1]['visual_structure_sha256']=work.visual_structure['sha256']
                     self.save(work)
-                    turn, receipt = self.model(role, work, reference, question=question, crop=crop)
-                    if role=='strategy' and work.generation_policy_version in (4,5):
-                        from .planning_draft import DraftInternalTurn
-                        turn=DraftInternalTurn.model_validate(turn)
+                    fields = []
+                    try:
+                        draft_input = {'previous_draft': correction_draft} if correction_draft is not None else {}
+                        correction_draft = None
+                        turn, receipt = self.model(role, work, reference, question=model_question, crop=crop, **draft_input)
+                    except InvalidPlanningResponse as exc:
+                        receipt = exc.details.get('model_receipt', {})
+                        fields = receipt.get('validation_fields', [])
+                        if not current_format or not fields:
+                            raise
+                        correction_draft = exc.draft
                     else:
-                        turn = ExpertTurn.model_validate(turn)
+                        try:
+                            if role=='strategy' and work.generation_policy_version in (4,5):
+                                from .planning_draft import DraftInternalTurn
+                                turn=DraftInternalTurn.model_validate(turn)
+                            else:
+                                turn = ExpertTurn.model_validate(turn)
+                        except ValidationError as exc:
+                            if not current_format:
+                                raise
+                            fields = planning_validation_fields(exc)
+                    if fields:
+                        work.planning_calls[-1].update({**receipt, 'state': 'invalid_response', 'finished_at': now(),
+                                                        'validation_fields': fields})
+                        correction_of = self._schedule_correction(work, queue, request, '；'.join(fields))
+                        self.save(work)
+                        continue
                     work.planning_calls[-1].update(state="completed", finished_at=now(), **receipt)
                     work.messages.append({"role": role, "question": question, "response": turn.model_dump(mode="json"), "call": len(work.planning_calls)})
                     if work.generation_policy_version==5:
@@ -235,7 +314,7 @@ class OpenMotionWorkspace:
                             left, top, right, bottom = turn.crop
                             if not 0 <= left < right <= work.character["cell_width"] or not 0 <= top < bottom <= work.character["cell_height"]:
                                 raise ValidationHarnessError("专家请求的观察区域超出参考图")
-                        queue.insert(0, (role, "Requested reference view supplied. Complete or revise your proposal.", turn.crop))
+                        queue.insert(0, (role, REFERENCE_CROP_FOLLOWUP, turn.crop))
                     elif turn.action == "consult":
                         if turn.target == role:
                             raise ValidationHarnessError("专家不能向自己发起重复质询")
@@ -276,6 +355,10 @@ class OpenMotionWorkspace:
                             except ValidationError as exc:
                                 problem = "; ".join(e['msg'] for e in exc.errors(include_input=False))
                         if problem:
+                            if current_format:
+                                correction_of = self._schedule_correction(work, queue, request, problem)
+                                self.save(work)
+                                continue
                             invalid_hash = digest(plan.model_dump(mode='json'))
                             if last_invalid_plan == invalid_hash:
                                 raise ValidationHarnessError('协调专家重复了同一无效方案，已停止额外调用。' + problem)
@@ -311,11 +394,11 @@ class OpenMotionWorkspace:
                 raise ValidationHarnessError("专家未形成可执行方案；已有提案保留")
             except Exception as exc:
                 if work.planning_calls and work.planning_calls[-1]["state"] == "submitting":
-                    work.planning_calls[-1]["state"] = "outcome_unknown"
+                    work.planning_calls[-1].update(state='outcome_unknown', finished_at=now())
                     if isinstance(exc, ValidationHarnessError) and exc.details.get("model_receipt"):
                         receipt=exc.details['model_receipt']
                         work.planning_calls[-1].update(receipt)
-                        work.planning_calls[-1]['state'] = 'invalid_response' if receipt.get('response_id') or 'output_sha256' in receipt else 'failed_request' if receipt.get('http_status') else 'outcome_unknown'
+                        work.planning_calls[-1]['state'] = 'invalid_response' if receipt.get('response_id') or receipt.get('output_sha256') else 'failed_request' if receipt.get('http_status') else 'outcome_unknown'
                 work.status = "planning_failed"
                 work.message = str(exc) if isinstance(exc, (ConflictError, ValidationHarnessError)) else "规划未完成，已保留记录；不会自动重复调用模型"
                 self.save(work)
@@ -333,8 +416,11 @@ class OpenMotionWorkspace:
 
     def start(self, work_id, expected_revision, plan_sha256, *, allow_unsupported_motion=False, expected_targets=None):
         from ..models import GenerationRequest, utc_now
+        from ..providers.account import account_key
         with self.lock(work_id):
             work = self.load(work_id)
+            settings = self.service.settings
+            account = account_key(settings) if work.spec.provider == 'pixellab' and settings.pixellab_api_key else None
             if work.revision != expected_revision or work.plan_sha256 != plan_sha256:
                 raise ConflictError("方案版本已改变，请查看最新方案")
             from .targets import check_target_set, verified_target
@@ -347,6 +433,7 @@ class OpenMotionWorkspace:
                 with self.store.locked_job(work.job_id) as current:
                     if current.generation_requested_at is None:
                         current.plan_control.enabled = True
+                        current.generation_account = current.generation_account or account
                         current.generation_requested_at = utc_now()
                         current.touch("open_plan_authorized", plan_sha256=work.plan_sha256)
                 return work  # An ambiguous client response never submits twice.
@@ -376,6 +463,9 @@ class OpenMotionWorkspace:
                                         provider=work.spec.provider, candidate_count=work.spec.candidate_count,
                                         seed=work.spec.seed, request_key=f"open-motion-{work.id}-{work.revision}", open_plan=binding)
             job = self.service.create_job(request)
+            if account and not job.generation_account:
+                with self.store.locked_job(job.job_id) as current:
+                    current.generation_account = current.generation_account or account
             work.job_id = job.job_id; work.status = "executing"; work.message = "正在按方案制作"
             # Persist the binding before enabling any provider work.
             self.save(work)

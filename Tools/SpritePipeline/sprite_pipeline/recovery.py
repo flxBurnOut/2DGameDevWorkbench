@@ -4,6 +4,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+from .providers.account import AccountSlotBusy
+from .reference_queue import ReferenceQueue
 from .service import SpritePipelineService
 
 
@@ -17,9 +19,12 @@ class RecoveryWorker:
         self._thread: threading.Thread | None = None
         self._planning_thread: threading.Thread | None = None
         self._structure_thread: threading.Thread | None = None
+        self._reference_thread: threading.Thread | None = None
+        self.reference_queue = ReferenceQueue(service)
         self._state_lock = threading.Lock()
         self._last_scan: dict[str, Any] | None = None
         self._last_error: dict[str, Any] | None = None
+        self._reference_error: dict[str, str] | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -35,12 +40,28 @@ class RecoveryWorker:
         self._planning_thread.start()
         self._structure_thread = threading.Thread(target=self._run_structures, name="sprite-visual-structure", daemon=True)
         self._structure_thread.start()
+        self._reference_thread = threading.Thread(target=self._run_references, name="sprite-reference-generation", daemon=True)
+        self._reference_thread.start()
 
     def stop(self, timeout_seconds: float = 5.0) -> None:
         self._stop.set()
         thread = self._thread
         if thread is not None:
             thread.join(timeout=max(0.0, timeout_seconds))
+
+    def _run_references(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.reference_queue.advance()
+                error = None
+            except AccountSlotBusy:
+                error = None  # Another local process owns the next operation.
+            except Exception as exc:
+                error = {"at": datetime.now(timezone.utc).isoformat(), "type": type(exc).__name__}
+            with self._state_lock:
+                self._reference_error = error
+            if self._stop.wait(self.interval_seconds):
+                break
 
     def _run_planning(self) -> None:
         from .collaboration.workspace import OpenMotionWorkspace
@@ -80,6 +101,7 @@ class RecoveryWorker:
                 "interval_seconds": self.interval_seconds,
                 "last_scan": self._last_scan,
                 "last_error": self._last_error,
+                "reference_error": self._reference_error,
             }
 
     def _run(self) -> None:

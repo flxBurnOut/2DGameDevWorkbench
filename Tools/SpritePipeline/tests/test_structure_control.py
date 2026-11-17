@@ -72,7 +72,7 @@ def test_checked_structure_reaches_independent_planning_input(setup,temporal):
     text=captured[0][0]['text']
     assert 'checked_visual_structure' in text and w.visual_structure['sha256'] in text
     assert 'motion.generation_hint MUST' in text
-    assert 'OUTPUT FORMAT version 3' in text
+    assert 'OUTPUT FORMAT version 4' in text
     assert 'allowed_structure_usage' in text and 'not_control_evidence' in text
     assert 'leave proposal/plan null.' not in text
     assert captured[0][1]['type']=='input_image'
@@ -82,6 +82,7 @@ def test_checked_structure_reaches_independent_planning_input(setup,temporal):
     assert 'OUTPUT FORMAT version 1' not in captured[1][0]['text']
     assert 'OUTPUT FORMAT version 2' not in captured[1][0]['text']
     assert 'OUTPUT FORMAT version 3' not in captured[1][0]['text']
+    assert 'OUTPUT FORMAT version 4' not in captured[1][0]['text']
     assert 'leave proposal/plan null.' in captured[1][0]['text']
     prior=w.model_copy(update={'planning_format_version':1})
     model('appearance',prior,ws.reference(w))

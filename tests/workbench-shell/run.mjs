@@ -221,6 +221,8 @@ try {
   test('sprite states distinguish saved, review, generation and actual export', () => {
     const expected = {
       created: 'saved',
+      queued: 'running',
+      not_submitted: 'not_submitted',
       submitting: 'running',
       provider_pending: 'running',
       saving: 'running',

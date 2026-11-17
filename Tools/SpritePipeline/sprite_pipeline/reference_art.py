@@ -1,7 +1,7 @@
 """Workbench PixelLab reference images, sharing the animation service's credentials.
 
-The Node workbench owns durable tasks and output files. This narrow gateway never
-exports a key and never retries a chargeable submission. See PixelLab v2 OpenAPI.
+The Node workbench owns task and output files. The local queue records upstream
+receipts and never replays a submission with an uncertain outcome.
 """
 
 from __future__ import annotations
@@ -9,12 +9,14 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import json
 import re
 import tempfile
 import threading
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter
@@ -22,9 +24,12 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from .errors import ProviderConfigurationError, ProviderPermanentError, ValidationHarnessError
+from .providers.account import AccountSlotBusy, safe_usage
+from .reference_queue import ReferenceQueue, has_charge
 from .service import SpritePipelineService
 from . import prop_reference
 from .pixel_prop_gateway import conversion
+from .reference_orientation import check_orientation
 
 
 class ReferenceRequest(BaseModel):
@@ -60,6 +65,14 @@ class KeyRequest(BaseModel):
     apiKey: str = Field(min_length=8, max_length=4096)
 
 
+class OrientationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    taskId: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$")
+    image: str = Field(min_length=1, max_length=2_000_000)
+    facing: Literal["right", "left"]
+    authorized: Literal[True]
+
+
 class ImportRequest(ReferenceRequest):
     prompt: str = Field(min_length=1, max_length=1000)
     image: str = Field(min_length=1, max_length=2_000_000)
@@ -68,43 +81,75 @@ class ImportRequest(ReferenceRequest):
     name: str = Field(min_length=1, max_length=80)
 
 
-def _provider_request(service: SpritePipelineService, method: str, route: str, payload=None):
-    key = service.settings.pixellab_api_key
+class GenerateRequest(ReferenceRequest):
+    requestId: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$")
+
+
+_JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$")
+_UNKNOWN_SUBMISSION = "提交结果无法确认。请核对原 PixelLab 请求，勿重复生成。"
+
+
+def _provider_request(settings, method: str, route: str, payload=None):
+    key = settings.pixellab_api_key
     if not key:
         raise ProviderConfigurationError("请先在原图或序列帧设置中保存 PixelLab API Key。")
-    base = service.settings.pixellab_base_url.rstrip("/")
+    base = settings.pixellab_base_url.rstrip("/")
     parsed = urlparse(base)
-    if parsed.username or parsed.password or parsed.query or parsed.fragment or (
+    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or (
         parsed.scheme != "https" and not (
             parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
         )
     ):
         raise ProviderConfigurationError("PixelLab 地址必须使用 HTTPS；本机测试可用 HTTP。")
     api_root = base if base.endswith("/v2") else base + "/v2"
+    max_bytes = settings.max_download_bytes if route.startswith("/background-jobs/") else 2_000_000
     try:
-        with httpx.Client(timeout=60, follow_redirects=False) as client:
+        with httpx.Client(timeout=settings.http_timeout_seconds, follow_redirects=False) as client:
             with client.stream(method, api_root + route, json=payload,
                                headers={"Authorization": f"Bearer {key}"}) as response:
-                if response.status_code >= 300:
-                    messages = {401: "PixelLab Key 无效。", 402: "PixelLab 额度不足。",
-                                429: "PixelLab 当前任务过多，请稍后再试。", 404: "PixelLab 任务不存在或已过期。"}
-                    raise ProviderPermanentError(messages.get(response.status_code, f"PixelLab 返回 HTTP {response.status_code}。"))
-                chunks = []
-                total = 0
+                body = bytearray()
                 for chunk in response.iter_bytes():
-                    total += len(chunk)
-                    if total > 2_000_000:
-                        raise ProviderPermanentError("PixelLab 响应超过大小限制。")
-                    chunks.append(chunk)
-                import json
-                data = json.loads(b"".join(chunks))
+                    body.extend(chunk)
+                    if len(body) > max_bytes:
+                        raise ValueError("oversized response")
+                try:
+                    data = json.loads(body)
+                except ValueError:
+                    data = None
+                if response.status_code >= 300:
+                    details = {"httpStatus": response.status_code}
+                    if method == "POST":
+                        job_id = data.get("background_job_id") if isinstance(data, dict) else None
+                        usage = safe_usage(data.get("usage")) if isinstance(data, dict) else {}
+                        if isinstance(job_id, str) and _JOB_ID.fullmatch(job_id):
+                            details["jobId"] = job_id
+                        if usage:
+                            details["usage"] = usage
+                        raw_usage = data.get("usage") if isinstance(data, dict) else None
+                        charged = has_charge(usage) or (isinstance(raw_usage, dict) and any(
+                            isinstance(raw_usage.get(key), (int, float)) and raw_usage[key] > 0 for key in ("usd", "generations")
+                        ))
+                        details["notSubmitted"] = (response.status_code in {401, 402, 403, 422, 429}
+                                                   and not job_id and not charged)
+                    messages = {401: "PixelLab Key 无效。", 402: "PixelLab 额度不足。", 403: "PixelLab 拒绝访问。",
+                                404: "PixelLab 任务不存在或已过期。", 422: "PixelLab 拒绝原图参数。",
+                                429: "PixelLab 当前任务过多，尚未提交。"}
+                    message = messages.get(response.status_code, f"PixelLab 返回 HTTP {response.status_code}。")
+                    if method == "POST" and not details["notSubmitted"]:
+                        message = _UNKNOWN_SUBMISSION
+                    raise ProviderPermanentError(message, details=details)
                 if not isinstance(data, dict):
-                    raise ValueError("Expected object")
-                return data
+                    raise ValueError("expected JSON object")
+                if method != "POST":
+                    return data
+                job_id = data.get("background_job_id")
+                usage = safe_usage(data.get("usage"))
+                if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+                    raise ProviderPermanentError(_UNKNOWN_SUBMISSION, details={"usage": usage} if usage else {})
+                return {"jobId": job_id, **({"usage": usage} if usage else {})}
     except (httpx.HTTPError, ValueError) as exc:
         # Never echo upstream bodies, URLs or exception text: they may contain secrets.
-        message = ("提交结果无法确认，未自动重试。请检查 PixelLab 账户任务后再决定是否重新生成。"
-                   if method == "POST" else "PixelLab 状态读取失败，可继续查询同一个任务。")
+        message = _UNKNOWN_SUBMISSION if method == "POST" else "PixelLab 状态读取失败，可继续查询同一个任务。"
         raise ProviderPermanentError(message) from exc
 
 
@@ -131,7 +176,33 @@ def validate_reference_image(encoded: str, expected_size: int | None = None) -> 
         raise ValidationHarnessError("原图需要是 64×64 或 128×128、含角色且带透明背景的 PNG；请重新生成或使用其他图片。") from exc
 
 
-def create_reference_router(service: SpritePipelineService) -> APIRouter:
+def _poll_reference(settings, job_id, size=None):
+    data = _provider_request(settings, "GET", "/background-jobs/" + job_id)
+    state = data.get("status")
+    if data.get("id") != job_id:
+        return {"status": "attention_required", "error": "PixelLab 返回了不匹配的任务。"}
+    result = data.get("last_response")
+    usage = safe_usage(result.get("usage")) if isinstance(result, dict) else {}
+    if not has_charge(usage):
+        usage = safe_usage(data.get("usage")) or usage
+    receipt = {"usage": usage} if usage else {}
+    if state == "failed":
+        return {**receipt, "status": "failed", "error": "PixelLab 原图生成失败，已保留上游请求。"}
+    if state == "processing":
+        return {**receipt, "status": "running"}
+    if state != "completed":
+        return {**receipt, "status": "attention_required", "error": "PixelLab 返回了未知任务状态。"}
+    encoded = result.get("image", {}).get("base64") if isinstance(result, dict) and isinstance(result.get("image"), dict) else None
+    if not isinstance(encoded, str):
+        return {**receipt, "status": "failed", "error": "PixelLab 已结束任务，但没有返回原图。"}
+    try:
+        image = validate_reference_image(encoded, size)
+    except ValidationHarnessError as exc:
+        return {**receipt, "status": "failed", "error": str(exc)}
+    return {**receipt, "status": "completed", "image": base64.b64encode(image).decode("ascii")}
+
+
+def create_reference_router(service: SpritePipelineService, queue: ReferenceQueue) -> APIRouter:
     router = APIRouter(prefix="/v1/reference-art")
     import_lock = threading.Lock()
 
@@ -145,48 +216,44 @@ def create_reference_router(service: SpritePipelineService) -> APIRouter:
         return settings()
 
     @router.post("/jobs", status_code=202)
-    def generate(body: ReferenceRequest):
+    def generate(body: GenerateRequest):
         if not body.prompt.strip():
             raise ValidationHarnessError("请输入角色描述。")
         payload = {"description": body.prompt.strip(), "image_size": {"width": body.size, "height": body.size},
                    "no_background": True, "view": "side", "direction": "east" if body.facing == "right" else "west"}
         if body.seed is not None:
             payload["seed"] = body.seed
-        data = _provider_request(service, "POST", "/create-image-pixflux-background", payload)
-        job_id = data.get("background_job_id")
-        if not isinstance(job_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", job_id):
-            raise ProviderPermanentError("PixelLab 未返回有效任务 ID，未自动重试。")
-        return {"jobId": job_id, "status": "running"}
+        if body.requestId is not None:
+            return queue.enqueue(body.requestId, payload)
+        try:
+            receipt = queue.submit_immediate(uuid4().hex, payload)
+        except AccountSlotBusy as exc:
+            raise ProviderPermanentError("PixelLab 当前任务过多，请稍后再试。", details={"notSubmitted": True}) from exc
+        if receipt["status"] in {"not_submitted", "attention_required"}:
+            raise ProviderPermanentError(receipt["error"], details={key: value for key, value in receipt.items() if key != "error"})
+        return receipt
+
+    @router.get("/requests/{request_id}")
+    def request_status(request_id: str):
+        if not _JOB_ID.fullmatch(request_id):
+            raise ValidationHarnessError("无效的请求 ID。")
+        return queue.status(request_id)
 
     @router.get("/jobs/{job_id}")
     def status(job_id: str):
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", job_id):
+        if not _JOB_ID.fullmatch(job_id):
             raise ValidationHarnessError("无效的任务 ID。")
-        data = _provider_request(service, "GET", "/background-jobs/" + job_id)
-        state = data.get("status")
-        if data.get("id") != job_id:
-            raise ProviderPermanentError("PixelLab 返回了不匹配的任务。")
-        if state == "failed":
-            return {"status": "failed", "error": "PixelLab 原图生成失败。"}
-        if state == "processing":
-            return {"status": "running"}
-        if state != "completed":
-            raise ProviderPermanentError("PixelLab 返回了未知任务状态。")
-        result = data.get("last_response")
-        encoded = result.get("image", {}).get("base64") if isinstance(result, dict) and isinstance(result.get("image"), dict) else None
-        if not isinstance(encoded, str):
-            return {"status": "failed", "error": "PixelLab 已结束任务，但没有返回原图。"}
-        try:
-            image = validate_reference_image(encoded)
-        except ValidationHarnessError as exc:
-            return {"status": "failed", "error": str(exc)}
-        return {"status": "completed", "image": base64.b64encode(image).decode("ascii")}
+        return _poll_reference(service.settings, job_id)
 
     @router.post("/transfer-prop")
     def transfer_prop(body: PropTransferRequest):
         identity = prop_reference.transfer(service, body.sourceTaskId, body.identityDescription.strip(),
                                            body.confirmation.model_dump() if body.confirmation else None)
         return {"objectId": identity, "objectType": "interactable"}
+
+    @router.post("/orientation")
+    def orientation(body: OrientationRequest):
+        return check_orientation(service, body.taskId, validate_reference_image(body.image), body.facing)
 
     def convert_prop(body: PropConvertRequest):
         result, provenance = conversion(service, body.model_dump(exclude_none=True))

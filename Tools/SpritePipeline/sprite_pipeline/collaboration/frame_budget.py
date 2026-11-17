@@ -10,7 +10,9 @@ def planning_limits(service, work):
     if work.spec.provider == 'pixellab':
         try:
             snapshot = service.refresh_pixellab_balance()
-            remaining = service._remaining_generations(snapshot)
+            # The subscription only bounds the plan when there is no credit fallback.
+            if not service._available_credit(snapshot):
+                remaining = service._remaining_generations(snapshot)
             checked_at = snapshot.get('checked_at')
         except (HarnessError, OSError):
             pass  # A failed read does not grant units or cancel the user's frame limits.

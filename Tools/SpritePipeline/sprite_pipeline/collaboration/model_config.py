@@ -8,18 +8,28 @@ from ..credential_store import CredentialStore
 from ..errors import ValidationHarnessError
 from ..jsonio import atomic_write_json, read_json
 from ..vision_review import VisionReviewer, PROVIDERS
-from .contracts import Contract
+from .contracts import Contract, Role
 
 ROLES = ('appearance', 'motion', 'strategy', 'coordinator', 'reviewer')
+ModelProvider = Literal['tokenhub', 'openai']
+MODEL_ID = r'^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$'
 
 
-class ModelProfile(Contract):
-    provider: Literal['tokenhub', 'openai'] = 'tokenhub'
-    model: str = Field(default='hy-vision-2.0-instruct', pattern=r'^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$')
+class ModelOptions(Contract):
     max_output_tokens: int = Field(default=8000, ge=1024, le=32768)
     timeout_seconds: int = Field(default=180, ge=30, le=600)
     token_parameter: Literal['auto', 'max_tokens', 'max_completion_tokens'] = 'auto'
     reasoning_effort: Literal['auto', 'low', 'medium', 'high', 'max'] = 'auto'
+
+
+class PlanningModelChoice(ModelOptions):
+    model: str = Field(pattern=MODEL_ID)
+    provider: ModelProvider | None = None
+
+
+class ModelProfile(ModelOptions):
+    provider: ModelProvider = 'tokenhub'
+    model: str = Field(default='hy-vision-2.0-instruct', pattern=MODEL_ID)
     supports_images: bool = True
 
     @model_validator(mode='after')
@@ -47,6 +57,14 @@ class ModelConfiguration(Contract):
     default: ModelProfile = Field(default_factory=ModelProfile)
     roles: dict[Literal['appearance', 'motion', 'strategy', 'coordinator', 'reviewer', 'structure'], ModelProfile] = Field(default_factory=dict)
     saved_models: list[ModelProfile] = Field(default_factory=list, max_length=24)
+
+    def with_planning_models(self, choices: dict[Role, PlanningModelChoice]):
+        roles = dict(self.roles)
+        for role, choice in choices.items():
+            selected = choice.model_dump(exclude_unset=True, exclude_none=True)
+            selected.setdefault('provider', roles.get(role, self.default).provider)
+            roles[role] = ModelProfile.model_validate(selected)
+        return self.model_copy(update={'roles': roles})
 
 
 class ModelRegistry:
@@ -89,6 +107,11 @@ class ModelRegistry:
     def profile(self, role, snapshot=None):
         config = ModelConfiguration.model_validate(snapshot) if snapshot and 'default' in snapshot else self.load()
         return config.roles.get(role, config.default)
+
+    def configured_for(self, snapshot):
+        config = ModelConfiguration.model_validate(snapshot)
+        providers = {config.roles.get(role, config.default).provider for role in ROLES}
+        return all(self.key(provider) for provider in providers)
 
     def describe(self):
         config = self.load()

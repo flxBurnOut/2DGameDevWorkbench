@@ -17,9 +17,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlparse
+from uuid import uuid4
 
 from sprite_pipeline.errors import (
     ProviderConfigurationError,
@@ -40,6 +42,7 @@ from .base import (
     redact_provider_payload,
     structured_error,
 )
+from .account import AccountSlotBusy, safe_usage
 
 
 PIXELLAB_TOTAL_PIXEL_BUDGET = 524_288
@@ -109,6 +112,7 @@ class PixelLabProvider(SpriteProvider):
         http_client: Any | None = None,
         sleep_fn: Callable[[float], None] | None = None,
         monotonic_fn: Callable[[], float] | None = None,
+        account_slot: Any | None = None,
     ) -> None:
         """Validate configuration without importing httpx or opening a socket."""
 
@@ -162,6 +166,7 @@ class PixelLabProvider(SpriteProvider):
         self._client = http_client
         self._owns_client = False
         self._jobs: dict[str, _JobContext] = {}
+        self._account_slot = account_slot
 
     def __enter__(self) -> "PixelLabProvider":
         """Return this provider for use as a context manager."""
@@ -207,7 +212,45 @@ class PixelLabProvider(SpriteProvider):
             self._owns_client = True
         return self._client
 
+    def check_account_slot(self) -> None:
+        if self._account_slot is not None:
+            with self._account_slot.lock():
+                self._account_slot.require_available(self._active_job_status)
+
+    @property
+    def account_fingerprint(self) -> str | None:
+        return self._account_slot.key if self._account_slot is not None else None
+
+    def _active_job_status(self, job_id: str) -> str | None:
+        try:
+            result = self.poll(job_id)
+        except ProviderPermanentError as exc:
+            if exc.details.get("http_status") == 404:
+                return "expired"
+            raise
+        return result.provider_status if result.raw_response.get("id", job_id) == job_id else None
+
     def submit(self, request: ProviderRequest) -> Submission:
+        if self._account_slot is None:
+            return self._submit(request)
+        with self._account_slot.lock():
+            self._account_slot.require_available(self._active_job_status)
+            intent_id = request.local_submission_id or uuid4().hex
+            self._account_slot.reserve(intent_id)
+            try:
+                receipt = self._submit(request)
+            except (ProviderPermanentError, ProviderTemporaryError, AccountSlotBusy) as exc:
+                if exc.details.get("provider_job_id"):
+                    self._account_slot.accept(exc.details["provider_job_id"], intent_id,
+                                              usage=safe_usage((exc.details.get("response") or {}).get("usage")))
+                elif not exc.details.get("submission_unknown"):
+                    self._account_slot.reject()
+                raise
+            self._account_slot.accept(receipt.provider_job_id, intent_id,
+                                      usage=safe_usage(receipt.raw_response.get("usage")), status=receipt.status)
+            return receipt
+
+    def _submit(self, request: ProviderRequest) -> Submission:
         """Submit one PixelLab v3 job with only conclusive 429/529 retries.
 
         Transport failures, timeouts, and malformed 200 responses are reported
@@ -357,7 +400,7 @@ class PixelLabProvider(SpriteProvider):
                         "request": request_record,
                     },
                 ) from exc
-            if response.status_code not in {429, 529} or retry_index >= self.max_get_retries:
+            if self._account_slot is not None or response.status_code not in {429, 529} or retry_index >= self.max_get_retries:
                 break
             self._sleep(self._retry_delay(response, retry_index))
 
@@ -444,6 +487,10 @@ class PixelLabProvider(SpriteProvider):
         raw_response = self._response_record(response_json, response.status_code)
         provider_status = response_json.get("status")
         usage = self._usage_record(response_json.get("usage"))
+        if (self._account_slot is not None and response_json.get("id", job_id) == job_id
+                and isinstance(provider_status, str) and provider_status in {"completed", "failed"}):
+            with suppress(AccountSlotBusy), self._account_slot.lock():
+                self._account_slot.release(job_id)
         if not isinstance(provider_status, str) or not provider_status:
             return self._contract_failure(
                 job_id,
@@ -737,13 +784,23 @@ class PixelLabProvider(SpriteProvider):
         """Classify a non-200 POST response without retrying it."""
 
         status_code = int(response.status_code)
+        record = self._best_effort_response_record(response)
+        job_id = record.get("background_job_id")
+        usage = record.get("usage")
+        charged = isinstance(usage, dict) and any(isinstance(usage.get(key), (int, float)) and usage[key] > 0 for key in ("usd", "generations"))
+        known_rejection = status_code in {401, 402, 403, 422, 429, 529} and not job_id and not charged
         details = {
             "http_status": status_code,
-            "submission_unknown": False,
-            "safe_to_retry": status_code in {429, 529},
+            "submission_unknown": not known_rejection,
+            "submission_rejected": known_rejection,
+            "safe_to_retry": known_rejection and status_code in {429, 529},
             "request": request_record,
-            "response": self._best_effort_response_record(response),
+            "response": record,
         }
+        if isinstance(job_id, str) and job_id.strip():
+            details["provider_job_id"] = job_id.strip()
+        if self._account_slot is not None and details["safe_to_retry"]:
+            raise AccountSlotBusy("PixelLab 账户当前任务过多，等待空位", details=details)
         if status_code in {429, 529} or status_code >= 500:
             raise ProviderTemporaryError("PixelLab rejected or could not process the submission", details=details)
         raise ProviderPermanentError("PixelLab rejected the animation submission", details=details)

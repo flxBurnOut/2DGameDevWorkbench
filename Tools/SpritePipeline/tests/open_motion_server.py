@@ -1,5 +1,6 @@
 """Explicit offline UI test service. Never used by production launchers."""
 import sys
+import time
 from pathlib import Path
 from dataclasses import replace
 from unittest.mock import patch
@@ -45,7 +46,21 @@ with ExitStack() as stack:
         from test_motion_adjustments import IntentRegistry as ExpertRegistry
         from sprite_pipeline.collaboration.checkpoints import Checkpoints
         from sprite_pipeline.collaboration.visual_review import QualityReviewer
-        service.open_motion_review_registry=ExpertRegistry()
+        class HeldReviewRegistry(ExpertRegistry):
+            def send(self, role, content, schema, count, **options):
+                scope = options.get('schema_name')
+                if '--hold-first-reviews' in sys.argv and scope in {'open_motion_checkpoint', 'open_motion_quality'}:
+                    marker = root / f'{scope}.entered'
+                    if not marker.exists():
+                        marker.touch()
+                        deadline = time.monotonic() + 40
+                        while not (root / f'{scope}.released').exists():
+                            if time.monotonic() > deadline:
+                                raise AssertionError(f'Test did not release {scope}')
+                            time.sleep(0.02)
+                return super().send(role, content, schema, count, **options)
+
+        service.open_motion_review_registry=HeldReviewRegistry()
         service.adjustment_test_reviews=True
         stack.enter_context(patch.object(VisionReviewer,'_send',side_effect=AssertionError('Offline acceptance must never call an external model')))
         def simulated(original, segment):

@@ -10,7 +10,7 @@ v4 增加 `target-motion-stage`（制作前本地绑定真实末图）、`repair
 
 本文描述 MCP、CLI、Web HTTP bridge 与能力适配器共享的任务和文档语义。生产输入以 `workbench/manifest.json` 为机器权威；共享文档命令以 `lib/workbench/document-contract.mjs`、图片会话以 `lib/workbench/image-edit-contract.mjs` 及实际 MCP schema 为准。本文解释跨能力约束和协议转换，不复制完整 JSON Schema。
 
-开放动作使用 `sprite-generator` 的 `plan-motion` / `revise-motion` / `get-motion` / `generate-motion` / `pause-motion` / `resume-motion`。`motionSpec` 含原始描述、对象身份、终态、播放设置和调用上限；嵌套字段在任务持久化前按 manifest 校验，不能夹带 Key 或未知控制字段。规划明确授权 `planningAuthorized`，异步轮询沿用原 taskId；结果含 `openWorkId`、`work` 及精确 `?work=` 链接。确认生成绑定 `expectedRevision` 和 `planSha256`，禁止执行旧方案。只有用户已授权直接制作时才设置 `autoExecute`。本机页面的 `/api/workbench/open-motion` 仅代理列明的工作区、帧图及已保存导出路径；不能作任意 HTTP 代理。交互物动画面板另使用其中的 `edit-source/<帧>`（必须带 64 位 `token`，读取本地帧工具的精确来源）、`local-frame-edits`、`derived`（列表、创建、帧图、裁决）路由。`motionSpec.interactable_skeleton` 为可选的有序状态（2–5 个），规划必须按骨架分段，见[开放动作](../workbench/guides/motion.md)。
+开放动作使用 `sprite-generator` 的 `plan-motion` / `revise-motion` / `get-motion` / `generate-motion` / `pause-motion` / `resume-motion`。`motionSpec` 含原始描述、对象身份、终态、播放设置和调用上限；嵌套字段在任务持久化前按 manifest 校验，不能夹带 Key 或未知控制字段。规划明确授权 `planningAuthorized`，异步轮询沿用原 taskId；结果含 `openWorkId`、`work` 及精确 `?work=` 链接。确认生成绑定 `expectedRevision` 和 `planSha256`，禁止执行旧方案。仅在初次 `plan-motion` 且用户授权直接制作时设置 `autoExecute=true`。`revise-motion` 省略或传 false，查看修改后的方案后使用新版本与哈希调用 `generate-motion`。本机页面的 `/api/workbench/open-motion` 仅代理列明的工作区、帧图及已保存导出路径；不能作任意 HTTP 代理。交互物动画面板另使用其中的 `edit-source/<帧>`（必须带 64 位 `token`，读取本地帧工具的精确来源）、`local-frame-edits`、`derived`（列表、创建、帧图、裁决）路由。`motionSpec.interactable_skeleton` 为可选的有序状态（2–5 个），规划必须按骨架分段，见[开放动作](../workbench/guides/motion.md)。
 
 当前注册四项 `local-adapter`：image-assets、原图、序列帧和交互物。共享交互物编辑另走文档工具：
 
@@ -249,9 +249,9 @@ image-assets 的外部操作为 generate-prop、edit-image，使用gpt-image-2.6
 
 ### 只读作品结果与展示
 
-`POST /v1/agent/result` 使用 `{ taskId }` 或 `{ jobId, candidateIndex? }`，可加布尔 `detail`；两个身份不能同时传入。task 查询也可指定已存在的序列帧 `candidateIndex`。此操作读取已有记录，不创建执行任务、不刷新收费生成、不操作浏览器。
+`POST /v1/agent/result` 使用 `{ taskId }` 或 `{ jobId }`，可用 `candidateIndex` 指定已有动画候选。工作台任务读取保存的结果快照，原生 `jobId` 直接查询服务。该操作只读。
 
-前端代理为 `GET /api/workbench/result?taskId=...`（也支持 jobId/candidateIndex/detail）。共享返回新增 `presentation`：作品标题、真实阶段摘要、精确编辑链接、预览、只导航的 actions、问题和技术详情。已有结果、产物验证字段保留；native job 不冒充工作台 task，不声称产物已转存或已验证。MCP 默认投影简明文本，`detail:true` 提供兼容旧客户端的完整文本 JSON。
+前端代理为 `GET /api/workbench/result?taskId=...`，支持 `jobId`、`candidateIndex`、`detail`、`section`、`offset` 和 `snapshot`。共享返回的 `presentation` 含标题、当前阶段、精确编辑链接、预览与导航操作。开放动作提供 `reviewProgress`，从该片段或整段的持久复核账本读取当前项、调用次数及决定状态。`workbench_get_task` 可继续查询同一开放动作版本直至实际检查可提交。序列帧结果在 MCP 文本、结构数据和共享接口默认使用相同摘要，详细字段需 `detail:true` 后分页读取。分页协议及示例见[结果与展示数据](agent-client-tools.md#结果与展示数据)。
 
 ## 资产目录（MCP 0.8.0）
 

@@ -6,6 +6,8 @@ import json
 import shutil
 from pathlib import Path
 from dataclasses import replace
+from threading import Event
+from time import sleep
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -17,6 +19,10 @@ from PIL import Image, ImageDraw
 from sprite_pipeline.api_app import create_api
 from sprite_pipeline import reference_art
 from sprite_pipeline.service import SpritePipelineService
+
+
+def available_balance(generations=1, usd=0):
+    return {'subscription': {'generations': generations}, 'credits': {'usd': usd}}
 
 
 def image_base64(size=(128, 128), opaque=False):
@@ -81,6 +87,8 @@ def test_documented_pixflux_submit_poll_and_no_secret_response(service, monkeypa
     def handler(request):
         calls.append(request)
         assert request.headers['authorization'] == 'Bearer private-test-key'
+        if request.url.path == '/v2/balance':
+            return httpx.Response(200, json=available_balance())
         if request.method == 'POST':
             assert request.url.path == '/v2/create-image-pixflux-background'
             assert json.loads(request.content) == {'description': 'pixel ranger', 'image_size': {'width': 128, 'height': 128}, 'no_background': True, 'view': 'side', 'direction': 'west', 'seed': 42}
@@ -94,24 +102,222 @@ def test_documented_pixflux_submit_poll_and_no_secret_response(service, monkeypa
         polled = client.get('/v1/reference-art/jobs/test-job')
         assert polled.json()['status'] == 'completed'
         assert 'private-test-key' not in submitted.text + polled.text
-        assert [r.method for r in calls] == ['POST', 'GET']
+        assert [r.method for r in calls] == ['GET', 'POST', 'GET']
 
 
-@pytest.mark.parametrize('response', ['timeout', 401, 402, 429, 500])
-def test_rejected_or_ambiguous_submission_never_retries_or_echoes_body(service, monkeypatch, response):
+@pytest.mark.parametrize('response,expected', [('timeout', 'attention_required'), (401, 'not_submitted'),
+    (402, 'not_submitted'), ('charge', 'attention_required'), ('busy-with-charge', 'attention_required'), (500, 'attention_required')])
+def test_rejected_or_ambiguous_submission_never_retries_or_echoes_body(service, monkeypatch, response, expected):
     service.settings = replace(service.settings, pixellab_api_key='secret-never-log')
     real_client = httpx.Client
     calls = []
     def handler(request):
         calls.append(request)
+        if request.url.path == '/v2/balance':
+            return httpx.Response(200, json=available_balance())
         if response == 'timeout':
             raise httpx.ReadTimeout('secret-never-log', request=request)
+        if response == 'charge':
+            return httpx.Response(402, json={'usage': {'type': 'generations', 'generations': 1, 'secret': 'secret-never-log'}})
+        if response == 'busy-with-charge':
+            return httpx.Response(429, json={'background_job_id': 'unexpected.id:1', 'usage': {'generations': 1}})
         return httpx.Response(response, json={'error': 'secret-never-log'})
+    app = create_api(service=service)
+    queue = app.state.sprite_pipeline_recovery.reference_queue
+    with TestClient(app) as client:
+        monkeypatch.setattr(reference_art.httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+        result = client.post('/v1/reference-art/jobs', json={'prompt': 'ranger', 'requestId': 'test-rejection'})
+        assert result.status_code == 202
+        queue.advance()
+        queue.advance()
+        saved = client.get('/v1/reference-art/requests/test-rejection')
+        assert saved.json()['status'] == expected and 'secret-never-log' not in saved.text
+        if response in {'charge', 'busy-with-charge'}:
+            assert saved.json()['usage'] == {'type': 'generations', 'generations': 1}
+        assert [r.method for r in calls] == ['GET', 'POST']
+
+
+def test_preflight_rejects_empty_balance_and_waits_on_conclusive_429(service, monkeypatch):
+    service.settings = replace(service.settings, pixellab_api_key='test-key')
+    credits = 0
+    post_count = 0
+    real_client = httpx.Client
+
+    def handler(request):
+        nonlocal post_count
+        if request.url.path == '/v2/balance':
+            return httpx.Response(200, json=available_balance(0, credits))
+        post_count += 1
+        if post_count == 1:
+            return httpx.Response(429, json={'error': 'account slot is busy'})
+        return httpx.Response(202, json={'background_job_id': 'accepted-after-wait'})
+
+    app = create_api(service=service)
+    queue = app.state.sprite_pipeline_recovery.reference_queue
+    with TestClient(app) as client:
+        monkeypatch.setattr(reference_art.httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+        client.post('/v1/reference-art/jobs', json={'prompt': 'ranger', 'requestId': 'zero-balance'}).raise_for_status()
+        queue.advance()
+        blocked = client.get('/v1/reference-art/requests/zero-balance').json()
+        assert blocked['status'] == 'not_submitted' and 'jobId' not in blocked
+        assert blocked['balance'] == {'generations': 0, 'usd': 0}
+        assert post_count == 0
+
+        credits = 1
+        client.post('/v1/reference-art/jobs', json={'prompt': 'ranger', 'requestId': 'busy-account'}).raise_for_status()
+        queue.advance()
+        waiting = client.get('/v1/reference-art/requests/busy-account').json()
+        assert (waiting['status'], waiting['stage'], waiting['httpStatus']) == ('running', 'queued', 429)
+        assert 'jobId' not in waiting and post_count == 1
+        queue.advance()
+        accepted = client.get('/v1/reference-art/requests/busy-account').json()
+        assert accepted['jobId'] == 'accepted-after-wait' and post_count == 2
+
+
+def test_background_worker_holds_account_slot_until_known_job_finishes_without_client_polls(service, monkeypatch):
+    service.settings = replace(service.settings, pixellab_api_key='test-key', poll_interval_seconds=0.025)
+    release_first, first_posted, second_posted = Event(), Event(), Event()
+    submitted = []
+    real_client = httpx.Client
+
+    def handler(request):
+        if request.url.path == '/v2/balance':
+            return httpx.Response(200, json=available_balance())
+        if request.method == 'POST':
+            prompt = json.loads(request.content)['description']
+            submitted.append(prompt)
+            (first_posted if prompt == 'first' else second_posted).set()
+            return httpx.Response(202, json={'background_job_id': prompt})
+        job_id = request.url.path.rsplit('/', 1)[-1]
+        if job_id == 'first' and release_first.is_set():
+            return httpx.Response(200, json={'id': job_id, 'status': 'completed', 'usage': {'type': 'generations', 'generations': 1}})
+        return httpx.Response(200, json={'id': job_id, 'status': 'processing'})
+
     with TestClient(create_api(service=service)) as client:
         monkeypatch.setattr(reference_art.httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
-        result = client.post('/v1/reference-art/jobs', json={'prompt': 'ranger'})
-        assert result.status_code == 502 and 'secret-never-log' not in result.text
-        assert len(calls) == 1
+        first = {'prompt': 'first', 'requestId': 'request-one'}
+        client.post('/v1/reference-art/jobs', json=first).raise_for_status()
+        assert first_posted.wait(3)
+        client.post('/v1/reference-art/jobs', json=first).raise_for_status()
+        assert client.post('/v1/reference-art/jobs', json={**first, 'prompt': 'changed'}).status_code == 409
+        second = client.post('/v1/reference-art/jobs', json={'prompt': 'second', 'requestId': 'request-two'}).json()
+        assert second['status'] == 'running' and second['stage'] == 'queued'
+        assert not second_posted.wait(0.15)
+        release_first.set()
+        assert second_posted.wait(3)
+        assert submitted == ['first', 'second']
+        first_status = client.get('/v1/reference-art/requests/request-one').json()
+        assert first_status['status'] == 'failed' and first_status['jobId'] == 'first'
+        assert first_status['usage'] == {'type': 'generations', 'generations': 1}
+        assert 'image' not in first_status
+
+
+@pytest.mark.parametrize('first_path', ['reference', 'animation'])
+def test_reference_and_native_animation_share_account_slot(service, monkeypatch, first_path):
+    from sprite_pipeline.models import GenerationRequest
+    from sprite_pipeline.reference_queue import ReferenceQueue
+
+    initial_settings = replace(service.settings, pixellab_api_key='test-key-A', poll_interval_seconds=0.001)
+    service.settings = initial_settings
+    real_client = httpx.Client
+    finished = set()
+    posts = []
+
+    def handler(request):
+        assert request.headers['authorization'] == 'Bearer test-key-A'
+        route = request.url.path
+        if route == '/v2/balance':
+            return httpx.Response(200, json=available_balance(0, 1.25))
+        if request.method == 'POST':
+            kind = 'reference' if route.endswith('pixflux-background') else 'animation'
+            assert not (set(posts) - finished), 'same account accepted two concurrent jobs'
+            posts.append(kind)
+            return httpx.Response(202 if kind == 'reference' else 200, json={'background_job_id': kind})
+        job_id = route.rsplit('/', 1)[-1]
+        info = {'id': job_id, 'status': 'failed' if job_id in finished else 'processing',
+                'usage': {'type': 'generations', 'generations': 1}}
+        if job_id == 'animation' and job_id in finished:
+            info['last_response'] = {'diagnostics': 'x' * 2_100_000}
+        return httpx.Response(200, json=info)
+
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    queue = ReferenceQueue(service)
+    job = service.create_job(GenerationRequest(character_id='diagnostic_dummy', action_id='idle', candidate_count=2))
+    payload = {'description': 'reference', 'image_size': {'width': 128, 'height': 128}}
+    if first_path == 'reference':
+        queue.enqueue('reference-request', payload)
+        queue.advance()
+        queued = service.generate_job(job.job_id, wait=False, candidate_index=2)
+        assert queued.status == 'queued' and queued.queued_candidate_index == 2
+        assert queued.candidates[1].submission_attempts == 0
+        service.settings = replace(service.settings, pixellab_api_key='test-key-B')
+        assert service.generate_job(job.job_id, wait=False, candidate_index=2).status == 'queued'
+        service.recover_pending_jobs()
+        service.settings = initial_settings
+        assert posts == ['reference']
+        finished.add('reference')
+        queue.advance()
+        service.recover_pending_jobs()
+        assert posts == ['reference', 'animation']
+        recovered = service.get_job(job.job_id)
+        assert recovered.candidates[0].submission_attempts == 0
+        assert recovered.candidates[1].provider_job_id == 'animation'
+    else:
+        service.generate_job(job.job_id, wait=False, candidate_index=2)
+        queue.enqueue('reference-request', payload)
+        queue.advance()
+        assert posts == ['animation'] and queue.status('reference-request')['stage'] == 'queued'
+        finished.add('animation')
+        sleep(0.01)
+        queue.advance()
+        assert posts == ['animation', 'reference'] and queue.status('reference-request')['jobId'] == 'reference'
+
+
+def test_reference_recovers_the_accepted_receipt_after_local_commit_failure(service, monkeypatch):
+    from sprite_pipeline.reference_queue import ReferenceQueue
+
+    service.settings = replace(service.settings, pixellab_api_key='test-key')
+    queue = ReferenceQueue(service)
+    payload = {'description': 'keeper', 'image_size': {'width': 128, 'height': 128}}
+    queue.enqueue('original-request', payload)
+    save = queue._save
+
+    def interrupt(row, status, receipt, **kwargs):
+        if status == 'running':
+            raise OSError('simulated crash after durable receipt')
+        save(row, status, receipt, **kwargs)
+
+    provider = Mock(side_effect=[available_balance(), {'jobId': 'original-receipt', 'usage': {'type': 'generations', 'generations': 1}}])
+    monkeypatch.setattr(reference_art, '_provider_request', provider)
+    monkeypatch.setattr(queue, '_save', interrupt)
+    with pytest.raises(OSError):
+        queue.advance()
+    restarted = ReferenceQueue(service)
+    assert restarted.status('original-request')['stage'] == 'submitting'
+    restarted.advance()
+    receipt = restarted.status('original-request')
+    assert receipt['jobId'] == 'original-receipt' and receipt['usage']['generations'] == 1
+    assert provider.call_count == 2
+
+
+def test_animation_error_with_a_remote_id_has_a_recoverable_usage_receipt(service, monkeypatch):
+    from sprite_pipeline.errors import ProviderTemporaryError
+    from sprite_pipeline.providers import ProviderRequest, get_provider
+    from sprite_pipeline.providers.account import PixelLabSlot
+
+    service.settings = replace(service.settings, pixellab_api_key='test-key')
+    real_client = httpx.Client
+    response = httpx.Response(500, json={'background_job_id': 'original-animation',
+                                        'usage': {'generations': 2, 'secret': 'never-persist'}})
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: real_client(transport=httpx.MockTransport(lambda _: response), **kwargs))
+    provider = get_provider('pixellab', service.settings)
+    request = ProviderRequest(reference_image=base64.b64decode(image_base64()), frame_count=4,
+                              prompt='idle', local_submission_id='original-intent')
+    with pytest.raises(ProviderTemporaryError):
+        provider.submit(request)
+    slot = PixelLabSlot(service.settings, service.store)
+    assert slot.accepted_receipt('original-intent') == {'jobId': 'original-animation', 'status': 'processing',
+                                                       'usage': {'type': 'generations', 'generations': 2}}
 
 
 def test_missing_key_and_invalid_payload_do_not_call_provider(service, monkeypatch):
@@ -163,14 +369,83 @@ def test_transfer_rejects_invalid_references(service, encoded):
         result = client.post('/v1/reference-art/import', json={'characterId': 'reference_' + 'b' * 24, 'image': encoded, 'name': 'ranger', 'prompt': 'ranger'})
         assert result.status_code == 422
 
+
+@pytest.mark.parametrize("view,facing,verdict", [
+    ("side", "right", "matched"), ("back", "left", "mismatch"),
+    ("three_quarter", "right", "mismatch"), ("side", "left", "mismatch"),
+    ("unknown", "unknown", "unverified"),
+])
+def test_orientation_observes_png_once_and_binds_observation(service, monkeypatch, view, facing, verdict):
+    from sprite_pipeline.collaboration.model_config import ModelRegistry
+    from sprite_pipeline.reference_orientation import OrientationObservation
+    from sprite_pipeline.errors import ValidationHarnessError
+    image = image_base64()
+    def observe(self, role, content, schema, count, *, on_request, on_response, **kwargs):
+        assert role == "reviewer" and schema is OrientationObservation and count == 1
+        assert content[1]["image_url"] == "data:image/png;base64," + image
+        on_request()
+        on_response({"usage": {"total_tokens": 42}})
+        return schema(view=view, facing=facing, evidence="测试观察"), {}
+    send = Mock(side_effect=observe)
+    monkeypatch.setattr(ModelRegistry, "send", lambda self, *args, **kw: send(self, *args, **kw))
+    body = {"taskId": "reference-test", "image": image, "facing": "right", "authorized": True}
+    with TestClient(create_api(service=service)) as client:
+        endpoint = "/v1/reference-art/orientation"
+        assert client.post(endpoint, json={**body, "authorized": False}).status_code == 422
+        result = client.post(endpoint, json=body).json()
+        assert result["status"] == verdict and result["callsUsed"] == 1
+        assert result["receipt"]["usage"]["total_tokens"] == 42
+        assert client.post(endpoint, json=body).json() == result
+        assert client.post(endpoint, json={**body, "facing": "left"}).status_code == 422
+        send.assert_called_once()
+        send.side_effect = ValidationHarnessError("核对未完成")
+        failed_body = {**body, "taskId": "failed-review"}
+        failed = client.post(endpoint, json=failed_body).json()
+        assert failed["status"] == "unverified"
+        assert client.post(endpoint, json=failed_body).json() == failed
+        assert send.call_count == 2
+
+
+def test_concurrent_orientation_poll_cannot_repeat_a_paid_check(service, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from sprite_pipeline.collaboration.model_config import ModelRegistry
+    from sprite_pipeline.reference_orientation import check_orientation, OrientationObservation
+
+    started, release = Event(), Event()
+
+    def observe(*args, on_request, **kwargs):
+        on_request()
+        started.set()
+        assert release.wait(timeout=5)
+        return OrientationObservation(view="side", facing="right", evidence="可见侧脸。"), {}
+
+    send = Mock(side_effect=observe)
+    monkeypatch.setattr(ModelRegistry, "send", send)
+    args = (service, "one-task", base64.b64decode(image_base64()), "right")
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(check_orientation, *args)
+        try:
+            assert started.wait(timeout=5)
+            assert check_orientation(*args)["status"] == "checking"
+        finally:
+            release.set()
+        completed = pending.result()
+    assert completed["status"] == "matched"
+    assert check_orientation(*args) == completed
+    send.assert_called_once()
+
 def test_native_64_reference_preserves_size_through_generation_and_transfer(service, monkeypatch):
+    service.settings = replace(service.settings, pixellab_api_key='test-key')
     encoded = image_base64((64, 64))
     calls = []
     def provider(_service, method, route, payload=None):
         calls.append((method, route, payload))
+        if route == '/balance':
+            return available_balance()
         if method == 'POST':
             assert payload['image_size'] == {'width': 64, 'height': 64}
-            return {'background_job_id': 'coarse-64'}
+            return {'jobId': 'coarse-64'}
         return {'id': 'coarse-64', 'status': 'completed', 'last_response': {'image': {'base64': encoded}}}
     monkeypatch.setattr(reference_art, '_provider_request', provider)
     with TestClient(create_api(service=service)) as client:
@@ -186,7 +461,7 @@ def test_native_64_reference_preserves_size_through_generation_and_transfer(serv
     character, preset_path = service.presets.load_character(body['characterId'])
     with Image.open(preset_path.parent / character.reference_frame) as image:
         assert image.size == (64, 64)
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 def test_prop_transfer_only_admits_verified_registered_png(service, tmp_path, monkeypatch):

@@ -363,6 +363,8 @@ class CandidateRecord(StrictModel):
 
 class JobStatus(str, Enum):
     created = "created"
+    queued = "queued"
+    not_submitted = "not_submitted"
     submitting = "submitting"
     provider_pending = "provider_pending"
     saving = "saving"
@@ -396,6 +398,8 @@ class JobRecord(StrictModel):
     request: GenerationRequest
     request_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     generation_requested_at: datetime | None = None
+    queued_candidate_index: int | None = Field(default=None, ge=1)
+    generation_account: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     quota_before: dict[str, Any] | None = None
     quota_after: dict[str, Any] | None = None
     character: ObjectPreset

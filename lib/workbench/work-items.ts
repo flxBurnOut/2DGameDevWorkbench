@@ -1,4 +1,5 @@
 import { interactableMotionRoute } from './motion-routes';
+import { animationTitle } from './animation-title.mjs';
 import type { WorkbenchModule } from './modules';
 export function operationLabel(operation: unknown): string {
   const labels: Record<string, string> = { generate: '生成素材', import: '导入素材', transfer: '导入角色', 'save-project': '保存项目', 'export-godot': '导出 Godot', create: '创建作业', submit: '提交生成', get: '更新状态', review: '检查素材', export: '导出素材', approve: '确认素材', prepare: '准备输入' };
@@ -11,6 +12,7 @@ export type WorkItemState =
   | 'editing'
   | 'running'
   | 'attention'
+  | 'not_submitted'
   | 'completed';
 export type WorkItem = {
   id: string;
@@ -39,7 +41,9 @@ export type StoredTask = {
   requiredEnvironment?: string;
   createdAt?: string;
   updatedAt?: string;
-  adapter?: { propObjectId?: string; remoteJobId?: string; remoteStatus?: string; openWorkId?: string };
+  adapter?: { propObjectId?: string; remoteJobId?: string; remoteStatus?: string; openWorkId?: string;
+    orientationPending?: string; orientationReview?: { status: string; summary: string };
+    referenceStage?: string; referenceMessage?: string };
 };
 export type SpriteJob = {
   job_id: string;
@@ -95,12 +99,26 @@ export const workStateLabels: Record<WorkItemState, string> = {
   editing: '正在编辑',
   running: '正在生成',
   attention: '需要处理',
+  not_submitted: '未提交',
   completed: '已完成',
 };
+
+export function referenceProgress(task: StoredTask): string | undefined {
+  if (task.status !== 'running') return undefined;
+  const adapter = task.adapter;
+  if (adapter?.referenceStage === 'queued') return adapter.referenceMessage || '等待 PixelLab 账户空位';
+  if (adapter?.referenceStage === 'submitting') return '正在提交至 PixelLab';
+  if (adapter?.referenceStage === 'checking_receipt') return '正在核对原图提交记录';
+  return adapter?.referenceMessage;
+}
 
 export function spriteState(
   status: string,
 ): Pick<WorkItem, 'state' | 'detail' | 'stage'> {
+  if (status === 'queued')
+    return { state: 'running', detail: '等待 PixelLab 账户空位', stage: 1 };
+  if (status === 'not_submitted')
+    return { state: 'not_submitted', detail: '本次动画生成未提交', stage: 1 };
   if (status === 'exported')
     return { state: 'completed', detail: '动作素材已导出', stage: 2 };
   if (status === 'approved')
@@ -124,7 +142,7 @@ export function spriteWorkItem(job: SpriteJob, href: string): WorkItem {
   return {
     id: job.open_work_id ? `motion:${job.open_work_id}` : `sprite:${job.job_id}`,
     capabilityId: 'sprite-generator',
-    title: `${job.character_name || job.character_id || '角色'} · ${job.action_name || job.action_id || '动作'}`,
+    title: animationTitle(job.character_name || job.character_id, job.action_name || job.action_id),
     updatedAt: job.updated_at,
     savedAt: job.updated_at,
     href: job.open_work_id ? `${href}?work=${job.open_work_id}` : `${href}?job=${encodeURIComponent(job.job_id)}`,
@@ -223,7 +241,7 @@ export function taskWorkItems(
         ? input.operation === 'save-project' ? 'saved' : 'completed'
         : task.status === 'running'
           ? 'running'
-          : 'attention';
+          : task.status === 'not_submitted' ? 'not_submitted' : 'attention';
     for (const target of targets) {
       const previous = grouped.get(target.id);
       grouped.set(target.id, {
@@ -234,6 +252,7 @@ export function taskWorkItems(
           (input.operation === 'save-project' && task.status === 'completed' ? '交互物已保存，可继续编辑；尚未导出' : '') ||
           task.error ||
           task.refreshError ||
+          (task.capabilityId === 'reference-art' && referenceProgress(task)) ||
           (task.status === 'awaiting_configuration'
             ? '等待服务配置'
             : task.status === 'prepared'

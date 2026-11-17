@@ -70,6 +70,7 @@ class ProviderRequest:
     transparent_background: bool = True
     last_frame: bytes | None = None
     edit_frames: tuple[bytes, ...] | None = None
+    local_submission_id: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize simple values and reject invalid provider-independent input."""

@@ -69,7 +69,7 @@ Server 还提供只读资源 `workbench://manifest`。工具数量和版本以�
 - `failed`：任务失败，读取其错误并说明恢复路径。
 - `attention_required`：序列帧需要检查、审核或恢复；先查看结果和候选状态，不直接重生成。
 
-序列帧生成可能异步返回。此时调用 `workbench_get_task` 刷新原来的上游 job；不要再次调用 `workbench_run_task`。查询是幂等刷新，短暂轮询错误不会改写已有任务为虚假成功，也不会提交第二次生成。
+序列帧异步生成和复核期间，用原 `taskId` 调 `workbench_get_task`。开放动作可跨片段确认继续查询同一任务和版本。`presentation.reviewProgress` 提供候选、片段或完整动画、当前检查项 `phase`、已记录调用数 `callsUsed`、已完成调用数 `callsCompleted` 和单项上限 `maxCalls`。调用发送前即记入账本，发送结果未知也占用额度。复核期间照 `nextActions` 继续查询。片段 `readyForDecision` 或整段 `readyForApproval` 出现后，检查实际画面、注明结论，并按返回状态确认提醒。
 
 Image 2.6 同样先返回已持久化的 running taskId，再由后台进程提交和保存图片。使用同一 get_task/status 查询；进程退出或租约失效时提示 attention_required，不自动重试可能已计费的提交。任务完成后先检查图片，再明确采用；requiresAdoption=true 不代表已经修改交互物。
 
@@ -77,10 +77,10 @@ Image 2.6 同样先返回已持久化的 running taskId，再由后台进程提�
 
 ## 结果与展示数据
 
-`get_result` 接受 `taskId` 或序列帧原生 `jobId`，二选一；可用 `candidateIndex` 指定已有候选，`detail:true` 在文本内容中读取完整技术结果。无效候选明确报错，不回退到其他版本。查询只读，不创建任务或重新生图。
+`get_result` 接受 `taskId` 或序列帧原生 `jobId`，二选一。`candidateIndex` 定位准确候选并缩小摘要范围。查询只读。本地 `taskId` 读取上次保存的快照，`jobId` 直接读取原生服务当前状态。
 
 `presentation` 由共享运行时生成，包含 `title`、`state`、`summary`、精确 `viewPath/viewUrl`、`actions`、可用的图片/GIF `preview` 和技术详情入口。状态区分已准备、等待配置、处理中、等待检查、已保存和已导出；缺失产物会提示需要处理。它不承诺质量通过，也不编造百分比。
 
-MCP 默认文本只给简明展示信息；原有完整结果仍在 `structuredContent`，旧客户端可用 `get_result(detail:true)` 获取完整 JSON 文本。图像读取仍返回 MCP image 内容。原图链接定位原生成任务，移送结果另提供选择角色动作入口；序列帧链接携带 job 和 candidate；交互物仍通过 task 恢复项目。执行详情页面优先展示预览与可点击操作，日志和输入折叠。
+序列帧的文本和 `structuredContent` 默认都返回摘要，包含下一操作、每候选硬错误和提醒计数与首条内容、可用片段 token 及方案版本。设 `detail:true` 读取完整技术资料的第一页。可带 JSON Pointer `section` 直达内容，例如 `/result/orderedFrames`、`/result/stage/review`、`/result/work/plan` 或 `/artifacts`。续页带回相同参数和 `detailPage.nextOffset`、`detailPage.snapshot`。按顺序拼接 `detailPage.json` 并解析，直到 `nextOffset` 为 `null`。快照变化后重读该分区第一页。其他能力沿用原结果格式，`detail:true` 也把完整技术结果放入文本。图像通过 `workbench_read_artifact` 读取。执行详情页面提供预览与操作入口。
 
 WorkBuddy 首次开页、生成前检查、关闭/暂停保护和页面到达确认统一见[预览协议](agent-preview-follow.md)。读取结果、页面到达、实际看图和目标引擎运行是不同证据。

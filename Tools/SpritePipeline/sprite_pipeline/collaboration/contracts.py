@@ -635,7 +635,7 @@ class OpenWork(Contract):
     planning_authorized: bool = False
     auto_execute: bool = False
     planning_config: dict[str, Any] = Field(default_factory=dict)
-    planning_format_version: Literal[1, 2, 3] | None = None
+    planning_format_version: Literal[1, 2, 3, 4] | None = None
     end_targets: list[TargetImage] = Field(default_factory=list, max_length=4)
     visual_structure: dict[str,Any] | None = None
     generation_policy_version: Literal[1, 2, 3, 4, 5] | None = None

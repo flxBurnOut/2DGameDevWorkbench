@@ -7,9 +7,13 @@ import json
 
 from PIL import Image
 
-from ..errors import ValidationHarnessError
+from ..errors import InvalidPlanningResponse, ValidationHarnessError
 from .model_config import ModelRegistry, ModelConfiguration
 from .contracts import ExpertTurn, CoordinatorTurn, ObservationTurn, StrategyTurn
+from .planning_observations import drawing_limits, reference_appearance
+
+
+PLANNING_FORMAT_VERSION = 4
 
 
 ROLES = {
@@ -126,6 +130,31 @@ instruction changes no action requirement, budget, or generation strategy.
 '''
 
 
+FIELD_LIMIT_INSTRUCTIONS = '''
+Check these fields before returning the JSON object. question is a plain string:
+use a concrete question for consult and an empty string when no question is needed.
+Each findings[].text and findings[].evidence is at most 300 characters.
+For proposals and final plans choose frame_count from 4, 6, 8, 10, 12, 14, or 16.
+Each quality contract and checkpoint.reason is at most 180 characters.
+With checked_visual_structure, every stage's structure_usage.part_ids must contain
+at least one ID from allowed_structure_usage.part_ids. Without checked structure,
+set structure_usage to null. Preserve all underlying facts when shortening text.
+'''
+
+COORDINATOR_BRIEF_INSTRUCTIONS = '''
+For every final stage.prompt write exactly 12 short labelled lines. Budget the
+length of the actual decoded string, including headings, spaces and newlines.
+Aim below 800 characters to leave room under the hard 1000-character cap.
+Suggested content lengths after the heading, in characters:
+Appearance 55, Action 85, Camera 22, Facing 35, Drive 45, Support 45,
+Path 50, Timing 55, Poses 70, Relations 60, End 50, Boundary 45.
+Shift space between lines for the task's most important constraints. Use phrases
+with one job per line. State a fact once, and keep the complete explanation in
+the plan's other review fields. Keep the required facts, 12 labels and nonempty
+values. Before finalizing, shorten any stage that approaches the cap.
+'''
+
+
 PROP_INSTRUCTIONS = """
 Plan an animation of an inanimate interactable. Record evidence from the actual
 reference, including viewpoint, initial_state and part_ownership
@@ -192,25 +221,43 @@ class PlanningModel:
     def configuration(self):
         return self.registry.load().model_dump(mode='json')
 
-    def __call__(self, role, work, reference, *, question="", crop=None):
+    def __call__(self, role, work, reference, *, question="", crop=None, previous_draft=None):
         # Use the task's frozen profiles; later settings edits affect new tasks only.
         # Appearance and motion's first observations are independent. Later
         # consultations receive the actual peer proposals and supplied evidence.
         first = not any(m.get("role") == role for m in work.messages)
-        messages = [] if first and role in {"appearance", "motion"} else work.messages
-        if work.planning_format_version in (2,3):
+        independent = first and role in {"appearance", "motion"}
+        messages = [] if independent else work.messages
+        current_format = work.planning_format_version == PLANNING_FORMAT_VERSION
+        role_specific = work.planning_format_version in (2, 3, 4)
+        correction = None
+        if current_format:
+            call = work.planning_calls[-1] if work.planning_calls else {}
+            correction_call = call.get('corrects_call') if call.get('role') == role else None
+            feedback = {m['call']: m for m in work.messages if m['role'] == 'validator'}
+            if correction_call in feedback and feedback[correction_call].get('target_role') == role:
+                correction = feedback[correction_call]['response']['summary']
+            messages = [m for m in messages if m['role'] != 'validator'
+                        and (m.get('call') not in feedback or (m.get('call') == correction_call and m['role'] == role))]
+        if role_specific:
             # The shared internal ExpertTurn adds null slots that do not belong
             # to the role's transport schema. Do not teach peers those wrappers.
             # Saved transcripts remain untouched; non-null evidence is retained.
             messages=[{**m,'response':{k:v for k,v in m.get('response',{}).items()
                 if not (v is None and ((m.get('role') in {'appearance','motion'} and k in {'proposal','plan'})
                     or (m.get('role')=='strategy' and k=='plan')))}} for m in messages]
-        data = {"original_request": work.spec.model_dump(mode="json"),
+        reference_only = current_format and independent and not question and crop is None and reference_appearance(work, role)
+        original_request = work.spec.identity_fields() if reference_only else work.spec.model_dump(mode="json")
+        data = {"original_request": original_request,
                 "reference": work.character, "question": question,
                 "peer_messages": messages, "calls_remaining": work.spec.budget.max_planning_calls - len(work.planning_calls)}
-        if work.frame_budget:
-            data['hard_drawing_limits'] = work.frame_budget
+        if work.frame_budget and not reference_only:
+            data['hard_drawing_limits'] = drawing_limits(work) if current_format and independent else work.frame_budget
             data['frame_budget_scope'] = 'Per request and total drawn frames across all candidates; round each submission up separately. Playback holds cost no drawn frames.'
+        if correction is not None:
+            data['validation_feedback'] = correction
+            if previous_draft is not None:
+                data['previous_invalid_draft'] = previous_draft
         prop = work.spec.object_type == 'interactable'
         instructions = INSTRUCTIONS
         if work.generation_policy_version in (1,2,3,4,5):
@@ -244,25 +291,37 @@ FPS and each segment's actual frame count. Keep provider text within 1000 chars.
 Review allowance = candidate_count * (2*stage_count + 2).
 The two final calls inspect the WHOLE clip, including seams.
 """ + suffix
-        if work.frame_budget:
+        if work.frame_budget and not reference_only:
             instructions += '\nRespect hard_drawing_limits in TASK DATA in every proposal and final plan. Do not rely on the ending field for resource limits.'
         if prop and work.spec.interactable_skeleton is not None:
             instructions += SKELETON_INSTRUCTIONS
         role_instructions = PROP_ROLES.get(role, ROLES[role]) if prop else ROLES[role]
         if prop:
             instructions += "\nFor the labelled drawing brief, Facing is the view of the prop, Support is its mount, and Drive describes the changing part."
-        if work.planning_format_version in (1, 2, 3):
+        if work.planning_format_version in (1, 2, 3, 4):
             instructions = instructions.replace('Return only the ExpertTurn JSON requested by the transport.',
                 'Return only the role-specific JSON object requested by the transport schema.')
             role_instructions = role_instructions.replace('leave proposal/plan null.', 'omit proposal and plan fields.')
             formatting = FORMAT_INSTRUCTIONS
-            if work.planning_format_version in (2,3):
+            if role_specific:
                 formatting = formatting.replace('OUTPUT FORMAT version 1', f'OUTPUT FORMAT version {work.planning_format_version}').replace(
                     'top-level plan must be null.', 'omit top-level plan entirely; StrategyTurn has only proposal.')
             instructions += '\n' + formatting
+        if current_format:
+            instructions += FIELD_LIMIT_INSTRUCTIONS
+            instructions = instructions.replace('Never add a compression/repair model call.', '')
+            if role == 'coordinator' and work.generation_policy_version in (3, 4, 5):
+                instructions += COORDINATOR_BRIEF_INSTRUCTIONS
+        if reference_only:
+            role_instructions += (' This independent first observation describes the original character image. '
+                                  'Ground findings in visible reference evidence and report uncertainties about it.')
+        if correction is not None:
+            role_instructions += (' The local validator rejected your previous response for the reason in validation_feedback. '
+                                  'If previous_invalid_draft is supplied, use it as the draft to correct. '
+                                  'Return a complete corrected object for the same role and request, preserving the original evidence and limits.')
         if work.visual_structure:
             from .structure_control import INSTRUCTIONS as STRUCTURE_INSTRUCTIONS,planning_structure
-            data['checked_visual_structure']=planning_structure(work.visual_structure,version=2 if work.planning_format_version in (2,3) else 1)
+            data['checked_visual_structure']=planning_structure(work.visual_structure,version=2 if role_specific else 1)
             if prop:
                 data['parts_to_classify'] = [dict(id=p['id'], name=p['name'], visibility=p['visibility'])
                                              for p in work.visual_structure['data']['parts']]
@@ -271,7 +330,7 @@ The two final calls inspect the WHOLE clip, including seams.
                 instructions+='\nStructure relations use their own generation_hint slot. Do not replace motion.drive/support/trajectory with structure prose: those fields are sent directly. Cite only task-relevant visible relations; distinguish their observed geometry from proposed future motion.'
             elif work.generation_policy_version in (3,4,5):
                 instructions+='\nFor executable brief policy 3, also translate the relevant generation_hint into its Relations section. Detailed motion and key-pose fields are review context, not automatically appended to the drawing prompt. Preserve the visible-reference citations and their uncertainty.'
-            if work.planning_format_version in (2,3):
+            if role_specific:
                 instructions+='\nUse ONLY allowed_structure_usage IDs for structure_usage. not_control_evidence preserves uncertainties, not selectable facts. Do not copy its relations into control or repeatedly inspect an invisible detail merely to fill an optional label. Keep uncertainty when a feasible motion can be planned without it.'
         if work.spec.review_protocol == 'experts_v1':
             instructions = instructions.replace(
@@ -290,7 +349,7 @@ The two final calls inspect the WHOLE clip, including seams.
             content += [{"type": "input_text", "text": "Requested reference crop (nearest-neighbour enlargement): " + json.dumps(crop)},
                         {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(stream.getvalue()).decode(), "detail": "high"}]
         output_format=None
-        if work.planning_format_version==3 and 'default' in work.planning_config:
+        if work.planning_format_version in (3, 4) and 'default' in work.planning_config:
             config=ModelConfiguration.model_validate(work.planning_config);profile=config.roles.get(role,config.default)
             # Validated against one actual StrategyTurn request on 2026-10-27.
             # Do not infer support for other models or change saved v1/v2 tasks.
@@ -298,11 +357,11 @@ The two final calls inspect the WHOLE clip, including seams.
         receipt = {'requested_output_format':output_format} if output_format else {}
         try:
             schema = CoordinatorTurn if role == "coordinator" else ObservationTurn if role in {'appearance','motion'} else ExpertTurn
-            if role=='strategy' and work.planning_format_version in (2,3):schema=StrategyTurn
+            if role=='strategy' and role_specific:schema=StrategyTurn
             if role=='strategy' and work.generation_policy_version in (4,5):
                 from .planning_draft import DraftStrategyTurn
                 schema=DraftStrategyTurn
-            if work.planning_format_version==3 and work.visual_structure and role in {'strategy','coordinator'}:
+            if work.planning_format_version in (3, 4) and work.visual_structure and role in {'strategy','coordinator'}:
                 from .structure_control import bind_planning_schema
                 schema=bind_planning_schema(schema,work.visual_structure,
                     stage_type='StrategyDraftStage' if role=='strategy' and work.generation_policy_version in (4,5) else 'PlanStage')
@@ -315,4 +374,8 @@ The two final calls inspect the WHOLE clip, including seams.
                 **({'output_format':output_format} if output_format else {}))
             return turn.model_dump(mode="json"), {**receipt, **metadata}
         except ValidationHarnessError as exc:
-            raise ValidationHarnessError(str(exc).replace("视觉检查", "动作规划"), details={"model_receipt": {**receipt, **exc.details}}) from None
+            message = str(exc).replace('视觉检查', '动作规划')
+            details = {'model_receipt': {**receipt, **exc.details}}
+            if isinstance(exc, InvalidPlanningResponse):
+                raise InvalidPlanningResponse(message, details=details, draft=exc.draft) from None
+            raise ValidationHarnessError(message, details=details) from None

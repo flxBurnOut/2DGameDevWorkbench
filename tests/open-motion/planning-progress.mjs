@@ -10,6 +10,8 @@ export function verifyPlanningProgress(progress, requestKey) {
   assert.equal(identities, 2);
   const work = { status: 'planning', plan: null, messages: [], planning_calls: [] };
   const reply = (role, action, call) => ({ role, call, response: { action, summary: 'saved evidence' } });
+  work.messages.push({ ...reply('motion', 'propose'), reused_from: { revision: 1, call: 2, request_id: 'original-call' } });
+  assert.deepEqual(progress(work, 'motion'), { state: 'complete', label: '沿用第 1 版意见' });
   work.planning_calls.push({ role: 'appearance', state: 'completed' });
   work.messages.push(reply('appearance', 'inspect_reference', 1));
   assert.equal(progress(work, 'appearance').state, 'pending', 'a crop request is not a finished opinion');

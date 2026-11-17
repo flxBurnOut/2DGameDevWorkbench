@@ -52,6 +52,7 @@ from .models import (
 )
 from .presets import PresetRepository
 from .prompts import compose_generation_prompt
+from .providers.account import AccountSlotBusy, PixelLabSlot, animation_intent_id
 from .settings import HarnessSettings
 from .store import JobStore
 
@@ -415,6 +416,15 @@ class SpritePipelineService:
             ):
                 return max(0.0, float(value))
         return None
+
+    @staticmethod
+    def _available_credit(snapshot: dict[str, Any]) -> float:
+        balance = snapshot.get('balance')
+        credits = balance.get('credits') if isinstance(balance, dict) else None
+        usd = credits.get('usd') if isinstance(credits, dict) else None
+        if isinstance(usd, (int, float)) and not isinstance(usd, bool) and 0 < usd <= 2**53 and math.isfinite(usd):
+            return float(usd)
+        return 0.0
 
     @staticmethod
     def _pixellab_generation_units(
@@ -876,6 +886,8 @@ class SpritePipelineService:
         provider = get_provider(job.request.provider, self.settings)
         self.reconcile_saved_results(job_id)
         job = self.store.load(job_id)
+        if not self._same_generation_account(job, provider):
+            return job
         if any(c.attack_sequence for c in job.candidates):
             from .attack_sequence import FixedAttackGeneration
             return FixedAttackGeneration(self).advance(job_id,provider,wait=wait,candidate_index=candidate_index)
@@ -932,12 +944,20 @@ class SpritePipelineService:
                     timeout_seconds=max(180.0, self.settings.http_timeout_seconds + 60.0)
                 ):
                     locked_snapshot = self.store.load(job_id)
+                    if not self._same_generation_account(locked_snapshot, provider):
+                        return locked_snapshot
                     locked_candidate = self._candidate(locked_snapshot, index)
                     if locked_candidate.status == CandidateStatus.created:
-                        self._check_submission_quota(job_id, index, provider)
-                        self._submit_candidate(job_id, index, provider)
+                        try:
+                            self._check_submission_quota(job_id, index, provider)
+                            self._submit_candidate(job_id, index, provider)
+                        except AccountSlotBusy as exc:
+                            self._queue_candidate(job_id, index, exc, provider, selected_index=candidate_index)
+                            break
                 current = self.store.load(job_id)
                 candidate = self._candidate(current, index)
+                if current.status == JobStatus.not_submitted:
+                    break
             if candidate.status not in (CandidateStatus.provider_pending, CandidateStatus.saving) or not candidate.provider_job_id:
                 continue
             if current.generation_requested_at is None:
@@ -965,16 +985,30 @@ class SpritePipelineService:
 
         if provider.name != "pixellab" or getattr(provider, "get_balance", None) is None:
             return
-        snapshot = self._refresh_balance_with_provider(provider)
+        check_slot = getattr(provider, "check_account_slot", None)
+        if check_slot is not None:
+            check_slot()
+        try:
+            snapshot = self._refresh_balance_with_provider(provider)
+        except ProviderError as exc:
+            error = ValidationHarnessError('无法读取 PixelLab 余额，未提交动画。', details={'submission_created': False})
+            with self.store.locked_job(job_id) as job:
+                self._candidate(job, candidate_index).error = error.as_dict()
+                self._refresh_job_status(job)
+                job.touch('generation_balance_unavailable', candidate_index=candidate_index)
+            raise error from exc
         remaining = self._remaining_generations(snapshot)
         job = self.store.load(job_id)
+        first_submission = job.generation_requested_at is None or (
+            job.status == JobStatus.queued and not job.request.open_plan and not any(c.submitted_at for c in job.candidates)
+        )
         created_candidates = sum(
             candidate.status == CandidateStatus.created
             for candidate in job.candidates
         )
         candidates_to_reserve = (
             created_candidates
-            if job.generation_requested_at is None
+            if first_submission
             else 1
         )
         units_per_candidate = self._pixellab_generation_units(
@@ -984,11 +1018,12 @@ class SpritePipelineService:
         )
         if phase_frame_count is not None:
             units_per_candidate = self._pixellab_generation_units(job.character.cell_width,job.character.cell_height,phase_frame_count)
-            if job.generation_requested_at is None:
+            if first_submission:
                 # Existing jobs retain their reserved stage counts after rhythm defaults change.
                 stages=self._candidate(job,candidate_index).attack_sequence['stages']
                 units_per_candidate = sum(self._pixellab_generation_units(job.character.cell_width,job.character.cell_height,r['frame_count']) for r in stages)
         required_units = units_per_candidate * candidates_to_reserve
+        shortfall = remaining is not None and required_units > remaining and self._available_credit(snapshot) == 0
         with self.store.locked_job(job_id) as quota_job:
             if quota_job.quota_before is None:
                 quota_job.quota_before = snapshot
@@ -1002,7 +1037,7 @@ class SpritePipelineService:
                 requested_generation_units=required_units,
                 chargeable_submission_created=False,
             )
-            if remaining is not None and required_units > remaining:
+            if shortfall:
                 quota_candidate.error = {
                     "code": "insufficient_quota",
                     "message": "not enough PixelLab generations remain",
@@ -1014,7 +1049,7 @@ class SpritePipelineService:
                         "submission_created": False,
                     },
                 }
-                quota_job.status = JobStatus.attention_required
+                self._refresh_job_status(quota_job)
                 quota_job.touch(
                     "generation_blocked_by_quota",
                     candidate_index=candidate_index,
@@ -1033,7 +1068,7 @@ class SpritePipelineService:
                     remaining=remaining,
                     chargeable_submission_created=False,
                 )
-        if remaining is not None and required_units > remaining:
+        if shortfall:
             raise ValidationHarnessError(
                 "not enough PixelLab generation units remain for every requested candidate",
                 details={
@@ -1045,6 +1080,50 @@ class SpritePipelineService:
                     "submission_created": False,
                 },
             )
+
+    @staticmethod
+    def _same_generation_account(job, provider):
+        return not job.generation_account or job.generation_account == getattr(provider, 'account_fingerprint', None)
+
+    def _queue_candidate(self, job_id, index, error, provider, *, stage=None, selected_index=None):
+        with self.store.locked_job(job_id) as job:
+            candidate = self._candidate(job, index)
+            if candidate.status == CandidateStatus.created and (candidate.error or {}).get('code') == error.code:
+                return
+            if candidate.status == CandidateStatus.submitting:
+                candidate.status = CandidateStatus.created
+                candidate.submission_started_at = None
+                candidate.submission_attempts -= 1
+                if stage is not None and candidate.plan_execution:
+                    run = candidate.plan_execution.stages[stage]
+                    run.state = 'created'; run.submission_attempts = 0
+                elif stage is not None and candidate.attack_sequence:
+                    candidate.attack_sequence['stages'][stage].update(state='created', submission_attempts=0)
+            candidate.error = error.as_dict()
+            job.generation_requested_at = job.generation_requested_at or utc_now()
+            job.queued_candidate_index = selected_index
+            job.generation_account = job.generation_account or getattr(provider, 'account_fingerprint', None)
+            if job.plan_control:
+                job.plan_control.message = error.message
+            self._refresh_job_status(job)
+            job.touch('generation_waiting_for_account', candidate_index=index, stage=stage)
+
+    def _recover_submission_receipt(self, job, candidate, *, stage=None):
+        if job.request.provider != 'pixellab' or not self.settings.pixellab_api_key:
+            return None
+        slot = PixelLabSlot(self.settings, self.store)
+        if job.generation_account and job.generation_account != slot.key:
+            return None
+        receipt = slot.accepted_receipt(animation_intent_id(job.job_id, candidate.candidate_index, stage))
+        if receipt:
+            candidate.status = CandidateStatus.provider_pending
+            candidate.provider_job_id = receipt['jobId']
+            candidate.provider_status = receipt['status']
+            candidate.usage = receipt['usage']
+            candidate.submitted_at = candidate.submission_started_at or utc_now()
+            candidate.error = None
+            job.touch('provider_receipt_recovered', candidate_index=candidate.candidate_index, stage=stage)
+        return receipt
 
     def recover_completed_candidate(
         self,
@@ -1184,6 +1263,7 @@ class SpritePipelineService:
             transparent_background=snapshot.character.transparent_background,
             last_frame=last_frame,
             edit_frames=edit_frames,
+            local_submission_id=animation_intent_id(job_id, candidate_index),
         )
         provider_dir = self.store.job_dir(job_id) / "provider"
         intent_path = provider_dir / f"{snapshot_candidate.candidate_id}.submit.intent.json"
@@ -1229,6 +1309,7 @@ class SpritePipelineService:
                     details={"candidate_indices": pending_other},
                 )
             candidate.status = CandidateStatus.submitting
+            job.generation_account = job.generation_account or getattr(provider, 'account_fingerprint', None)
             if job.generation_requested_at is None:
                 job.generation_requested_at = utc_now()
                 job.touch("generation_requested")
@@ -1241,11 +1322,15 @@ class SpritePipelineService:
             job.touch("candidate_submitting", candidate_index=candidate_index, provider=provider.name)
         try:
             submission = provider.submit(request)
+        except AccountSlotBusy:
+            raise
         except ProviderError as exc:
             with self.store.locked_job(job_id) as failed_job:
                 failed = self._candidate(failed_job, candidate_index)
                 submission_unknown = bool(exc.details.get("submission_unknown"))
                 failed.status = CandidateStatus.submission_unknown if submission_unknown else CandidateStatus.failed
+                failed.provider_job_id = exc.details.get("provider_job_id")
+                failed.usage = (exc.details.get("response") or {}).get("usage") or {}
                 failed.error = exc.as_dict()
                 self._refresh_job_status(failed_job)
                 failed_job.touch(
@@ -1253,6 +1338,8 @@ class SpritePipelineService:
                     candidate_index=candidate_index,
                     error=exc.as_dict(),
                 )
+            if exc.details.get("submission_rejected"):
+                return
             raise
 
         # Persist the provider ID before optional audit records. Once this save
@@ -1270,6 +1357,7 @@ class SpritePipelineService:
             submitted.diagnostic_only = submission.diagnostic_only
             submitted.submitted_at = utc_now()
             submitted.status = CandidateStatus.provider_pending
+            submitted.usage = submission.raw_response.get("usage") or {}
             submitted.error = None
             submitted_job.status = JobStatus.provider_pending
             submitted_job.touch(
@@ -1385,7 +1473,7 @@ class SpritePipelineService:
                     )
                 polled.provider_status = result.provider_status
                 polled.last_polled_at = utc_now()
-                polled.usage = result.usage
+                polled.usage = result.usage or polled.usage
                 polled.error = result.error
                 if result.status == PollStatus.pending:
                     polled.status = CandidateStatus.provider_pending
@@ -2082,6 +2170,8 @@ class SpritePipelineService:
                     continue
                 if job.request.provider != "pixellab" or job.generation_requested_at is None:
                     continue
+                if job.generation_account and (not self.settings.pixellab_api_key or job.generation_account != PixelLabSlot(self.settings, self.store).key):
+                    continue
                 stale_before = utc_now() - timedelta(
                     seconds=max(120.0, self.settings.http_timeout_seconds * 2)
                 )
@@ -2098,6 +2188,13 @@ class SpritePipelineService:
                         for index in stale_indices:
                             candidate = self._candidate(stale_job, index)
                             if candidate.status != CandidateStatus.submitting or candidate.provider_job_id:
+                                continue
+                            stages = (candidate.attack_sequence or {}).get('stages', [])
+                            stage = next((i for i, run in enumerate(stages) if run['state'] == 'submitting'), None)
+                            receipt = self._recover_submission_receipt(stale_job, candidate, stage=stage)
+                            if receipt:
+                                if stage is not None:
+                                    stages[stage].update(state='pending', provider_job_id=receipt['jobId'], usage=receipt['usage'])
                                 continue
                             candidate.status = CandidateStatus.submission_unknown
                             candidate.error = {
@@ -2152,7 +2249,7 @@ class SpritePipelineService:
                 active = active or motion_active(job)
                 if active and self.settings.pixellab_api_key:
                     before_revision = job.revision
-                    advanced = self.generate_job(job_id, wait=False)
+                    advanced = self.generate_job(job_id, wait=False, candidate_index=job.queued_candidate_index)
                     if advanced.revision != before_revision:
                         summary["advanced"].append(
                             {"job_id": job_id, "status": advanced.status.value}
@@ -3762,6 +3859,19 @@ class SpritePipelineService:
     @staticmethod
     def _refresh_job_status(job: JobRecord) -> None:
         statuses = {candidate.status for candidate in job.candidates}
+        def rejected_before_submit(candidate):
+            error = candidate.error or {}
+            details = error.get('details') or {}
+            return error.get('code') == 'insufficient_quota' or details.get('submission_rejected') or details.get('submission_created') is False
+
+        blocked_before_submit = any(rejected_before_submit(c) for c in job.candidates)
+        no_art_or_receipt = all(
+            not (c.frames or c.provider_job_id or c.submitted_at or any(
+                isinstance(c.usage.get(unit), (int, float)) and c.usage[unit] > 0 for unit in ('usd', 'generations')
+            )) and
+            (c.status == CandidateStatus.created or (c.status == CandidateStatus.failed and rejected_before_submit(c)))
+            for c in job.candidates
+        )
         if job.export is not None:
             job.status = JobStatus.exported
         elif CandidateStatus.approved in statuses:
@@ -3774,6 +3884,12 @@ class SpritePipelineService:
             job.status = JobStatus.saving
         elif CandidateStatus.provider_pending in statuses:
             job.status = JobStatus.provider_pending
+        elif blocked_before_submit and no_art_or_receipt:
+            job.status = JobStatus.not_submitted
+        elif any(c.status == CandidateStatus.created and (c.error or {}).get('code') == AccountSlotBusy.code for c in job.candidates):
+            job.status = JobStatus.queued
+        elif blocked_before_submit:
+            job.status = JobStatus.attention_required
         elif all(candidate.status in (CandidateStatus.rejected, CandidateStatus.failed) for candidate in job.candidates):
             job.status = JobStatus.failed
         elif statuses & {

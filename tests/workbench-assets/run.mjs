@@ -412,10 +412,11 @@ try {
   for (const [id, operation, at] of [['animation-check', 'check', '2026-01-01'], ['animation-export', 'export', '2026-08-01']]) {
     await task(id, 'sprite-generator', { operation, jobId: 'snapshot-job' }, {
       'frames/candidate-01/frame_000.png': png,
-      'result.json': JSON.stringify({ jobId: 'snapshot-job', candidates: [{ candidateIndex: 1, status: 'approved' }], jobRecord: { action: { fps: 12, loop: false } } }),
+      'result.json': JSON.stringify({ jobId: 'snapshot-job', candidates: [{ candidateIndex: 1, status: 'approved' }], jobRecord: { character: { display_name: '红袍法师' }, action: { display_name: '红袍法师原地举杖施法循环', fps: 12, loop: false } } }),
     }, at);
   }
   const snapshotAsset = (await agentRequest(manifest, 'asset', { assetId: 'animation:snapshot-job:1' })).asset;
+  assert.equal(snapshotAsset.title, '红袍法师原地举杖施法循环');
   assert.equal(snapshotAsset.createdAt, '2025-01-01');
   assert.equal(snapshotAsset.taskId, 'animation-export');
   assert.deepEqual(snapshotAsset.taskIds, ['animation-start', 'animation-check', 'animation-export']);

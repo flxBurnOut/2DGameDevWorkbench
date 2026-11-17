@@ -11,6 +11,7 @@ from ..errors import ConflictError, HarnessError, ProviderError, ValidationHarne
 from ..jsonio import atomic_write_json, read_json
 from ..models import CandidateStatus, utc_now
 from ..providers.base import PollStatus, ProviderRequest
+from ..providers.account import AccountSlotBusy, animation_intent_id
 from .checkpoints import Checkpoints, checked_plan
 from .state_chain import transition
 
@@ -90,7 +91,8 @@ class PlanGeneration:
             request = ProviderRequest(reference_image=first, last_frame=last, prompt=prompt,
                                       frame_count=definition.frame_count,
                                       seed=stage_seed(candidate.seed, stage),
-                                      transparent_background=True)
+                                      transparent_background=True,
+                                      local_submission_id=animation_intent_id(job_id, index, stage))
             from .generation_conditions import submission_conditions
             conditions = submission_conditions(job.request.open_plan,stage,prompt,hashlib.sha256(first).hexdigest(),
                                                hashlib.sha256(last).hexdigest() if last else None)
@@ -113,6 +115,7 @@ class PlanGeneration:
                 if r.state != "created" or r.submission_attempts:
                     raise ConflictError("其他进程已提交此片段")
                 r.state = "submitting"; r.submission_attempts = 1
+                current.generation_account = current.generation_account or getattr(provider, 'account_fingerprint', None)
                 c.status = CandidateStatus.submitting; c.provider_job_id = None
                 c.submission_attempts = sum(v.submission_attempts+len(v.repairs) for v in c.plan_execution.stages)
                 c.submission_started_at = utc_now(); c.provider_name = provider.name
@@ -121,21 +124,29 @@ class PlanGeneration:
                 self.s._refresh_job_status(current); current.touch("plan_stage_submitting", candidate_index=index, stage=stage)
             try:
                 submission = provider.submit(request)
+            except AccountSlotBusy:
+                raise
             except Exception as exc:
                 unknown = not isinstance(exc, ProviderError) or bool(exc.details.get("submission_unknown"))
                 with self.store.locked_job(job_id) as current:
                     c = self.candidate(current, index); r = self.validate(current, c)[stage]
                     r.state = "unknown" if unknown else "failed"
                     c.status = CandidateStatus.submission_unknown if unknown else CandidateStatus.failed
+                    if isinstance(exc, ProviderError):
+                        c.provider_job_id = r.provider_job_id = exc.details.get("provider_job_id")
+                        c.usage = r.usage = (exc.details.get("response") or {}).get("usage") or {}
                     c.error = exc.as_dict() if isinstance(exc, ProviderError) else {"code": "submission_unknown", "message": "提交结果未知，不能自动重发"}
                     r.error = c.error; current.plan_control.enabled = False
                     current.plan_control.message = "请核对原请求" if unknown else "生成请求失败，原记录已保留"
                     self.s._refresh_job_status(current); current.touch("plan_submission_stopped", stage=stage)
+                if isinstance(exc, ProviderError) and exc.details.get("submission_rejected"):
+                    return False
                 raise
             # This receipt is durable before optional diagnostic files are saved.
             with self.store.locked_job(job_id) as current:
                 c = self.candidate(current, index); r = self.validate(current, c)[stage]
                 r.provider_job_id = submission.provider_job_id; r.state = "pending"
+                c.usage = r.usage = submission.raw_response.get("usage") or {}
                 c.provider_job_id = submission.provider_job_id; c.provider_status = submission.status
                 c.status = CandidateStatus.provider_pending; c.submitted_at = utc_now()
                 c.diagnostic_only = submission.diagnostic_only; c.error = None
@@ -158,6 +169,7 @@ class PlanGeneration:
                 with self.store.locked_job(job_id) as current:
                     c = self.candidate(current, index); r = self.validate(current, c)[stage]
                     r.state = "failed"; r.error = result.error; c.error = result.error
+                    c.usage = r.usage = result.usage or r.usage
                     c.status = CandidateStatus.failed; current.plan_control.enabled = False
                     current.plan_control.message = "此片段生成失败，已保留原请求"
                     self.s._refresh_job_status(current)
@@ -182,7 +194,7 @@ class PlanGeneration:
             raise ConflictError("片段文件与远端请求不匹配")
         with self.store.locked_job(job_id) as current:
             c = self.candidate(current, index); r = self.validate(current, c)[stage]
-            r.state = "complete"; r.actual_frame_count = len(frames); r.usage = saved.get("usage", {})
+            r.state = "complete"; r.actual_frame_count = len(frames); c.usage = r.usage = saved.get("usage") or r.usage
             c.status = CandidateStatus.saving if stage == len(c.plan_execution.stages) - 1 else CandidateStatus.created
             c.provider_completed_at = utc_now(); c.error = None
             current.plan_control.message = "片段已保存，准备检查实际姿势" if checked_plan(job) else "片段已保存，完整动作需人工确认"
@@ -283,7 +295,10 @@ class PlanGeneration:
     def advance(self, job_id, provider, *, wait=False, candidate_index=None, allow_submit=True):
         with self.store.operation_lock(job_id, "open_plan", timeout_seconds=0.2):
             job = self.store.load(job_id)
-            targets = [candidate_index] if candidate_index is not None else [c.candidate_index for c in job.candidates]
+            if not self.s._same_generation_account(job, provider):
+                return job
+            selected_index = candidate_index if candidate_index is not None else job.queued_candidate_index
+            targets = [selected_index] if selected_index is not None else [c.candidate_index for c in job.candidates]
             for index in targets:
                 existing = self.candidate(self.store.load(job_id), index)
                 if existing.frames and job.request.open_plan.plan.quality:
@@ -312,10 +327,18 @@ class PlanGeneration:
                         if run.state == "submitting":
                             with self.store.locked_job(job_id) as current:
                                 current_candidate = self.candidate(current, index)
-                                current_candidate.plan_execution.stages[stage].state = "unknown"
-                                current_candidate.status = CandidateStatus.submission_unknown
-                                current.plan_control.enabled = False
-                                current.plan_control.message = "提交曾被中断，请核对原请求；不会重发"
+                                current_run = current_candidate.plan_execution.stages[stage]
+                                receipt = self.s._recover_submission_receipt(current, current_candidate, stage=stage)
+                                if receipt:
+                                    current_run.provider_job_id = receipt['jobId']
+                                    current_run.usage = receipt['usage']
+                                    current_run.state = 'pending'
+                                    current.plan_control.message = "已恢复上游任务回执，继续读取原片段"
+                                else:
+                                    current_run.state = "unknown"
+                                    current_candidate.status = CandidateStatus.submission_unknown
+                                    current.plan_control.enabled = False
+                                    current.plan_control.message = "提交曾被中断，请核对原请求；不会重发"
                                 self.s._refresh_job_status(current)
                         break
                     if run.state == "created":
@@ -323,6 +346,9 @@ class PlanGeneration:
                             break
                         try:
                             if not self.submit(job_id, index, stage, provider): break
+                        except AccountSlotBusy as exc:
+                            self.s._queue_candidate(job_id, index, exc, provider, stage=stage, selected_index=selected_index)
+                            return self.store.load(job_id)
                         except (ValidationHarnessError,ConflictError) as exc:
                             self.stop_stage(job_id,index,stage,exc)
                             raise

@@ -80,6 +80,30 @@ def ready(workspace, value=None):
     return workspace.plan(w.id)
 
 
+def test_waiting_for_pixellab_account_does_not_start_a_plan_stage(setup, monkeypatch):
+    from sprite_pipeline.providers.account import AccountSlotBusy
+
+    service, workspace, _, provider, _ = setup
+    work = ready(workspace)
+    work = workspace.start(work.id, work.revision, work.plan_sha256)
+    busy = True
+
+    def account_slot():
+        if busy:
+            raise AccountSlotBusy('等待 PixelLab 账户空位')
+
+    monkeypatch.setattr(provider, 'check_account_slot', account_slot, raising=False)
+    monkeypatch.setattr(provider, 'get_balance', lambda: {'subscription': {'generations': 20}}, raising=False)
+    provider.name = 'pixellab'
+    queued = PlanGeneration(service).advance(work.job_id, provider)
+    assert queued.status == 'queued' and not provider.requests
+    stage = queued.candidates[0].plan_execution.stages[0]
+    assert stage.state == 'created' and stage.submission_attempts == 0
+    busy = False
+    result = PlanGeneration(service).advance(work.job_id, provider)
+    assert len(provider.requests) == 1 and result.candidates[0].provider_job_id == 'remote-000001'
+
+
 @pytest.mark.parametrize("description", ["拔出地面上的长剑，最后高举长剑", "受惊后倒退两步，最后保持惊讶姿势", "摘下帽子弯腰致意，最后保持鞠躬"])
 def test_novel_tasks_complete_without_presets(setup, description):
     service, workspace, planner, provider, fixture = setup

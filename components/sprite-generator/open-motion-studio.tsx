@@ -454,7 +454,8 @@ function OpenMotionStudio({
               title: work.plan?.title || work.spec.description.slice(0, 60),
               detail: work.job?.plan_control.message || work.message,
               state:
-                active || work.status === 'planning'
+                work.job?.status === 'not_submitted' ? 'not_submitted'
+                  : active || work.status === 'planning' || work.job?.status === 'queued'
                   ? 'running'
                   : approved
                     ? 'completed'
@@ -526,7 +527,7 @@ function OpenMotionStudio({
         setStep(1);
         return;
       }
-      if (!configuration?.planning_configured) {
+      if (!work && !configuration?.planning_configured) {
         settingsRef.current?.setAttribute('open', '');
         throw new Error(
           '先配置规划模型，再制定方案。PixelLab 用于后续动画制作。',

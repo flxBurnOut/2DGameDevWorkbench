@@ -10,7 +10,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
-import type { StoredTask } from '@/lib/workbench/work-items';
+import { referenceProgress, type StoredTask } from '@/lib/workbench/work-items';
 import { propProvenanceLabel } from './prop-reference-tools';
 import type { Asset } from '@/features/interactable-editor/contract.mjs';
 import {
@@ -25,9 +25,12 @@ const labels: Record<string, string> = {
   running: '正在生成',
   completed: '原图已保存',
   failed: '生成失败',
+  attention_required: '需要核对原请求',
+  not_submitted: '未提交',
   awaiting_configuration: '等待配置',
   prepared: '尚未生成',
 };
+const taskStatus = (task: StoredTask) => referenceProgress(task) || labels[task.status] || task.status;
 const taskName = (task: StoredTask) =>
   typeof task.input?.name === 'string' ? task.input.name : '物品原图';
 const artifactUrl = (path: string) =>
@@ -320,7 +323,7 @@ export function PropArtPanel({
               <Paintbrush size={16} />
             )}
             {selected?.status === 'running'
-              ? '正在生成物品原图'
+              ? referenceProgress(selected) || '正在生成物品原图'
               : '生成一张物品原图'}
           </button>
           <small>
@@ -364,7 +367,7 @@ export function PropArtPanel({
           {settingsMessage && <output>{settingsMessage}</output>}
           {selected && (
             <span aria-live="polite">
-              {labels[selected.status] || selected.status}
+              {taskStatus(selected)}
             </span>
           )}
           {png && (
@@ -418,12 +421,12 @@ export function PropArtPanel({
               <NativeSelectOption value="">选择已保存的生成记录</NativeSelectOption>
               {selected && !tasks.some((t) => t.id === selected.id) && (
                 <NativeSelectOption value={selected.id}>
-                  {taskName(selected)} · {labels[selected.status]}
+                  {taskName(selected)} · {taskStatus(selected)}
                 </NativeSelectOption>
               )}
               {tasks.filter(isPropArtTask).map((task) => (
                 <NativeSelectOption key={task.id} value={task.id}>
-                  {taskName(task)} · {labels[task.status] || task.status}
+                  {taskName(task)} · {taskStatus(task)}
                 </NativeSelectOption>
               ))}
             </NativeSelect>

@@ -21,6 +21,11 @@ KIND_LABELS = {"character": "角色原图", "animation": "动画", "map": "地�
 ACTION_LABELS = {"edit_reference": "编辑原图", "generate": "制作动作", "edit": "继续编辑", "review": "检查动画", "export": "导出", "download": "导出原图"}
 
 
+def animation_title(character: str, action: str) -> str:
+    character, action = character.strip(), action.strip()
+    return action if character.casefold() in action.casefold() else f"{character} · {action}"
+
+
 def animation_actions(material: dict[str, Any], qa_version: str) -> tuple[str, list[str]]:
     """Offer only operations supported by the durable candidate state."""
     current = material.get("qa_ready") and material.get("qa_algorithm_version") == qa_version
@@ -88,7 +93,7 @@ class ArtworkLibrary:
                     current = material.get("qa_ready") and material.get("qa_algorithm_version") == QA_ALGORITHM_VERSION
                     result.append({
                         "id": f"animation:{row['job_id']}:{material['candidate_index']}",
-                        "kind": "animation", "title": f"{row.get('character_name') or row['character_id']} · {row.get('action_name') or row['action_id']}",
+                        "kind": "animation", "title": animation_title(row.get('character_name') or row['character_id'], row.get('action_name') or row['action_id']),
                         "character_id": row["character_id"], "job_id": row["job_id"],
                         "candidate_index": material["candidate_index"],
                         "subtitle": f"{material['frame_count']} 帧 · 版本 {material['candidate_index']}",

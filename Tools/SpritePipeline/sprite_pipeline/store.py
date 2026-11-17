@@ -179,7 +179,7 @@ class JobStore:
             and job.generation_requested_at is not None
             and any(
                 candidate.status.value in active_provider_states
-                or (candidate.error or {}).get("code") == "insufficient_quota"
+                or (candidate.error or {}).get("code") in {"insufficient_quota", "pixellab_account_queued"}
                 or (
                     candidate.provider_status == "completed"
                     and bool(candidate.provider_job_id)

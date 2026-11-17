@@ -25,7 +25,7 @@ export function ExpertRecord({ work }: { work: MotionWork }) {
       <div className="motion-expert-record">
         {work.messages.map((m, i) => (
           <article key={i}>
-            <b>{motionPlanningRoles[m.role]} · {actions[m.response.action]}</b>
+            <b>{motionPlanningRoles[m.role]} · {m.reused_from ? `沿用第 ${m.reused_from.revision} 版意见` : actions[m.response.action]}</b>
             <p>{m.response.summary}</p>
             {m.response.question && <p>{m.response.question}</p>}
           </article>

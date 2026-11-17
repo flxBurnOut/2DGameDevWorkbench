@@ -86,7 +86,7 @@ export function WorkItemRow({ item }: { item: WorkItem }) {
             ? '查看进度'
             : item.state === 'completed'
               ? '查看作品'
-              : '继续制作'}
+              : item.state === 'not_submitted' ? '查看记录' : '继续制作'}
         <ArrowRight size={14} />
       </a>
       {Boolean(item.outputs?.length) && (
@@ -113,10 +113,9 @@ function ProductionRecords() {
   const wb = useWorkbench();
   const [history, setHistory] = useState(false);
   const { offline } = useRecordSummary();
-  const active = wb.items.filter((item) => item.state !== 'completed');
-  const shown = history
-    ? wb.items.filter((item) => item.state === 'completed')
-    : active;
+  const active = wb.items.filter((item) => item.state !== 'completed' && item.state !== 'not_submitted');
+  const finished = wb.items.filter((item) => item.state === 'completed' || item.state === 'not_submitted');
+  const shown = history ? finished : active;
   return (
     <>
       <Dialog open={wb.queueOpen} onOpenChange={wb.setQueueOpen}>
@@ -141,7 +140,7 @@ function ProductionRecords() {
                 aria-pressed={history}
                 onClick={() => setHistory(true)}
               >
-                已完成 · {wb.items.length - active.length}
+                历史 · {finished.length}
               </button>
             </fieldset>
             <Tooltip label={wb.refreshing ? '正在刷新' : '刷新记录'}>
@@ -171,7 +170,7 @@ function ProductionRecords() {
                 <Layers3 size={28} />
                 <p>
                   {history
-                    ? '完成并导出的作品会出现在这里。'
+                    ? '暂无历史记录。'
                     : '还没有正在制作的作品。'}
                 </p>
               </div>

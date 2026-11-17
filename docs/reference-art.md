@@ -9,7 +9,7 @@
 1. 用 `npm run dev` 启动完整工作台，在 `/player` 选择“制作角色原图”。此能力复用 SpritePipeline 服务；首次安装仍使用 `npm run sprite-pipeline:setup`，同时安装独立 PixelProp 包，无需增加一套服务。
 2. 在原图的 PixelLab 设置中保存 Key；如果已在序列帧设置中保存，无需再输入。两处使用同一个服务实例的受保护凭据，页面只显示配置状态。环境变量 `PIXELLAB_API_KEY` 可覆盖本地存储，启用覆盖时不能从界面修改。
 3. 输入角色描述、可选名称和朝向，点击“生成一张原图”。可选原生 64×64 粗像素或 128×128 精细像素（默认），侧视、透明背景，提示词原样传给 PixelLab；不额外调用付费提示词增强。每次生成都是新的付费任务。
-4. 等待完成，检查人物、武器、朝向及边缘。页面按整数倍显示，下载保持原始 PNG。
+4. 需要自动核对时，勾选生成按钮上方的视角与朝向检查。它用当前 reviewer 视觉模型查看生成的 PNG，一张图至多调用一次，另计模型用量。检查员仅看图，工具将实际视角、朝向与要求作比较。页面和 Agent 结果显示一致、不符或待核实。未勾选时直接人工核对；视角不符或尚未核实时，移送前填写实际观察及采用理由。
 5. 点击“用于制作序列帧”。原图被创建为可复用角色预设，随后在序列帧生成页预选该角色、显示参考图、名称与外观提示词。选择动作后再主动生成动画。
 
 重复移送同一原图会复用相同角色 ID，不重复创建角色；若相同 ID 的内容已发生变化则拒绝覆盖。移送验证源任务身份、登记产物、SHA-256、图片尺寸与 Alpha。它不缩放、不重画、不提交动画。
@@ -30,14 +30,13 @@
 
 ## PixelLab 协议与任务恢复
 
-依据 [PixelLab 官方文档](https://api.pixellab.ai/v2/docs) 和 [OpenAPI](https://api.pixellab.ai/v2/openapi.json)：
+余额和任务协议取自 [PixelLab v2 OpenAPI](https://api.pixellab.ai/v2/openapi.json)。
 
-- 提交：`POST /v2/create-image-pixflux-background`，传递 description、image_size、no_background、view、direction 和可选 seed。
-- 接收 `background_job_id` 后记录到 runtime task 的 `adapter.referenceJobId`，状态为 `running`。
-- 查询：`GET /v2/background-jobs/{id}`，完成图位于 `last_response.image.base64`。页面约每 6 秒查询，适配器限制两次查询至少间隔 5 秒。
-- 查询不会再次提交生图。进程重启后可从任务记录继续查询；必须在上游任务过期前取回并保存产物。页面关闭期间没有额外常驻轮询器。
-- POST 超时或响应丢失时不自动重试，明确报告结果无法确认；先检查 PixelLab 账户任务再决定是否重新生成。
-- 无 Key 或服务不可用时停在 `awaiting_configuration`；它不代表已生成。配置完成后需要明确发起新的生成。
+- 工作台用已保存的任务 ID 排队。SpritePipeline 后台按凭据协调原图与动画的上游任务，原图队列按加入顺序推进。关闭页面或重启服务后仍可继续处理同一请求。
+- 获得空位后读取 `GET /v2/balance` 的 `subscription.generations` 和 `credits.usd`。可核实余额不足时标记 `not_submitted`。原图提交使用 `POST /v2/create-image-pixflux-background`，接收任务 ID 后通过 `GET /v2/background-jobs/{id}` 查询并保存结果。精确费用以上游账务为准。
+- 上游明确拒绝、没有受理标识、用量和原图时，任务显示「未提交」。首页「继续制作」与待处理计数略过这些记录。历史、原图工具和 Agent 查询仍可查看原因。旧记录的明确额度和并发拒绝按相同状态显示。
+- 已接收的上游 ID 和用量保留在原任务。上游返回 429 且明确未接单时继续等空位。超时或回执不明时保存待核对状态，后续只读取同一请求。读到已受理 ID 后跟进原任务，已扣额但缺图的任务仍可查看问题。
+- Key 未配置或本机服务未连接时显示 `awaiting_configuration`。已排队的请求保留提交时的凭据绑定，恢复原凭据后继续处理。
 
 成功产物为 `outputs/<task-id>/reference.png` 与 `result.json`。用户原始提示词、名称、朝向及上游任务 ID 保存在 `work/tasks/<task-id>.json`。图像尺寸不符、完全透明、缺少透明背景或不可解码时不标记成功。
 
@@ -52,7 +51,7 @@ npm run workbench -- run reference-art --input examples/requests/reference-art.j
 npm run workbench -- status <task-id> --json
 ```
 
-生成输入：`operation: generate`，必需 prompt，可选 name、facing（right/left）及 seed、size（64/128）。移送输入包含 `operation: transfer` 与 `sourceTaskId`，可选不超过 300 字符的 identityDescription 仅描述外观；名称、提示词和朝向来自已保存的源任务。移送任务产出 `result.json`，包含 characterId、sourceTaskId 和序列帧打开链接。MCP 通过通用工作台任务工具执行；使用 get_result 读取移送的 characterId，使用 read_artifact 查看原图，无需直接读取磁盘 JSON。
+生成输入：`operation: generate`，必需 prompt，可选 name、facing（right/left）及 seed、size（64/128）。设 `checkOrientation: true` 授权一次视觉核对；`result.json.orientationReview` 保存核对结论和回执。对需要人工核对的新生成原图，`transfer` 同时提交 `confirmation.note`（至少 4 字）。移送输入包含 `operation: transfer` 与 `sourceTaskId`，可选不超过 300 字符的 identityDescription 仅描述外观；名称、提示词和朝向来自已保存的源任务。移送任务产出 `result.json`，包含 characterId、sourceTaskId 和序列帧打开链接。MCP 通过通用工作台任务工具执行；使用 get_result 读取移送的 characterId，使用 read_artifact 查看原图，无需直接读取磁盘 JSON。
 
 本地导入输入为 `operation: import`，`sourceImagePath`（仓库内 PNG 路径）与 `sourceImage`（严格的 `data:image/png;base64,...`）二选一，二者使用同一尺寸、像素和透明度校验。`sourceImage` 的原始字节上限为 2,000,000；最多 2,666,690 个字符包含 data URL 前缀。`prompt` 是导入时补充的展示描述，`result.json` 将其标为 `description-added-on-import`，不冒充原始生成提示词；`model=null`、`providerCalled=false` 和实际字节哈希表明本次只保存已有图片。
 

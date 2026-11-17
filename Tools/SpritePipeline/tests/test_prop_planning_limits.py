@@ -104,6 +104,9 @@ def test_insufficient_before_first_model_and_unknown_quota(tmp_path, monkeypatch
     monkeypatch.setattr(service,'refresh_pixellab_balance',unavailable)
     limits=planning_limits(service,work)
     assert limits['remaining_units'] is None and limits['max_frames_per_request']==6 and limits['max_total_frames']==10
+    monkeypatch.setattr(service,'refresh_pixellab_balance',lambda:{'balance':{'subscription':{'generations':0},'credits':{'usd':1.25}}})
+    limits=planning_limits(service,work)
+    assert limits['remaining_units'] is None and limits['max_frames_per_request']==6 and limits['max_total_frames']==10
 
 
 def test_total_frames_and_per_call_rounding(tmp_path):

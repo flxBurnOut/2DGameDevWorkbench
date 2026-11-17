@@ -8,7 +8,7 @@ Forge 论文分支保留序列帧、交互物、图片局部调整与 Godot 交�
 | 把已有素材接入游戏，或编写 Godot 代码 | [游戏工程 Skill](.agents/skills/forge-game-engineering/SKILL.md)，以及目标工程自身的指导文件 |
 | 修改工作台代码、接口、测试或配置 | [开发导航](workbench/guides/development.md)，按受影响模块查契约和测试 |
 | 修改 Agent 指导或 Skill | [指导文档维护](workbench/guides/guidance-maintenance.md) |
-| 记录、跟进或关闭工程问题 | 统一更新[问题清单](docs/问题清单/README.md)，按[目录指引](docs/问题清单/AGENTS.md)记录 Git 提交编号及带时区的时间。同一问题沿用原条目，详细报告和方案归入对应主题子目录。 |
+| 记录、跟进或关闭工程问题 | 先读[目录指引](docs/问题清单/AGENTS.md)。[问题清单](docs/问题清单/README.md)只做索引；每批记录按日期与主题放入 `docs/问题清单/YYYY-MM-DD-主题/`，写明 Git 提交编号及带时区的时间。同一问题沿用原编号，后续变化记入新批次目录并更新索引。 |
 | MCP 连接、指导读取或宿主工具排错 | [客户端接入](docs/agent-clients.md) |
 | 安装、启动、服务排错或数据恢复 | [操作手册](docs/operations-manual.md)中的对应章节 |
 | 讨论方案、解释功能或梳理需求 | [对话指南](workbench/conversation-guide.md)，按需要查询现状 |

@@ -13,11 +13,13 @@ draw.rounded_rectangle((116, 96, 396, 460), radius=24, fill='#315980', outline='
 draw.rectangle((152, 132, 188, 420), fill='#527e9b')
 draw.rectangle((240, 168, 352, 204), fill='#f4c358')
 draw.rectangle((240, 224, 352, 260), fill='#a77a30')
-source = png_bytes(image)
-(root / 'battery.png').write_bytes(source)
+# Keep the committed source bytes: PNG compression differs between zlib builds.
+if not (root / 'battery.png').exists():
+    (root / 'battery.png').write_bytes(png_bytes(image))
+source = (root / 'battery.png').read_bytes()
 recipe = Recipe()
 (root / 'recipe.json').write_text(json.dumps(recipe.normalized(), indent=2) + '\n')
 result = convert(source, recipe)
 (root / 'battery-128.png').write_bytes(result.png)
-(root / 'golden.json').write_text(json.dumps({'sourceSha256': result.report['sourceSha256'], 'sha256': result.report['sha256'],
+(root / 'golden.json').write_text(json.dumps({'sourceSha256': result.report['sourceSha256'], 'pixelSha256': result.report['pixelSha256'],
     'recipeSha256': result.report['recipeSha256'], 'algorithmVersion': result.report['algorithmVersion']}, indent=2) + '\n')

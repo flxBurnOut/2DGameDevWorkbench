@@ -11,13 +11,32 @@ from pixel_prop.report import png_bytes
 EXAMPLES = Path(__file__).resolve().parents[1] / 'examples'
 
 
+def decoded(data):
+    with Image.open(io.BytesIO(data)) as image:
+        return image.convert('RGBA').tobytes()
+
+
+def interior_holes(data):
+    """Transparent pixels not reachable from the canvas border, i.e. holes inside the subject."""
+    with Image.open(io.BytesIO(data)) as image:
+        rgba = image.convert('RGBA'); w, h = rgba.size; p = rgba.load()
+    seen, stack = set(), [(x, y) for x in range(w) for y in (0, h-1)] + [(x, y) for y in range(h) for x in (0, w-1)]
+    while stack:
+        x, y = stack.pop()
+        if (x, y) in seen or not (0 <= x < w and 0 <= y < h) or p[x, y][3]: continue
+        seen.add((x, y)); stack += [(x+1, y), (x-1, y), (x, y+1), (x, y-1)]
+    return sum(1 for y in range(h) for x in range(w) if not p[x, y][3] and (x, y) not in seen)
+
+
 def test_golden_and_repeatability():
     source = (EXAMPLES / 'battery.png').read_bytes()
     expected = json.loads((EXAMPLES / 'golden.json').read_text())
     results = [convert(source, Recipe()) for _ in range(3)]
     for result in results:
-        assert result.png == (EXAMPLES / 'battery-128.png').read_bytes()
+        # Pixels are pinned across platforms; PNG bytes may differ between zlib builds.
+        assert decoded(result.png) == decoded((EXAMPLES / 'battery-128.png').read_bytes())
         assert {key: result.report[key] for key in expected} == expected
+        assert interior_holes(result.png) == 0
         assert result.report['semiTransparentPixels'] == 0
         assert result.report['colors'] <= 24
         assert result.report['bbox'][3] == 124
@@ -85,6 +104,7 @@ def test_outline_preserves_interior_and_inspect():
             elif q[3]: assert q == (1, 2, 3, 255)
     report = inspect(outlined.png)
     assert report['sha256'] == outlined.report['sha256']
+    assert report['pixelSha256'] == outlined.report['pixelSha256']
     assert report['semiTransparentPixels'] == 0
 
 
@@ -111,3 +131,44 @@ def test_large_palette_search_matches_exhaustive_oklab():
     for rgb in [(i, (i*11)%256, (i*47)%256) for i in range(256)]:
         lab = oklab(rgb)
         assert search(lab) == min(range(len(labs)), key=lambda i: sum((lab[a]-labs[i][a])**2 for a in range(3)))
+
+
+def test_pixel_hash_ignores_png_compression():
+    from pixel_prop import pixel_digest
+    result = convert((EXAMPLES / 'battery.png').read_bytes(), Recipe())
+    with Image.open(io.BytesIO(result.png)) as image:
+        other = io.BytesIO(); image.save(other, format='PNG', compress_level=1)
+    assert other.getvalue() != result.png
+    assert pixel_digest(other.getvalue()) == pixel_digest(result.png) == result.report['pixelSha256']
+
+
+def test_isolated_cleanup_recolours_interior_and_removes_detached_specks():
+    from pixel_prop.pipeline import cleanup
+    image = Image.new('RGBA', (9, 9))
+    for x in range(1, 6):
+        for y in range(1, 6):
+            image.putpixel((x, y), (10, 20, 30, 255))
+    image.putpixel((3, 3), (200, 0, 0, 255))   # odd pixel inside the body
+    image.putpixel((1, 1), (0, 200, 0, 255))   # odd corner pixel on the silhouette
+    image.putpixel((8, 8), (5, 5, 5, 255))     # detached speck
+    image.putpixel((7, 6), (9, 9, 9, 255)); image.putpixel((6, 7), (9, 9, 9, 255))  # diagonal pair of different colours
+    settings = {**Recipe().normalized(), 'outline': 'none'}
+    out = cleanup(image, settings)
+    assert out.getpixel((3, 3)) == (10, 20, 30, 255)
+    assert out.getpixel((1, 1)) == (10, 20, 30, 255)
+    assert out.getpixel((8, 8))[3] == 0
+    assert out.getpixel((7, 6)) == (9, 9, 9, 255), 'diagonally connected pixels are not detached specks'
+
+
+def test_default_recipe_never_opens_holes_in_shaded_art():
+    from PIL import ImageDraw, ImageFilter
+    image = Image.new('RGBA', (1024, 1024)); draw = ImageDraw.Draw(image)
+    for r in range(380, 0, -2):
+        c = int(60 + 150 * (1 - r / 380))
+        draw.ellipse((512 - r, 560 - r * 0.8, 512 + r, 560 + r * 0.8), fill=(c, int(c * 0.6), 40, 255))
+    for i in range(40):
+        draw.line((300 + i * 10, 300, 320 + i * 10, 820), fill=(200, 180, 90, 255), width=3)
+    source = png_bytes(image.filter(ImageFilter.GaussianBlur(1.5)))
+    for resample in ('area', 'dominant', 'nearest'):
+        result = convert(source, Recipe(resample=resample))
+        assert interior_holes(result.png) == 0, resample

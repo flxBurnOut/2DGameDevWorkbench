@@ -12,13 +12,24 @@ def png_bytes(image):
     return output.getvalue()
 
 
+def pixel_sha256(image):
+    """Hash of decoded RGBA pixels; unlike the PNG file hash it does not depend on the zlib build."""
+    rgba = image.convert('RGBA')
+    return hashlib.sha256(b'RGBA' + rgba.width.to_bytes(4, 'big') + rgba.height.to_bytes(4, 'big') + rgba.tobytes()).hexdigest()
+
+
+def pixel_digest(data):
+    with Image.open(io.BytesIO(data)) as image:
+        return pixel_sha256(image)
+
+
 def diagnostics(image):
     rgba = image.convert('RGBA')
     pixels = list(rgba.getdata())
     semi = sum(0 < p[3] < 255 for p in pixels)
     visible = sum(p[3] > 0 for p in pixels)
     bbox = rgba.getchannel('A').getbbox()
-    return {'width': rgba.width, 'height': rgba.height,
+    return {'width': rgba.width, 'height': rgba.height, 'pixelSha256': pixel_sha256(rgba),
             'colors': len({p[:3] for p in pixels if p[3]}),
             'semiTransparentPixels': semi, 'semiTransparentRatio': semi / max(1, visible),
             'visiblePixels': visible, 'bbox': list(bbox) if bbox else None}

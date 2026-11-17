@@ -6,7 +6,7 @@ import io
 import os
 import re
 from PIL import Image
-from pixel_prop import ALGORITHM_VERSION, Recipe, convert
+from pixel_prop import ALGORITHM_VERSION, Recipe, convert, pixel_digest
 from .errors import ConflictError, ValidationHarnessError
 from .jsonio import inside, read_json
 
@@ -132,6 +132,11 @@ def replay(service, task, result, artifact):
         rebuilt, origin = conversion(service, task['input'])
     except (ConflictError, ValidationHarnessError) as exc:
         raise ConflictError('源图或配方已变化，请重新转换。' + str(exc)) from exc
-    if (recipe != rebuilt.report['recipe'] or report != rebuilt.report
-            or provenance != origin or rebuilt.report['sha256'] != result['sha256']):
+    # PNG file bytes depend on the zlib build, so compare decoded pixels and every other
+    # report field. The stored file itself is pinned by result.sha256 at registration.
+    file_hash = lambda value: {key: item for key, item in value.items() if key != 'sha256'}  # noqa: E731
+    stored = pixel_digest(artifact('reference.png').read_bytes())
+    if (recipe != rebuilt.report['recipe'] or file_hash(report) != file_hash(rebuilt.report)
+            or provenance != origin or report.get('sha256') != result['sha256']
+            or stored != rebuilt.report['pixelSha256']):
         raise ConflictError('源图、配方或转换工具已变化，请重新转换')

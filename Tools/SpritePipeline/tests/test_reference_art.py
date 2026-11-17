@@ -317,6 +317,18 @@ def test_conversion_preview_replay_tampering_and_palette(service, tmp_path, monk
         assert first.status_code == 200, first.text
         identity = first.json()['objectId']
         assert client.post('/v1/reference-art/transfer-prop',json=body).json() == first.json()
+        # Another zlib build compresses the same pixels differently; replay compares pixels, not PNG bytes.
+        import io as _io
+        from PIL import Image as _Image
+        import pixel_prop.pipeline as pipeline
+        original_png = pipeline.png_bytes
+        def other_compression(image):
+            out = _io.BytesIO(); _Image.frombytes('RGBA', image.size, image.convert('RGBA').tobytes()).save(out, format='PNG', compress_level=1)
+            return out.getvalue()
+        monkeypatch.setattr(pipeline, 'png_bytes', other_compression)
+        assert pipeline.convert(source.read_bytes(), pixel_prop_gateway.Recipe(colors=8)).report['sha256'] != report['sha256']
+        assert client.post('/v1/reference-art/transfer-prop',json=body).json() == first.json()
+        monkeypatch.setattr(pipeline, 'png_bytes', original_png)
         provenance = service.presets.object_provenance(identity)
         assert provenance['conversion']['recipeSha256'] == report['recipeSha256']
         assert client.post('/v1/reference-art/convert-prop',json={**payload,'recipe':{'palette':'object:'+identity}}).status_code == 422

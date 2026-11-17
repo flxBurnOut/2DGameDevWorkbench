@@ -47,12 +47,27 @@ def cleanup(image, recipe):
     source = image.load(); width, height = image.size
     output = image.copy(); target = output.load()
     neighbors = ((-1, 0), (1, 0), (0, -1), (0, 1))
+    diagonals = ((-1, -1), (1, -1), (-1, 1), (1, 1))
     if recipe['removeIsolated']:
+        def around(x, y, offsets):
+            return [source[x+dx, y+dy] for dx, dy in offsets
+                    if 0 <= x+dx < width and 0 <= y+dy < height and source[x+dx, y+dy][3]]
         for y in range(height):
             for x in range(width):
                 p = source[x, y]
-                if p[3] and not any(0 <= x+dx < width and 0 <= y+dy < height and source[x+dx, y+dy] == p for dx, dy in neighbors):
+                if not p[3]:
+                    continue
+                sides = around(x, y, neighbors)
+                if p in sides:
+                    continue
+                if not sides and not around(x, y, diagonals):
+                    # A detached speck outside the subject becomes transparent.
                     target[x, y] = (0, 0, 0, 0)
+                    continue
+                # An odd-coloured pixel inside the subject takes its neighbours' most common
+                # colour, so cleanup never opens transparent holes in the artwork.
+                counts = Counter(sides or around(x, y, diagonals))
+                target[x, y] = min(counts, key=lambda c: (-counts[c], c))
     if recipe['outline'] != 'none':
         rgb = (24, 24, 32) if recipe['outline'] == 'dark' else tuple(bytes.fromhex(recipe['outline'][1:]))
         source = output.copy().load()

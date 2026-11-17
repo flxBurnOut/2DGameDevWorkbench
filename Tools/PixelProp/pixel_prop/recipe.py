@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 import re
 
-ALGORITHM_VERSION = 1
+# 2: isolated-pixel cleanup recolours interior specks instead of clearing them.
+ALGORITHM_VERSION = 2
 
 
 def color(value):

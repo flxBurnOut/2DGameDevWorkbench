@@ -262,6 +262,7 @@ def test_saved_sequences_replay_through_checkpoint_and_review(tmp_path, item, se
 def test_production_prop_planning_prompt_and_wire_schema(tmp_path):
     from sprite_pipeline.collaboration.contracts import motion_transport_schema, CoordinatorTurn, CHARACTER_DIMENSIONS
     from sprite_pipeline.collaboration.planning import PlanningModel
+    from sprite_pipeline.collaboration.structured_brief import StructuredCoordinatorTurn
     service, ws = workspace_for(tmp_path, 'lamp')
     work = ws.create(TaskSpec(object_id='lamp', object_type='interactable', description='Turn on the green light.'),
                      'production-prop-planning',planning_authorized=True)
@@ -271,12 +272,16 @@ def test_production_prop_planning_prompt_and_wire_schema(tmp_path):
         assert kwargs['interactable'] is True
         prompt = content[0]['text']
         assert '"hard_drawing_limits": {"max_frames_per_request": 8' in prompt
-        for fact in ('reference_check', 'part_ownership', 'hold_frames', 'state_frame', 'EXECUTABLE DRAWING BRIEF policy 5'):
+        for fact in ('reference_check', 'part_ownership', 'hold_frames', 'state_frame', 'EXECUTABLE DRAWING BRIEF policy 6'):
             assert fact in prompt
+        assert schema is StructuredCoordinatorTurn
+        stage_fields = schema.model_json_schema()['$defs']['DrawingStage']['properties']
+        assert 'goal' in stage_fields and {'prompt', 'drawing_poses'}.isdisjoint(stage_fields)
         return schema.model_validate({'action':'consult','summary':'Check viewpoint','target':'appearance','question':'Is the lens visible?'}), {}
     model.registry.send = send
     model('coordinator', work, ws.reference(work))
-    for typed, dimensions in [(True,PROP_DIMENSIONS),(False,CHARACTER_DIMENSIONS)]:
-        wire = motion_transport_schema(CoordinatorTurn, typed).model_json_schema()['$defs']
-        assert wire['QualityCriterion']['properties']['dimension']['enum'] == list(dimensions)
-        assert ('interactable' in wire['MotionQuality']['properties']) == typed
+    for coordinator in (CoordinatorTurn, StructuredCoordinatorTurn):
+        for typed, dimensions in [(True,PROP_DIMENSIONS),(False,CHARACTER_DIMENSIONS)]:
+            wire = motion_transport_schema(coordinator, typed).model_json_schema()['$defs']
+            assert wire['QualityCriterion']['properties']['dimension']['enum'] == list(dimensions)
+            assert ('interactable' in wire['MotionQuality']['properties']) == typed

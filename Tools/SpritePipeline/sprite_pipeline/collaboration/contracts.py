@@ -502,7 +502,7 @@ class PlanBinding(Contract):
     compiled_prompts: list[str] = Field(default_factory=list, max_length=4)
     end_targets: list[TargetImage] = Field(default_factory=list, max_length=4)
     visual_structure: dict[str,Any] | None = None
-    generation_policy_version: Literal[1, 2, 3, 4, 5] | None = None
+    generation_policy_version: Literal[1, 2, 3, 4, 5, 6] | None = None
     visibility_review_version: Literal[1, 2, 3, 4] | None = None
 
     @model_serializer(mode='wrap')
@@ -544,7 +544,7 @@ class PlanBinding(Contract):
             raise ValueError("Plan hash does not match the approved plan")
         if self.compiled_prompts and (len(self.compiled_prompts)!=len(self.plan.stages) or any(not p or len(p)>1000 for p in self.compiled_prompts)):
             raise ValueError('Frozen provider prompts must match all stages and their size limit')
-        if self.generation_policy_version in (1,2,3,4,5):
+        if self.generation_policy_version in (1,2,3,4,5,6):
             from .generation_conditions import compile_conditions
             if not self.plan.quality or self.plan.quality.version != 4:
                 raise ValueError('Drawing conditions policy 1 requires the complete version 4 motion contract')
@@ -638,7 +638,7 @@ class OpenWork(Contract):
     planning_format_version: Literal[1, 2, 3, 4] | None = None
     end_targets: list[TargetImage] = Field(default_factory=list, max_length=4)
     visual_structure: dict[str,Any] | None = None
-    generation_policy_version: Literal[1, 2, 3, 4, 5] | None = None
+    generation_policy_version: Literal[1, 2, 3, 4, 5, 6] | None = None
     visibility_review_version: Literal[1, 2, 3, 4] | None = None
     # Set only on copies made for paper experiments; ordinary works omit it.
     experiment: dict[str, Any] | None = None

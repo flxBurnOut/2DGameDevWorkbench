@@ -5,7 +5,7 @@ from ..attack_timeline import is_context_frame
 
 
 def compiled_prompt(plan, character, stage_index, *, policy_version=None):
-    if policy_version in (1,2,3,4,5):
+    if policy_version in (1,2,3,4,5,6):
         from .generation_conditions import compile_conditions
         return compile_conditions(plan, stage_index, policy_version=policy_version)
     stage = plan.stages[stage_index]

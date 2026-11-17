@@ -98,6 +98,45 @@ def test_structured_error_is_corrected_only_by_its_role(wire_planner, model, for
     assert 'previous_invalid_draft' not in saved and 'invalid question' not in saved and '长' * 1001 not in saved
 
 
+def test_policy_6_correction_receives_the_original_wire_fields_again(wire_planner):
+    from test_generation_conditions import StructuredConditionsPlanner
+
+    _, workspace, _ = wire_planner
+    workspace.model.registry.save(ModelConfiguration())
+    work = workspace.create(spec(), uuid.uuid4().hex, planning_authorized=True)
+    work.generation_policy_version = 6
+    workspace.save(work)
+    final, _ = StructuredConditionsPlanner()('coordinator', work, workspace.reference(work))
+    strategy = {'action': 'propose', 'summary': '界定两段动作', 'proposal': copy.deepcopy(final['plan'])}
+    for stage in strategy['proposal']['stages']:
+        stage['prompt'] = stage['goal']
+        stage.pop('structure_usage')
+    for stage in final['plan']['stages']:
+        stage.pop('structure_usage')
+    rejected = copy.deepcopy(final)
+    rejected['plan']['stages'][-1]['last_frame'] = 'original'
+    replies = [observation(), observation(), strategy, rejected, final]
+    chat = ChatFixture((json.dumps(reply, ensure_ascii=False), 'stop') for reply in replies)
+
+    with patch('sprite_pipeline.vision_review.httpx.Client', return_value=chat):
+        work = workspace.plan(work.id)
+
+    assert work.status == 'ready', work.message
+    assert len(chat.requests) == 5 and work.planning_calls[-1]['corrects_call'] == 4
+    for turn in chat.requests[:3]:
+        assert all('drawing_poses' not in part.get('text', '') for part in turn['messages'][0]['content'])
+    second_coordinator_text = chat.requests[-1]['messages'][0]['content'][0]['text']
+    assert 'omit stage.prompt' in second_coordinator_text
+    task_data = json.loads(second_coordinator_text.split('TASK DATA:\n', 1)[1])
+    retry_context = next(message['response'] for message in task_data['peer_messages'] if message['role'] == 'coordinator')
+    assert {'proposal', 'findings'}.isdisjoint(retry_context)
+    assert {'prompt', 'drawing_poses'}.isdisjoint(retry_context['plan']['stages'][0])
+    assert retry_context['plan']['stages'][0]['goal'] == final['plan']['stages'][0]['goal']
+    assert retry_context['plan']['quality']['key_poses'] == final['plan']['quality']['key_poses']
+    assert work.plan.stages[0].prompt.startswith('Appearance: ')
+    assert '\nAction: ' + final['plan']['stages'][0]['goal'] in work.plan.stages[0].prompt
+
+
 @pytest.mark.parametrize('budget,finish_reason,attempts', [(4, 'stop', 1), (8, 'stop', 2), (8, 'length', 1)])
 def test_correction_cannot_overrun_budget_or_repeat_an_incomplete_response(wire_planner, budget, finish_reason, attempts):
     _, workspace, _ = wire_planner

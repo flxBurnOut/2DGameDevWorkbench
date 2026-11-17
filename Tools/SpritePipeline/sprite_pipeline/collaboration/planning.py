@@ -11,6 +11,7 @@ from ..errors import InvalidPlanningResponse, ValidationHarnessError
 from .model_config import ModelRegistry, ModelConfiguration
 from .contracts import ExpertTurn, CoordinatorTurn, ObservationTurn, StrategyTurn
 from .planning_observations import drawing_limits, reference_appearance
+from . import structured_brief
 
 
 PLANNING_FORMAT_VERSION = 4
@@ -230,6 +231,8 @@ class PlanningModel:
         messages = [] if independent else work.messages
         current_format = work.planning_format_version == PLANNING_FORMAT_VERSION
         role_specific = work.planning_format_version in (2, 3, 4)
+        structured_drawing = work.generation_policy_version == 6
+        structured_coordinator = structured_drawing and role == 'coordinator'
         correction = None
         if current_format:
             call = work.planning_calls[-1] if work.planning_calls else {}
@@ -239,6 +242,9 @@ class PlanningModel:
                 correction = feedback[correction_call]['response']['summary']
             messages = [m for m in messages if m['role'] != 'validator'
                         and (m.get('call') not in feedback or (m.get('call') == correction_call and m['role'] == role))]
+            if structured_coordinator and correction is not None:
+                messages = [{**m, 'response': structured_brief.coordinator_context(m['response'])}
+                            if m['role'] == 'coordinator' else m for m in messages]
         if role_specific:
             # The shared internal ExpertTurn adds null slots that do not belong
             # to the role's transport schema. Do not teach peers those wrappers.
@@ -260,19 +266,26 @@ class PlanningModel:
                 data['previous_invalid_draft'] = previous_draft
         prop = work.spec.object_type == 'interactable'
         instructions = INSTRUCTIONS
-        if work.generation_policy_version in (1,2,3,4,5):
+        if work.generation_policy_version in (1,2,3,4,5,6):
             from .generation_conditions import planning_instructions
             if work.generation_policy_version in (4,5):
                 from .planning_draft import instructions as draft_instructions, draft_budget
                 instructions=draft_instructions(instructions,role)
                 data['strategy_draft_budget']=draft_budget(messages)
-                if work.generation_policy_version==5:
-                    from .planning_budget import context as budget_context
-                    data['planning_call_allocation']=budget_context(work,role)
-                    instructions=instructions.replace('EXECUTABLE DRAWING BRIEF policy 4','EXECUTABLE DRAWING BRIEF policy 5')
-                    instructions+='\nReserve the scheduled generation-strategy and final coordinator turns. Noncritical questions about unseen parts can remain uncertain in findings and be resolved by the coordinator from available evidence; do not spend their reserved calls on repeated observations. Deferred requests remain unfulfilled unless the coordinator actually resolves them; critical ambiguity must remain in plan.questions.\n'
             else:
                 instructions = planning_instructions(instructions, policy_version=work.generation_policy_version)
+            if structured_drawing and not structured_coordinator:
+                analyst_instructions = (structured_brief.STRATEGY_INSTRUCTIONS if role == 'strategy'
+                                        else structured_brief.OBSERVATION_INSTRUCTIONS)
+                instructions = instructions.removesuffix(structured_brief.INSTRUCTIONS) + analyst_instructions
+            if structured_coordinator:
+                instructions = instructions.replace('Per-stage prompts describe', 'Per-stage goals describe')
+                instructions = instructions.replace('Each stage.prompt must describe', 'Each stage.goal must describe')
+            if work.generation_policy_version in (5,6):
+                from .planning_budget import context as budget_context
+                data['planning_call_allocation'] = budget_context(work, role)
+                instructions = instructions.replace('EXECUTABLE DRAWING BRIEF policy 4', 'EXECUTABLE DRAWING BRIEF policy 5')
+                instructions += '\nReserve the scheduled generation-strategy and final coordinator turns. Noncritical questions about unseen parts can remain uncertain in findings and be resolved by the coordinator from available evidence; do not spend their reserved calls on repeated observations. Deferred requests remain unfulfilled unless the coordinator actually resolves them; critical ambiguity must remain in plan.questions.\n'
             data['drawing_condition_policy'] = {
                 'version': work.generation_policy_version, 'prompt_limit': 1000, 'truncate': False,
                 'image_targets': 'Only separately bound, checked PNGs; text endpoints are not images',
@@ -280,6 +293,8 @@ class PlanningModel:
                     'provider_text':'stage.prompt unchanged'} if work.generation_policy_version in (3,4,5) else
                    {'motion_fields_sent_directly':['camera','orientation','drive','support','trajectory','appearance']}),
             }
+            if structured_drawing:
+                data['drawing_condition_policy']['provider_text'] = 'locally assembled from goal, key poses and checked stage fields'
         if prop:
             # Retain shared scheduling, budgets, and transport policy. Replace
             # the actor-specific direction before adding the provider brief.
@@ -291,11 +306,16 @@ FPS and each segment's actual frame count. Keep provider text within 1000 chars.
 Review allowance = candidate_count * (2*stage_count + 2).
 The two final calls inspect the WHOLE clip, including seams.
 """ + suffix
+            if structured_drawing:
+                instructions = instructions.replace(' Keep provider text within 1000 chars.', '')
         if work.frame_budget and not reference_only:
             instructions += '\nRespect hard_drawing_limits in TASK DATA in every proposal and final plan. Do not rely on the ending field for resource limits.'
         if prop and work.spec.interactable_skeleton is not None:
             instructions += SKELETON_INSTRUCTIONS
         role_instructions = PROP_ROLES.get(role, ROLES[role]) if prop else ROLES[role]
+        if structured_drawing and role == 'strategy':
+            role_instructions = role_instructions.replace('Produce a proposal with exact per-stage prompts.',
+                                                          'Produce an analysis draft for each planned stage.')
         if prop:
             instructions += "\nFor the labelled drawing brief, Facing is the view of the prop, Support is its mount, and Drive describes the changing part."
         if work.planning_format_version in (1, 2, 3, 4):
@@ -326,6 +346,8 @@ The two final calls inspect the WHOLE clip, including seams.
                 data['parts_to_classify'] = [dict(id=p['id'], name=p['name'], visibility=p['visibility'])
                                              for p in work.visual_structure['data']['parts']]
             instructions+='\n'+STRUCTURE_INSTRUCTIONS
+            if structured_drawing:
+                instructions = instructions.replace(' Keep the total compiled\nprompt under 1000 characters.', '')
             if work.generation_policy_version in (1,2):
                 instructions+='\nStructure relations use their own generation_hint slot. Do not replace motion.drive/support/trajectory with structure prose: those fields are sent directly. Cite only task-relevant visible relations; distinguish their observed geometry from proposed future motion.'
             elif work.generation_policy_version in (3,4,5):
@@ -357,14 +379,18 @@ The two final calls inspect the WHOLE clip, including seams.
         receipt = {'requested_output_format':output_format} if output_format else {}
         try:
             schema = CoordinatorTurn if role == "coordinator" else ObservationTurn if role in {'appearance','motion'} else ExpertTurn
+            stage_type = 'PlanStage'
+            if structured_coordinator:
+                schema = structured_brief.StructuredCoordinatorTurn
+                stage_type = 'DrawingStage'
             if role=='strategy' and role_specific:schema=StrategyTurn
-            if role=='strategy' and work.generation_policy_version in (4,5):
+            if role=='strategy' and work.generation_policy_version in (4,5,6):
                 from .planning_draft import DraftStrategyTurn
-                schema=DraftStrategyTurn
+                schema = DraftStrategyTurn
+                stage_type = 'StrategyDraftStage'
             if work.planning_format_version in (3, 4) and work.visual_structure and role in {'strategy','coordinator'}:
                 from .structure_control import bind_planning_schema
-                schema=bind_planning_schema(schema,work.visual_structure,
-                    stage_type='StrategyDraftStage' if role=='strategy' and work.generation_policy_version in (4,5) else 'PlanStage')
+                schema = bind_planning_schema(schema, work.visual_structure, stage_type=stage_type)
             if work.generation_policy_version==2 and role in {'strategy','coordinator'}:
                 from .generation_conditions import bind_text_budget
                 schema=bind_text_budget(schema)
@@ -372,7 +398,8 @@ The two final calls inspect the WHOLE clip, including seams.
                 schema_name="open_motion_plan", on_response=receipt.update,
                 **({'interactable': True} if prop else {}),
                 **({'output_format':output_format} if output_format else {}))
-            return turn.model_dump(mode="json"), {**receipt, **metadata}
+            response = structured_brief.materialize(turn) if structured_coordinator else turn.model_dump(mode='json')
+            return response, {**receipt, **metadata}
         except ValidationHarnessError as exc:
             message = str(exc).replace('视觉检查', '动作规划')
             details = {'model_receipt': {**receipt, **exc.details}}

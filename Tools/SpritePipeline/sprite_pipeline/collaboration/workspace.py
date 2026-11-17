@@ -285,7 +285,7 @@ class OpenMotionWorkspace:
                         correction_draft = exc.draft
                     else:
                         try:
-                            if role=='strategy' and work.generation_policy_version in (4,5):
+                            if role=='strategy' and work.generation_policy_version in (4,5,6):
                                 from .planning_draft import DraftInternalTurn
                                 turn=DraftInternalTurn.model_validate(turn)
                             else:
@@ -302,7 +302,7 @@ class OpenMotionWorkspace:
                         continue
                     work.planning_calls[-1].update(state="completed", finished_at=now(), **receipt)
                     work.messages.append({"role": role, "question": question, "response": turn.model_dump(mode="json"), "call": len(work.planning_calls)})
-                    if work.generation_policy_version==5:
+                    if work.generation_policy_version in (5,6):
                         from .planning_budget import defer
                         if defer(work,role,turn,queue):
                             if turn.findings or turn.proposal:contributed.add(role)

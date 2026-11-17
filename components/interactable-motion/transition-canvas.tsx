@@ -144,6 +144,19 @@ export function TransitionCanvas({ frames, referenceUrl, fps, playback, duration
         }} />
       {!ready && <span className="im-canvas-note">{error || '正在读取帧…'}</span>}
     </div>
+    {(() => {
+      // Only explain what is actually drawn on this frame.
+      const items: [string, string][] = [
+        ...(overlays.fixed && measuredBoxes.length ? [[colors.measured, '方案中的固定监测区（虚线）'] as [string, string]] : []),
+        ...(marks.fixed.length ? [[colors.fixed, '你框选的固定区'] as [string, string]] : []),
+        ...(marks.exclude.length ? [[colors.exclude, '不回填区'] as [string, string]] : []),
+        ...(marks.moving.length ? [[colors.moving, '运动部件'] as [string, string]] : []),
+        ...(overlays.heat ? [['rgba(239,68,68,0.8)', '与原图不同的固定区像素'] as [string, string]] : []),
+        ...(overlays.pivot && (marks.pivot || measuredPivot) ? [[colors.measured, radius ? '枢轴与铰接半径' : '枢轴'] as [string, string]] : []),
+      ];
+      return items.length ? <ul className="im-legend" aria-label="叠加层图例">{items.map(([color, label]) =>
+        <li key={label}><span style={{ borderColor: color }} aria-hidden="true" />{label}</li>)}</ul> : null;
+    })()}
     <div className="im-strip" aria-label="帧条">
       {frames.map((f, i) => <button key={i} aria-pressed={i === frame} aria-label={`第 ${i + 1} 帧${f.locked ? '（锁定）' : ''}`} onClick={() => { setPlaying(false); onFrame(i); }}
         title={f.locked ? '锁定帧：任何编辑工具都不能修改' : f.label}>

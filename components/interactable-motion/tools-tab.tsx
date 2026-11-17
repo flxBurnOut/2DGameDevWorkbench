@@ -125,10 +125,19 @@ export function ToolsTab({ work, candidate, edge, marks, onMarks, drawMode, onDr
   const pivot = marks.pivot;
   const disabled = readOnly || busy || pending || !context || !frames.length;
   const drawButton = (mode: Exclude<DrawMode, null>, label: string) => <button aria-pressed={drawMode === mode} onClick={() => onDrawMode(drawMode === mode ? null : mode)}>{label}</button>;
-  return <section>
-    {error && <p className="motion-danger">{error}</p>}
+  // Frame tools need an editable source: an awaiting segment, or a whole candidate whose segments are all accepted
+  // and which passed the technical checks. Explain the gap instead of showing tools that would only fail.
+  const frameToolsReason = stage !== undefined ? '' : candidate.plan_execution.stages.some(s => s.state !== 'accepted')
+    ? '逐帧工具在每段过渡都接受后可用于完整候选；待确认的段会在确认前提供这些工具。'
+    : candidate.hard_failures.length || !['review_ready', 'approved'].includes(candidate.status)
+      ? '完整候选未通过技术检查（详见“检查”页签），逐帧工具不可用。已接受过渡的写回节奏和派生素材仍可使用。' : '';
+  const frameTools = !frameToolsReason && Boolean(context);
+  return <section className="im-tools">
+    {frameToolsReason ? <p className="motion-notice">{frameToolsReason}</p> : error && !context ? <p className="motion-danger">{error}</p> : null}
+    {error && context && <p className="motion-danger">{error}</p>}
     {message && <p className="motion-good">{message}</p>}
     {pending && <p className="motion-notice">有待处理的备选。先在下方对比后采用或保留原版，再使用其他工具。</p>}
+    {frameTools && <>
     <p className="motion-muted">{stage !== undefined ? `作用于待确认的第 ${stage + 1} 段。` : edge ? `作用于「${edge.name}」的可编辑帧。` : '作用于完整候选的可编辑帧。'}
       锁定帧（段首、确认的段尾与停留帧）不会被修改；结果先成为完整播放备选，确定性工具不消耗绘图次数。</p>
     <div className="im-tool"><h3>画面标记</h3>
@@ -171,6 +180,7 @@ export function ToolsTab({ work, candidate, edge, marks, onMarks, drawMode, onDr
       }}>替换本段为旋转草稿</button>
       {stage !== undefined && <p className="motion-muted">待确认的段请先确认或拒绝后，再在完整候选上使用旋转草稿。</p>}
     </div>
+    </>}
     {edge && <div className="im-tool"><h3>T6 节奏 · T7 循环接缝</h3>
       <RhythmEditor key={edge.stage} work={work} candidate={candidate} edge={edge} rhythm={rhythm} onRhythm={v => onRhythm(edge.stage, v)} />
       {seam && <p>末帧到首帧差异：{seam.changed} / {seam.total} 像素{work.spec.loop ? '（循环动画，跳变会在每次循环出现）' : ''}。勾选“检查”页签的“首帧叠末帧”可在画布上查看。</p>}
@@ -178,23 +188,23 @@ export function ToolsTab({ work, candidate, edge, marks, onMarks, drawMode, onDr
     {edge && <DerivedAssets work={work} candidate={candidate.candidate_index} focus={{ kind: 'edge', stage: edge.stage }} readOnly={readOnly} onSaved={onSaved}
       rotation={pivot && edge.timeline && frames.length ? { pivot, angle, base: frames[edge.timeline.start], moving: unionMasks(width, height, [boxMask(width, height, marks.moving),
         ...(useStructure && structureMasks.moving ? [structureMasks.moving] : [])]) } : undefined} />}
-    <div className="im-tool"><h3>备选对比与其他修正</h3>{children}</div>
+    {frameTools && <div className="im-tool"><h3>备选对比与其他修正</h3>{children}</div>}
   </section>;
 }
 
 /** T6: per-frame relative durations and end hold for writeback; the source frames are untouched. */
 function RhythmEditor({ work, candidate, edge, rhythm, onRhythm }: { work: MotionWork; candidate: MotionCandidate; edge: GraphEdge; rhythm?: Rhythm; onRhythm: (v: Rhythm) => void }) {
-  const [count, setCount] = useState<number | null>(null), [error, setError] = useState('');
+  const [count, setCount] = useState<number | null>(null), [error, setError] = useState(''), [loaded, setLoaded] = useState('');
   const chain = candidate.state_chain?.findIndex(s => s.stage === edge.stage) ?? -1;
   const accepted = candidate.plan_execution.stages[edge.stage]?.state === 'accepted';
   const assetId = work.job && chain > 0 ? `motion-transition:${work.job.job_id}:${candidate.candidate_index}:${chain}` : '';
   useEffect(() => {
     if (!assetId || !accepted) return;
     void fetch('/api/workbench/assets?' + new URLSearchParams({ assetId }), { cache: 'no-store' }).then(r => r.json() as Promise<{ asset?: { frameCount?: number } }>)
-      .then(v => setCount(v.asset?.frameCount ?? null)).catch(e => setError((e as Error).message));
+      .then(v => setCount(v.asset?.frameCount ?? null)).catch(e => setError((e as Error).message)).finally(() => setLoaded(assetId));
   }, [assetId, accepted]);
   if (!accepted) return <p className="motion-muted">过渡接受后可以设置写回时的逐帧时长与往返播放。</p>;
-  if (!count) return <p className="motion-muted">{error || '正在读取过渡帧数…'}</p>;
+  if (!count) return <p className="motion-muted">{error || (loaded === assetId || !assetId ? '资产库中还没有这段过渡，暂时不能设置写回节奏。' : '正在读取过渡帧数…')}</p>;
   const durations = rhythm?.durations?.length === count ? rhythm.durations : Array(count).fill(1);
   return <>
     <div className="im-tool-row">{durations.map((d, i) => <label key={i}>第 {i + 1} 帧<input type="number" min={0.25} max={20} step={0.25} value={d}

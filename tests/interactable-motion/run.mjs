@@ -146,7 +146,7 @@ try {
     result = graph.workGraph(work, 1, toggle);
     assert.deepEqual(result.nodes.map(n => n.source), ['reference', 'confirmed', 'target']);
     assert.equal(result.nodes[1].image.path, 'candidates/1/stages/0/state-image');
-    assert.deepEqual(result.edges.map(e => [e.status, e.frames]), [['accepted', 4], ['awaiting_review', 5]]);
+    assert.deepEqual(result.edges.map(e => [e.status, e.frames]), [['accepted', 4], ['awaiting_review', 4]]);
     const status = graph.panelStatus(work, 1, toggle, 'lamp');
     assert.equal(status.action, 'review-stage');
     assert.equal(status.missing[0], '确认第 2 段过渡');

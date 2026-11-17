@@ -97,7 +97,7 @@ export function draftDescription(draft: InteractableDraft): { description: strin
   const lines = [
     `交互物状态动画，按顺序经过 ${draft.states.length} 个状态：${chain}。`,
     `初始状态「${first.name.trim()}」就是对象原图${first.appearance.trim() ? `：${first.appearance.trim()}` : ''}。`,
-    ...rest.map((s, i) => `过渡 ${i + 1}：从「${draft.states[i].name.trim()}」变为「${s.name.trim()}」，${s.appearance.trim()}。`),
+    ...rest.map((s, i) => `过渡 ${i + 1}：从「${draft.states[i].name.trim()}」变为「${s.name.trim()}」${s.appearance.trim() ? `，${s.appearance.trim()}` : ''}。`),
     '固定部件保持不动，只有运动部件改变。',
   ];
   if (draft.hold.trim()) lines.push(`结束后：${draft.hold.trim()}。`);
@@ -167,7 +167,9 @@ export function workGraph(work: MotionWork | null, candidateIndex = 1, draft?: I
     const row = candidate?.plan_execution.timeline[stage];
     return {
       stage, from: stage, to: stage + 1, name: s.name,
-      frames: candidate?.plan_execution.stages[stage]?.actual_frame_count || s.frame_count,
+      // The assembled timeline is what plays and what tools edit. Before assembly the stage review shows exactly
+      // the planned count: raw provider counts may include a removed context frame.
+      frames: (row && candidate?.frames.length ? row.count : 0) || s.frame_count,
       status: stageStatus(work, candidate, stage),
       ...(row && candidate?.frames.length ? { timeline: { start: row.start, count: row.count, hold: row.hold_frames ?? 0 } } : {}),
     };
@@ -194,9 +196,12 @@ export function panelStatus(work: MotionWork | null, candidateIndex: number, dra
   const candidate = work.job.candidates.find(c => c.candidate_index === candidateIndex);
   if (!candidate) return { missing: ['选择候选'], action: 'none', message: '' };
   const awaiting = candidate.plan_execution.stages.findIndex(s => s.state === 'awaiting_review');
-  if (awaiting >= 0) return { missing: [`确认第 ${awaiting + 1} 段过渡`], action: 'review-stage', message: '在中间检查实际片段，确认状态帧或过渡。' };
+  if (awaiting >= 0) return { missing: [`确认第 ${awaiting + 1} 段过渡`], action: 'review-stage', message: '在中间播放本段，填写结论后确认状态帧或整段过渡；后续制作在确认后继续。' };
   if (candidate.status === 'approved') return { missing: [], action: 'writeback', message: '已采用。可以写回交互物或导出。' };
-  if (candidate.frames.length) return { missing: ['播放并采用完整候选'], action: 'review-candidate', message: '在检查页签完成人工检查后采用。' };
+  // Accepted transitions are usable on their own; a blocked whole clip only prevents adoption and export.
+  if (candidate.frames.length && candidate.hard_failures.length)
+    return { missing: [], action: 'writeback', message: '完整候选有技术阻断（见“检查”页签），不能采用或导出；已确认的状态图与已接受的过渡仍可写回。' };
+  if (candidate.frames.length) return { missing: ['播放并采用完整候选'], action: 'review-candidate', message: '在“检查”页签播放并填写结论后采用；也可以先写回已接受的过渡。' };
   if (work.job.plan_control.enabled) return { missing: [], action: 'wait', message: work.job.plan_control.message };
   return { missing: [], action: 'resume', message: work.job.plan_control.message };
 }
@@ -207,4 +212,14 @@ export function panelHref(values: Record<string, string | number | undefined>, c
   for (const [key, value] of Object.entries({ ...values, document: context.documentId, definition: context.definitionId }))
     if (value !== undefined && value !== '') query.set(key, String(value));
   return `/tools/interactable-motion${query.size ? `?${query}` : ''}`;
+}
+
+/** Where the work is in its life cycle; drives the step indicator and the centre view. */
+export const panelPhases = ['定义状态', '制定方案', '制作与检查', '写回'] as const;
+export function panelPhase(work: MotionWork | null, editing: boolean): number {
+  if (!work || editing) return 0;
+  if (!work.plan || !work.job) return 1;
+  const done = work.job.candidates.some(c => c.status === 'approved' ||
+    (c.frames.length > 0 && c.plan_execution.stages.every(s => s.state === 'accepted')));
+  return done ? 3 : 2;
 }

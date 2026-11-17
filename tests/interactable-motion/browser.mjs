@@ -60,7 +60,7 @@ try {
   await picker.selectOption('fixture_door');
   const status = page.locator('#im-action-status');
   await page.getByText('描述原图之后每个状态的外观').first().waitFor();
-  await page.getByLabel('外观（与上一状态的差别）').fill('拉杆转到右侧，底座不动');
+  await page.getByLabel('外观：与上一状态的差别').fill('拉杆转到右侧，底座不动');
   const primary = page.locator('.motion-footer .motion-primary');
   assert.match(await primary.textContent(), /制定方案/);
   await primary.click();
@@ -76,7 +76,7 @@ try {
   assert.match(await primary.textContent(), /重新制定方案/);
   assert.match(await status.textContent(), /处理方案提出的前提问题/);
   assert.ok(await page.getByText('部件结构（铰接转动、形变需要）').count() === 0, 'saved plans are not edited in place');
-  await page.getByRole('button', { name: /修改状态/ }).click();
+  await page.getByRole('button', { name: '修改', exact: true }).click();
   await page.getByText('部件结构（铰接转动、形变需要）').waitFor();
 
   // Appearance changes need no structure: restart the isolated service with that scripted plan.
@@ -84,7 +84,7 @@ try {
   server = start('lamp'); await ready();
   await page.goto(web + '/tools/interactable-motion');
   await picker.selectOption('fixture_door');
-  await page.getByLabel('外观（与上一状态的差别）').fill('灯面完全点亮，外壳不动');
+  await page.getByLabel('外观：与上一状态的差别').fill('灯面完全点亮，外壳不动');
   await primary.click();
   await page.waitForURL(/work=[0-9a-f]{32}/, { timeout: 30000 });
   await page.getByText('确认方案，开始制作').waitFor({ timeout: 30000 });
@@ -99,7 +99,7 @@ try {
   await page.getByRole('tab', { name: '写回' }).click();
   await page.getByText('选择写回的交互物').waitFor();
   await page.getByRole('tab', { name: '工具' }).click();
-  await page.getByText(/开始制作并保存片段后|T1 固定部件回填/).first().waitFor();
+  await page.getByText(/逐帧工具|T1 固定部件回填/).first().waitFor();
   assert.deepEqual(errors, []);
   console.log('Verified interactable panel: object filter, state draft, skeleton planning, blocked hinge premise, structure entry, generation start and tabs. Screenshot: ' + path.join(root, 'panel.png'));
 } finally {

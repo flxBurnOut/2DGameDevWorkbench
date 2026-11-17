@@ -1,7 +1,7 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Exact pixel frames and state images. */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { ArrowRight, History, LoaderCircle, Settings2, Sparkles, Pencil } from 'lucide-react';
+import { ArrowRight, Check, History, LoaderCircle, Settings2, Sparkles, Pencil, ChevronRight } from 'lucide-react';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useWorkbenchActions } from '@/components/workbench/workbench-provider';
 import { SourceAssetLink } from '@/components/workbench/shared-navigation';
@@ -27,8 +27,9 @@ import '../sprite-generator/open-motion.css';
 import './interactable-motion.css';
 import {
   defaultDraft, panelHref, draftDescription, draftProblems, draftSkeleton, edgeStatusLabels, nodeSourceLabels, panelStatus, workGraph,
-  type InteractableDraft, type Selection,
+  panelPhase, panelPhases, type InteractableDraft, type Selection,
 } from './motion-graph';
+import { StateEditor } from './state-editor';
 import { StateGraphView } from './state-graph-view';
 import { TransitionCanvas, type DrawMode, type Overlays, type ToolMarks } from './transition-canvas';
 import { ToolsTab } from './tools-tab';
@@ -251,15 +252,22 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
       ? '已知遮挡平移不受支持，仍尝试制作' : '确认方案，开始制作', disabled: busy || readOnly || work?.status !== 'ready' }
     : status.action === 'wait' && work?.job ? { kind: 'pause', label: '暂停后续制作', disabled: busy || readOnly }
     : status.action === 'resume' ? { kind: 'resume', label: '继续已授权制作', disabled: busy || readOnly }
-    : status.action === 'review-stage' ? { kind: 'review-stage', label: `检查第 ${awaiting + 1} 段过渡`, disabled: false }
+    : status.action === 'review-stage' ? { kind: 'review-stage', label: `播放并确认第 ${awaiting + 1} 段`, disabled: false }
     : status.action === 'review-candidate' ? { kind: 'approve', label: '采用此候选', disabled: busy || readOnly || Boolean(reviewBlocker) }
-    : status.action === 'writeback' ? { kind: 'writeback', label: '写回交互物', disabled: false } : null;
+    : status.action === 'writeback' ? { kind: 'writeback', label: tab === 'writeback' ? '写回页签已打开' : '前往写回', disabled: tab === 'writeback' } : null;
   const runPrimary = (kind: Primary['kind']) => {
     if (kind === 'plan') void plan();
     else if (kind === 'generate') void generate();
     else if (kind === 'pause') void run(async () => { await mutate('pause'); });
     else if (kind === 'resume') void run(async () => { await mutate('resume'); });
-    else if (kind === 'review-stage') { setSelection({ kind: 'edge', stage: awaiting }); setTab('check'); }
+    else if (kind === 'review-stage') {
+      // Bring the review's own controls into view; confirmation needs the play/note steps inside it.
+      setSelection({ kind: 'edge', stage: awaiting });
+      requestAnimationFrame(() => {
+        const play = [...document.querySelectorAll<HTMLButtonElement>('.im-center .motion-checkpoint button')].find(b => b.textContent?.includes('播放当前完整片段'));
+        play?.scrollIntoView({ block: 'center', behavior: 'smooth' }); play?.focus({ preventScroll: true });
+      });
+    }
     else if (kind === 'approve') void approve();
     else setTab('writeback');
   };
@@ -267,12 +275,17 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     : status.action === 'review-candidate' && reviewBlocker ? reviewBlocker
     : editing ? (draftProblems(draft)[0] || '重新制定方案会保存新版本；旧版本和调用记录保留。') : status.message;
   const missing = editing ? draftProblems(draft) : status.missing;
-  const editableGraph = (!work || editing) && !readOnly;
   const pivotRadius = radius && Number.isFinite(radius) ? radius : null;
+  const phase = panelPhase(work, editing);
+  const jobReady = Boolean(work?.job && candidate);
 
   return <div className="motion-studio im-panel" data-sprite-editor>
     <header className="motion-header">
-      <span className="motion-work"><strong>{work?.plan?.title || '交互物动画'}</strong><SourceAssetLink /></span>
+      <span className="motion-work"><strong title={work?.plan?.title}>{work?.plan?.title || '新状态动画'}</strong><SourceAssetLink /></span>
+      <ol className="motion-steps im-phases" aria-label="交互物动画阶段">{panelPhases.map((name, i) =>
+        <li key={name} aria-current={phase === i ? 'step' : undefined} data-done={i < phase || undefined}>
+          <span>{i < phase ? <Check size={13} /> : i + 1}</span>{name}{i < panelPhases.length - 1 && <ChevronRight size={14} className="motion-step-chevron" />}
+        </li>)}</ol>
       <span className="motion-save">{work ? `版本 ${work.revision} · 已保存本机` : '状态图保存在浏览器，制定方案后才提交'}</span>
       <details className="motion-popover">
         <summary><History size={16} />最近作品</summary>
@@ -294,11 +307,11 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     <div className="im-object-bar" aria-label="对象">
       {referenceUrl ? <img src={referenceUrl} alt="" width={40} height={40} /> : <span className="im-object-empty" aria-hidden="true" />}
       {work ? <span><b>{work.character.display_name}</b> · 交互物 · {work.character.cell_width}px · {propProvenanceLabel(work.character.provenance?.type)}</span>
-        : <label>交互物对象<NativeSelect aria-label="交互物对象" value={objectId} disabled={busy}
+        : <div className="im-object-select"><span id="im-object-label">交互物对象</span><NativeSelect aria-labelledby="im-object-label" aria-label="交互物对象" value={objectId} disabled={busy}
           onChange={e => setObjectId(e.target.value)}>
-          <NativeSelectOption value="">请选择交互物</NativeSelectOption>
+          <NativeSelectOption value="">{objects.length ? '请选择交互物' : '还没有交互物对象'}</NativeSelectOption>
           {objects.map(o => <NativeSelectOption key={o.id} value={o.id}>{o.name} · {o.width}px · {propProvenanceLabel(o.provenance?.type)}</NativeSelectOption>)}
-        </NativeSelect></label>}
+        </NativeSelect></div>}
       <span className="im-binding">{documentId ? <>绑定：{project?.name || documentId} › {object?.displayName || definitionId || '未选物件'}
         {object && `（${({ toggle: '切换', sequence: '序列', inspect: '查看', pickup: '拾取' } as Record<string, string>)[object.behavior.kind]}）`}</>
         : '未绑定交互物工程；写回时再选择。'}</span>
@@ -315,50 +328,64 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
       {!loaded ? <div className="motion-loading"><LoaderCircle className="animate-spin" />正在读取作品…</div> : <>
         <aside className="motion-card im-left">
           <div className="motion-card-title"><h2>状态图</h2>
-            {work?.plan && !readOnly && !work.job && !editing && <button className="motion-secondary" onClick={() => setEditing(true)}><Pencil size={14} />修改状态</button>}
-            {editing && <button className="motion-secondary" onClick={() => setEditing(false)}>取消修改</button>}
+            {work?.plan && !readOnly && !work.job && !editing && <button className="motion-secondary" onClick={() => setEditing(true)}><Pencil size={14} />修改</button>}
           </div>
-          {!objectId && !work && <PropReferenceGenerator objectName={object?.displayName || ''} onTransferred={async id => { await refreshLists(); setObjectId(id); }} />}
-          <StateGraphView workId={work?.id || null} nodes={graph.nodes} edges={graph.edges} selection={selection}
-            onSelect={value => { setSelection(value); setFrame(0); }} draft={draft} onDraft={setDraft} editable={editableGraph} referenceUrl={referenceUrl} />
-          {editableGraph && objectId && <details className="im-tool"><summary>部件结构（铰接转动、形变需要）</summary>
-            <MotionStructure key={objectId} characterId={objectId} disabled={busy || readOnly} registerDraftSaver={registerStructureSaver}
-              modelConfiguration={JSON.stringify(configuration?.configuration || null)} generationStructure={structure} onGenerationStructure={setStructure} />
-          </details>}
-          {work && !work.plan && work.status === 'planning' && <div className="motion-experts">{Object.entries(motionPlanningRoles).map(([role, name]) => {
-            const progress = motionPlanningProgress(work, role);
-            return <div key={role} data-planning-role={role} data-state={progress.state}><span aria-hidden="true">·</span><span>{name}<small>{progress.label}</small></span></div>;
-          })}</div>}
+          <StateGraphView workId={editing ? null : work?.id || null} nodes={graph.nodes} edges={graph.edges} selection={phase === 0 ? null : selection}
+            onSelect={value => { if (phase === 0) return; setSelection(value); setFrame(0); }} referenceUrl={referenceUrl} />
+          {phase === 0 && <p className="motion-muted im-graph-hint">在右侧编辑状态；制定方案后可以逐段查看。</p>}
         </aside>
-        <section className="motion-card im-center" aria-label="过渡画布">
-          {edge ? <>
-            <div className="motion-card-title"><h2>{graph.nodes[edge.from]?.name} → {graph.nodes[edge.to]?.name}</h2><span>{edgeStatusLabels[edge.status]}</span></div>
+        <section className="motion-card im-center" aria-label={phase === 0 ? '定义状态' : '过渡画布'}>
+          {phase === 0 ? <>
+            <div className="motion-card-title"><h2>{editing ? '修改状态与过渡' : '定义状态与过渡'}</h2>
+              {editing && <button className="motion-secondary" onClick={() => setEditing(false)}>取消修改</button>}</div>
+            {!objectId && !work && <PropReferenceGenerator objectName={object?.displayName || ''} onTransferred={async id => { await refreshLists(); setObjectId(id); }} />}
+            <StateEditor draft={draft} onDraft={setDraft} referenceUrl={referenceUrl} disabled={busy || readOnly} />
+            {objectId && <details className="im-structure"><summary>部件结构（铰接转动、形变需要）{structure ? ' · 已选择' : ''}</summary>
+              <MotionStructure key={objectId} characterId={objectId} disabled={busy || readOnly} registerDraftSaver={registerStructureSaver}
+                modelConfiguration={JSON.stringify(configuration?.configuration || null)} generationStructure={structure} onGenerationStructure={setStructure} />
+            </details>}
+          </> : work && (!work.plan || work.status === 'planning') ? <>
+            <div className="motion-card-title"><h2>{work.status === 'planning' ? '正在制定方案' : '方案未完成'}</h2></div>
+            <p>{work.message}</p>
+            <div className="motion-experts">{Object.entries(motionPlanningRoles).map(([role, name]) => {
+              const progress = motionPlanningProgress(work, role);
+              return <div key={role} data-planning-role={role} data-state={progress.state}>
+                <span aria-hidden="true">{progress.state === 'complete' ? <Check size={17} /> : progress.state === 'running' ? <LoaderCircle size={17} className="animate-spin" /> : '·'}</span>
+                <span>{name}<small>{progress.label}</small></span></div>;
+            })}</div>
+          </> : edge ? <>
+            <div className="motion-card-title im-center-title"><h2>过渡 {edge.stage + 1}：{graph.nodes[edge.from]?.name} → {graph.nodes[edge.to]?.name}</h2>
+              <span className="im-pill" data-status={edge.status}>{edgeStatusLabels[edge.status]}</span></div>
             {work && (edge.status === 'awaiting_review' || edge.status === 'state_only') ? <MotionStageReview key={`${work.id}:${work.revision}:${candidateIndex}:${edge.stage}:${adjustmentVersion}`}
               work={work} candidate={candidateIndex} stage={edge.stage} readOnly={readOnly} onSaved={apply} expertRecord={<ExpertRecord work={work} />} />
             : stageFrames.length ? <TransitionCanvas frames={stageFrames} referenceUrl={referenceUrl} fps={work?.job?.action.fps || 12}
               playback={rhythm?.playback || 'once'} durations={rhythm?.durations} overlays={overlays} measuredBoxes={measuredBoxes} measuredPivot={measuredPivot}
               radius={pivotRadius} marks={marks} drawMode={drawMode} onDraw={onDraw} frame={frame} onFrame={setFrame} readOnly={readOnly}
               onEditFrame={i => work && edge.timeline && setPixelTarget({ kind: 'motion-frame', workId: work.id, workRevision: work.revision, candidateIndex, frameIndex: edge.timeline.start + i })} />
-            : work?.job ? <div className="motion-canvas motion-large"><img src={motionUrl(`open-motion/${work.id}/progress-image`, { candidate: String(candidateIndex), revision: String(work.revision), v: String(work.job.revision) })} alt="已确认状态或已保存片段的末帧" /></div>
-            : <p className="motion-muted">{work?.plan ? `计划 ${edge.frames} 帧。确认方案后开始制作。` : '制定方案后显示这段过渡的帧数和检查标准。'}</p>}
+            : work?.job ? <><div className="motion-canvas motion-large"><img src={motionUrl(`open-motion/${work.id}/progress-image`, { candidate: String(candidateIndex), revision: String(work.revision), v: String(work.job.revision) })} alt="已确认状态或已保存片段的末帧" /></div>
+              <p className="motion-muted">{work.job.plan_control.message || '这段过渡还在制作；显示已确认的状态或最近保存的末帧。'}</p></>
+            : work ? <StagePlan work={work} stage={edge.stage} /> : null}
             {pixelTarget && <ImageEditWorkspace target={pixelTarget} readOnly={readOnly} onClose={() => setPixelTarget(null)}
               onAdopt={async () => { setPixelTarget(null); setAdjustmentVersion(v => v + 1); await refresh(); }} />}
           </> : node ? <div className="im-node-detail">
-            <div className="motion-card-title"><h2>{String.fromCharCode(65 + node.index)} · {node.name}</h2><span>{nodeSourceLabels[node.source]}</span></div>
+            <div className="motion-card-title im-center-title"><h2>状态 {String.fromCharCode(65 + node.index)}：{node.name}</h2><span className="im-pill">{nodeSourceLabels[node.source]}</span></div>
             <div className="motion-canvas motion-large">{node.index === 0 && referenceUrl ? <img src={referenceUrl} alt={node.name} />
               : node.image && work ? <img src={motionUrl(`open-motion/${work.id}/${node.image.path}`, { v: node.image.v })} alt={node.name} />
-              : <p>{draft.states[node.index]?.appearance || '尚无真实状态图；确认这一段的状态帧后显示。'}</p>}</div>
+              : <p>尚无真实状态图；确认通往这个状态的过渡后显示。</p>}</div>
             <p className="motion-muted">{node.source === 'confirmed' ? '真实生成帧，经人工确认后锁定。' : node.source === 'target' ? '绑定的段末目标图，约束生成但不是生成结果。'
               : node.source === 'reference' ? '对象原图就是初始状态。' : '只有文字描述。'}</p>
             {work?.job && <DerivedAssets work={work} candidate={candidateIndex} focus={{ kind: 'state', node: node.index }} readOnly={readOnly} onSaved={apply} />}
           </div> : <p className="motion-muted">在左侧选择一个状态或过渡。</p>}
         </section>
         <aside className="motion-card im-right">
-          <div className="im-tabs" role="tablist" aria-label="检查与修正">{tabs.map(([id, label]) =>
-            <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>{label}</button>)}</div>
+          <div className="im-tabs" role="tablist" aria-label="检查与修正">{tabs.map(([id, label]) => {
+            const unavailable = (id === 'tools' || id === 'check') && !jobReady;
+            return <button key={id} role="tab" aria-selected={tab === id} disabled={unavailable}
+              title={unavailable ? '开始制作后可用' : undefined} onClick={() => setTab(id)}>{label}</button>;
+          })}</div>
           <div className="im-tab-body" role="tabpanel">
-            {tab === 'requirements' && <Requirements work={work} draft={draft} onSaved={apply} readOnly={readOnly} stage={edge?.stage} />}
-            {tab === 'check' && <section className="im-check">
+            {(tab === 'requirements' || ((tab === 'tools' || tab === 'check') && !jobReady)) && <Requirements work={editing ? null : work} draft={draft} onSaved={apply} readOnly={readOnly} />}
+            {tab === 'check' && jobReady && <section className="im-check">
               <fieldset className="im-overlays"><legend>叠加检查层</legend>
                 {([['fixed', '固定区域'], ['heat', '固定区变化热区'], ['onion', '上一帧洋葱皮'], ['pivot', '枢轴与铰接半径'], ['seam', '首帧叠末帧（循环接缝）']] as [keyof Overlays, string][])
                   .map(([key, label]) => <label key={key} className="motion-check"><input type="checkbox" checked={overlays[key]}
@@ -378,12 +405,12 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
               </div> : candidate?.status === 'approved' ? <p className="motion-good">当前候选已采用，可写回或导出。</p> : null}
               {work && <ExpertRecord work={work} />}
             </section>}
-            {tab === 'tools' && (work?.job && candidate ? <ToolsTab key={`${work.revision}:${candidateIndex}:${adjustmentVersion}`} work={work} candidate={candidate} edge={edge}
+            {tab === 'tools' && (jobReady && work?.job && candidate ? <ToolsTab key={`${work.revision}:${candidateIndex}:${adjustmentVersion}`} work={work} candidate={candidate} edge={edge}
               marks={marks} onMarks={setMarks} drawMode={drawMode} onDrawMode={setDrawMode} measuredBoxes={measuredBoxes} readOnly={readOnly}
               rhythm={rhythm} onRhythm={changeRhythm} onSubmitted={() => setAdjustmentVersion(v => v + 1)} onSaved={apply}>
               <MotionAdjustment key={`${work.id}:${work.revision}:${candidateIndex}:${awaiting}:${adjustmentVersion}`} work={work} candidate={candidateIndex}
                 stage={awaiting >= 0 ? awaiting : undefined} readOnly={readOnly} onSaved={onAdjusted} />
-            </ToolsTab> : <p className="motion-muted">开始制作并保存片段后可以使用修正工具。</p>)}
+            </ToolsTab> : null)}
             {tab === 'writeback' && <WritebackTab work={work} candidate={candidate} graph={graph} documentId={documentId} definitionId={definitionId}
               rhythms={rhythms} readOnly={readOnly} onProject={setProject} onSaved={apply} busy={busy} run={run} mutate={mutate} />}
           </div>
@@ -402,7 +429,7 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
   </div>;
 }
 
-function Requirements({ work, draft, onSaved, readOnly, stage }: { work: MotionWork | null; draft: InteractableDraft; onSaved: (w: MotionWork) => void; readOnly: boolean; stage?: number }) {
+function Requirements({ work, draft, onSaved, readOnly }: { work: MotionWork | null; draft: InteractableDraft; onSaved: (w: MotionWork) => void; readOnly: boolean }) {
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const prop = work?.plan?.quality?.interactable;
   if (!work?.plan || !prop) {
@@ -412,7 +439,6 @@ function Requirements({ work, draft, onSaved, readOnly, stage }: { work: MotionW
       {work?.status === 'planning' && <p>正在形成制作方案…</p>}
       {work && !work.plan && work.status !== 'planning' && <p className="motion-notice">{work.message}</p>}</section>;
   }
-  const s = stage !== undefined ? work.plan.stages[stage] : undefined;
   const pending = draft.states.map((state, i) => ({ state, i })).filter(({ state, i }) => i > 0 && state.targetPng && !work.end_targets?.some(t => t.stage === i - 1));
   const canBind = !work.job && work.status === 'ready' && !readOnly && work.plan.stages.length === draft.states.length - 1 && pending.length > 0;
   const bind = async () => {
@@ -426,19 +452,23 @@ function Requirements({ work, draft, onSaved, readOnly, stage }: { work: MotionW
       onSaved(current);
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
+  const checks = { satisfied: '符合', mismatch: '不符', ambiguous: '待澄清' } as Record<string, string>;
   return <section className="im-requirements">
     <h3>交互物合同</h3>
-    <p>{prop.initial_state} → {prop.target_state}</p>
-    <p>运动部件：{prop.moving_parts.join('、')}</p><p>固定部件：{prop.fixed_parts.join('、') || '无'}</p>
-    <p>运动类型：{({ appearance_change: '外观变化', hinge_rotation: '铰接转动', deformation: '形变', occluded_rigid_translation: '带遮挡的刚体平移（当前生成器不适合）' } as Record<string, string>)[prop.motion_type]}</p>
-    <p>终点：{prop.endpoint} · 停留：{prop.hold}</p>
-    {Object.entries(prop.reference_check).map(([key, check]) => <p key={key}>
-      {({ viewpoint: '视角', initial_state: '初态', part_ownership: '部件归属' } as Record<string, string>)[key]} ·
-      {({ satisfied: '符合', mismatch: '不符', ambiguous: '待澄清' } as Record<string, string>)[check.status]} · {check.evidence}</p>)}
+    <dl className="im-facts">
+      <dt>状态</dt><dd>{prop.initial_state} → {prop.target_state}</dd>
+      <dt>运动部件</dt><dd>{prop.moving_parts.join('、')}</dd>
+      <dt>固定部件</dt><dd>{prop.fixed_parts.join('、') || '无'}</dd>
+      <dt>运动类型</dt><dd>{({ appearance_change: '外观变化', hinge_rotation: '铰接转动', deformation: '形变', occluded_rigid_translation: '带遮挡的刚体平移（当前生成器不适合）' } as Record<string, string>)[prop.motion_type]}</dd>
+      <dt>终点</dt><dd>{prop.endpoint}</dd>
+      <dt>停留</dt><dd>{prop.hold}</dd>
+    </dl>
+    <h3>起始图核对</h3>
+    <dl className="im-facts">{Object.entries(prop.reference_check).map(([key, check]) => <div key={key} className="im-fact-row">
+      <dt>{({ viewpoint: '视角', initial_state: '初态', part_ownership: '部件归属' } as Record<string, string>)[key]}</dt>
+      <dd><span className="im-pill" data-status={check.status === 'satisfied' ? 'accepted' : 'attention'}>{checks[check.status]}</span> {check.evidence}</dd></div>)}</dl>
     {prop.differences?.map((d, i) => <p key={i}>原描述「{d.description}」，参考图「{d.observed}」</p>)}
     {!!work.plan.questions.length && <div className="motion-notice"><h3>需要你补充</h3>{work.plan.questions.map(q => <p key={q}>{q}</p>)}</div>}
-    {s && <><h3>第 {stage! + 1} 段 · {s.name}</h3><p>{s.goal}</p>{s.checkpoint && <p>确认状态：{s.checkpoint.endpoint}</p>}
-      <ul>{s.acceptance.map(a => <li key={a}>{a}</li>)}</ul></>}
     {canBind && <div className="motion-notice"><p>状态图中有 {pending.length} 张目标图尚未绑定为段末目标。</p>
       <button disabled={busy} onClick={() => void bind()}>按状态顺序绑定目标图</button></div>}
     {!work.job && work.status === 'ready' && work.plan.stages.length !== draft.states.length - 1 && draft.states.some(st => st.targetPng) &&
@@ -459,4 +489,22 @@ function Measurements({ review }: { review: MotionReview }) {
         {tracked.reference_radius_px != null && <td data-off={f.radius_px == null || Math.abs(f.radius_px - tracked.reference_radius_px) > (tracked.tolerance_px ?? 2) || undefined}>{f.radius_px ?? '—'}</td>}</tr>)}</tbody></table>
     <p className="motion-muted">固定区变化像素已扣除运动部件遮挡；测量与模型意见冲突时需要人工裁决。</p>
   </details>;
+}
+
+/** A planned transition before production: what it should do and how it will be checked. */
+function StagePlan({ work, stage }: { work: MotionWork; stage: number }) {
+  const s = work.plan?.stages[stage];
+  if (!s) return null;
+  return <div className="im-stage-plan">
+    <dl className="im-facts">
+      <dt>目标</dt><dd>{s.goal}</dd>
+      <dt>计划帧数</dt><dd>{s.frame_count} 帧</dd>
+      {s.checkpoint && <><dt>确认状态</dt><dd>{s.checkpoint.endpoint}</dd><dt>节奏</dt><dd>{s.checkpoint.rhythm}</dd></>}
+      <dt>起点</dt><dd>{stage === 0 ? '对象原图' : '上一段确认的状态帧'}</dd>
+    </dl>
+    <h3>检查标准</h3>
+    <ul>{s.acceptance.map(a => <li key={a}>{a}</li>)}</ul>
+    <details><summary>生成描述</summary><p className="motion-prompt">{s.prompt}</p></details>
+    <p className="motion-muted">确认方案后开始制作；每段生成后都在这里播放检查，确认后才继续下一段。</p>
+  </div>;
 }

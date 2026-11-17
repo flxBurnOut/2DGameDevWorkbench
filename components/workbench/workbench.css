@@ -375,10 +375,34 @@
 .wb-home-head .wb-intro {
   margin: 6px 0 0;
 }
-.wb-tool-cards {
+/* Two production lines side by side; inside each, the tools in production order. */
+.wb-tool-lines {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
+  gap: 20px 28px;
+}
+.wb-tool-line {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.wb-tool-line-title {
+  margin: 0;
+  color: var(--wb-muted);
+  font-size: var(--ui-text-sm);
+  font-weight: 600;
+}
+.wb-tool-line-cards {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+}
+.wb-tool-line-arrow {
+  align-self: center;
+  color: var(--wb-muted);
 }
 .wb-tool-card {
   display: flex;
@@ -400,6 +424,7 @@
 }
 /* Transparent pixel art sits on the same checkerboard as the editors. */
 .wb-tool-card-preview {
+  position: relative;
   display: grid;
   place-items: center;
   height: 152px;
@@ -413,6 +438,55 @@
 }
 .wb-tool-card:hover .wb-tool-card-preview > * {
   transform: translateY(-3px);
+}
+.wb-preview-slide {
+  display: grid;
+  place-items: center;
+  animation: wb-preview-in var(--ui-duration) var(--ui-ease);
+}
+@keyframes wb-preview-in {
+  from { opacity: 0; }
+}
+.wb-preview-label {
+  position: absolute;
+  left: 8px;
+  bottom: 6px;
+  max-width: calc(100% - 64px);
+  overflow: hidden;
+  padding: 1px 6px;
+  border-radius: var(--ui-radius-sm);
+  color: var(--wb-muted);
+  background: color-mix(in srgb, var(--wb-panel) 85%, transparent);
+  font-size: var(--ui-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-preview-dots {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 4px;
+}
+.wb-preview-dots > span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--wb-muted) 45%, transparent);
+}
+.wb-preview-dots > span[data-active] {
+  background: var(--wb-accent);
+}
+/* Frame strips step through whole frames; pixels stay square. */
+.wb-clip {
+  display: block;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  animation-name: wb-clip;
+  animation-iteration-count: infinite;
+}
+@keyframes wb-clip {
+  to { background-position-x: calc(var(--clip-frames) * var(--clip-size) * -1); }
 }
 .wb-tool-card-preview img {
   max-width: 100%;
@@ -479,6 +553,9 @@
 }
 .wb-tool-card-stages {
   min-width: 0;
+  margin-top: 4px;
+  color: var(--wb-muted);
+  font-size: var(--ui-text-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -956,7 +1033,7 @@
 .wb-spin {
   animation: wb-spin 1s linear infinite;
 }
-/* Two layout steps only: below the supported desktop width (1100px), and phone width. */
+/* Layout steps: below the supported desktop width (1100px), the home tool lines (900px), and phone width. */
 @media (max-width: 1099px) {
   .wb-header {
     padding-inline: 12px;
@@ -984,6 +1061,12 @@
     border-top: 1px solid var(--wb-line);
   }
 }
+/* Four cards stop fitting one row; each line keeps its two cards side by side. */
+@media (max-width: 899px) {
+  .wb-tool-lines {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 700px) {
   .wb-brand strong {
     display: none;
@@ -998,8 +1081,12 @@
     grid-template-columns: 1fr;
     gap: 16px;
   }
-  .wb-tool-cards {
+  .wb-tool-line-cards {
     grid-template-columns: 1fr;
+  }
+  .wb-tool-line-arrow {
+    justify-self: center;
+    transform: rotate(90deg);
   }
   .wb-recent-assets {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1052,6 +1139,14 @@
   }
   .wb-skeleton {
     animation: none;
+  }
+  .wb-preview-slide {
+    animation: none;
+  }
+  /* Show the finished state instead of playing the clip. */
+  .wb-clip {
+    animation: none;
+    background-position-x: calc((var(--clip-frames) - 1) * var(--clip-size) * -1);
   }
   .wb-tool-card:hover .wb-tool-card-preview > *,
   .wb-tool-card:hover .wb-tool-card-arrow {

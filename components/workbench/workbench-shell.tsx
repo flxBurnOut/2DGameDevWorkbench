@@ -1,13 +1,13 @@
 'use client';
 /* oxlint-disable next/no-html-link-for-pages, next/no-img-element -- Native navigation is saved and guarded by WorkbenchProvider; previews are local pixel art. */
-import { useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { Archive, ArrowRight, ChevronRight } from 'lucide-react';
 import { workbenchDestinations, workspaceGroups } from '@/lib/workbench/navigation';
 import { workItemTitle, type WorkItem, type WorkItemState } from '@/lib/workbench/work-items';
 import { ModuleIcon } from './module-icon';
 import { useWorkbench } from './workbench-provider';
 import { useRecordSummary } from './shared-navigation';
-import { SampleAnimation, SampleCharacter, SampleInteractable } from './home-samples';
+import { SampleAnimation, SampleCharacter, SampleClip, SampleInteractable, interactableClips } from './home-samples';
 
 type HomeAsset = {
   id: string;
@@ -31,16 +31,17 @@ const actionLabels: Record<WorkItemState, string> = { attention: '处理', runni
 const previewKinds: Record<string, string[]> = {
   'reference-art': ['character'],
   'sprite-generator': ['animation'],
-  // Confirmed state images are catalogued as props; the editor keeps its own preference order.
-  'interactable-motion': ['prop'],
+  // Confirmed state images are still frames; the panel shows playable built-in clips instead.
   'interactable-editor': ['interactable', 'prop'],
 };
 const samples: Record<string, () => ReactNode> = {
   'reference-art': SampleCharacter,
   'sprite-generator': SampleAnimation,
-  'interactable-motion': SampleInteractable,
   'interactable-editor': SampleInteractable,
 };
+const previewLimit = 3;
+
+type PreviewSlide = { key: string; label: string; node: ReactNode; ms: number };
 
 async function readAssets(params: Record<string, string>, signal: AbortSignal) {
   const query = new URLSearchParams({ query: '', scope: 'active', offset: '0', ...params });
@@ -50,17 +51,17 @@ async function readAssets(params: Record<string, string>, signal: AbortSignal) {
   return data.assets.filter((asset) => asset.availability === 'available' && asset.previewKind !== 'none');
 }
 
-/** Latest asset per kind plus the most recent pieces; failures leave the samples in place. */
+/** Latest assets per kind plus the most recent pieces; failures leave the samples in place. */
 function useHomeAssets() {
   const [recent, setRecent] = useState<HomeAsset[] | null>(null);
-  const [byKind, setByKind] = useState<Record<string, HomeAsset>>({});
+  const [byKind, setByKind] = useState<Record<string, HomeAsset[]>>({});
   useEffect(() => {
     const controller = new AbortController();
     void readAssets({ limit: '6' }, controller.signal)
       .then(setRecent, () => { if (!controller.signal.aborted) setRecent([]); });
     for (const kind of ['character', 'animation', 'interactable', 'prop'])
-      void readAssets({ limit: '1', kind }, controller.signal)
-        .then(([asset]) => { if (asset) setByKind((current) => ({ ...current, [kind]: asset })); }, () => undefined);
+      void readAssets({ limit: String(previewLimit), kind }, controller.signal)
+        .then((assets) => { if (assets.length) setByKind((current) => ({ ...current, [kind]: assets })); }, () => undefined);
     return () => controller.abort();
   }, []);
   return { recent, byKind };
@@ -74,10 +75,62 @@ function pixelSize(asset: HomeAsset, box: number) {
   return { width: Math.round((asset.width || side) * scale), height: Math.round((asset.height || side) * scale) };
 }
 
+/** The user's own pieces come first; built-in samples fill the card when the library has none. */
+function previewSlides(toolId: string, byKind: Record<string, HomeAsset[]>): PreviewSlide[] {
+  if (toolId === 'interactable-motion')
+    return interactableClips.map((clip) => ({
+      key: clip.src, label: `示例 · ${clip.label}`, node: <SampleClip clip={clip} />, ms: Math.round((clip.frames / clip.fps) * 2000),
+    }));
+  const kinds = previewKinds[toolId] || [];
+  const assets = kinds.flatMap((kind) => byKind[kind] || []).slice(0, previewLimit);
+  // Only animations rotate; a still tool keeps its latest piece.
+  const shown = toolId === 'sprite-generator' ? assets : assets.slice(0, 1);
+  if (shown.length)
+    return shown.map((asset) => ({
+      key: asset.id, label: asset.title,
+      node: <img src={asset.previewUrl} alt="" {...pixelSize(asset, 128)} decoding="async" />, ms: 4500,
+    }));
+  const Sample = samples[toolId];
+  return Sample ? [{ key: 'sample', label: '', node: <Sample />, ms: 0 }] : [];
+}
+
+function useReducedMotion() {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => setReduced(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return reduced;
+}
+
+function ToolPreview({ slides }: { slides: PreviewSlide[] }) {
+  const [index, setIndex] = useState(0);
+  const reduced = useReducedMotion();
+  const current = slides[index % Math.max(1, slides.length)];
+  useEffect(() => {
+    if (reduced || slides.length < 2 || !current) return;
+    const timer = window.setTimeout(() => setIndex((value) => (value + 1) % slides.length), current.ms);
+    return () => window.clearTimeout(timer);
+  }, [current, reduced, slides.length]);
+  return (
+    <span className="wb-tool-card-preview">
+      {current && <span className="wb-preview-slide" key={current.key}>{current.node}</span>}
+      {current?.label && <span className="wb-preview-label">{current.label}</span>}
+      {slides.length > 1 && (
+        <span className="wb-preview-dots" aria-hidden="true">
+          {slides.map((slide, i) => <span key={slide.key} data-active={i === index % slides.length || undefined} />)}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function WorkbenchShell() {
   const wb = useWorkbench();
   const { recent, byKind } = useHomeAssets();
-  const tools = workspaceGroups.flatMap((line) => line.tools.map((tool) => ({ tool, line })));
   return (
     <main className="wb-page wb-home">
       <header className="wb-home-head">
@@ -91,35 +144,31 @@ export function WorkbenchShell() {
         </a>
       </header>
 
-      <div className="wb-tool-cards">
-        {tools.map(({ tool, line }) => {
-          const asset = previewKinds[tool.id]?.map((kind) => byKind[kind]).find(Boolean);
-          const Sample = samples[tool.id];
-          const size = asset && pixelSize(asset, 128);
-          return (
-            <a className="wb-tool-card" key={tool.id} href={tool.href} data-accent={tool.accent}>
-              <span className="wb-tool-card-preview">
-                {asset ? (
-                  <img src={asset.previewUrl} alt="" {...size} decoding="async" />
-                ) : Sample ? (
-                  <Sample />
-                ) : null}
-              </span>
-              <span className="wb-tool-card-body">
-                <span className="wb-tool-card-title">
-                  <ModuleIcon icon={tool.icon} className="size-5" />
-                  {tool.name}
-                  <ArrowRight size={16} className="wb-tool-card-arrow" />
-                </span>
-                <span className="wb-tool-card-hint">{tool.starterHint}</span>
-                <span className="wb-tool-card-meta">
-                  <span className="wb-tag">{lineLabels[line.id] || line.name}</span>
-                  <span className="wb-tool-card-stages" title={tool.stages.join(' → ')}>{tool.stages.join(' → ')}</span>
-                </span>
-              </span>
-            </a>
-          );
-        })}
+      <div className="wb-tool-lines">
+        {workspaceGroups.map((line) => (
+          <section className="wb-tool-line" key={line.id} aria-labelledby={`home-line-${line.id}`} data-accent={line.accent}>
+            <h2 className="wb-tool-line-title" id={`home-line-${line.id}`}>{lineLabels[line.id] || line.name}</h2>
+            <div className="wb-tool-line-cards">
+              {line.tools.map((tool, index) => (
+                <Fragment key={tool.id}>
+                  {index > 0 && <ArrowRight size={16} className="wb-tool-line-arrow" aria-hidden="true" />}
+                  <a className="wb-tool-card" href={tool.href} data-accent={tool.accent}>
+                    <ToolPreview slides={previewSlides(tool.id, byKind)} />
+                    <span className="wb-tool-card-body">
+                      <span className="wb-tool-card-title">
+                        <ModuleIcon icon={tool.icon} className="size-5" />
+                        {tool.name}
+                        <ArrowRight size={16} className="wb-tool-card-arrow" />
+                      </span>
+                      <span className="wb-tool-card-hint">{tool.starterHint}</span>
+                      <span className="wb-tool-card-stages" title={tool.stages.join(' → ')}>{tool.stages.join(' → ')}</span>
+                    </span>
+                  </a>
+                </Fragment>
+              ))}
+            </div>
+          </section>
+        ))}
       </div>
 
       <RecentWork items={wb.items} onShowAll={() => wb.setQueueOpen(true)} />

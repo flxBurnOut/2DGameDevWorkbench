@@ -86,3 +86,32 @@ export function SampleAnimation() {
 export function SampleInteractable() {
   return <Sprite rows={chest} scale={8} />;
 }
+
+/** A real generated clip stored as a horizontal 128 px frame strip under public/home-samples. */
+export type SampleClipSource = { src: string; frames: number; fps: number; label: string };
+
+export const interactableClips: SampleClipSource[] = [
+  // Archived PixelLab clips from examples/n2-pilot-*; first and last frames are repeated so each state reads.
+  { src: '/home-samples/lamp.png', frames: 28, fps: 12, label: '指示灯点亮' },
+  { src: '/home-samples/chest.png', frames: 28, fps: 12, label: '宝箱打开' },
+  { src: '/home-samples/lever.png', frames: 20, fps: 10, label: '拉杆扳起' },
+];
+
+export function SampleClip({ clip, size = 128 }: { clip: SampleClipSource; size?: number }) {
+  return (
+    <span
+      className="wb-clip"
+      aria-hidden="true"
+      style={{
+        width: size,
+        height: size,
+        backgroundImage: `url(${clip.src})`,
+        backgroundSize: `${clip.frames * size}px ${size}px`,
+        animationDuration: `${clip.frames / clip.fps}s`,
+        animationTimingFunction: `steps(${clip.frames})`,
+        ['--clip-frames' as string]: clip.frames,
+        ['--clip-size' as string]: `${size}px`,
+      }}
+    />
+  );
+}

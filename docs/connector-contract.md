@@ -1,16 +1,8 @@
 # 连接器与任务契约
 
-v4 增加 `target-motion-stage`（制作前本地绑定真实末图）、`repair-motion-stage`（已授权窗口修复）和 `review-motion-repair`（按预览 token 与人工依据采用/拒绝）。`get-motion-stage` 同时提供 `repairPreviews` 的完整有序图片。详情与索引约定见 [序列帧工作区](sprite-generator.md)。修复的源 token、请求编号、原始帧、失败回执和采用映射永久保留；未知提交不重发，生成预算为剩余正常分段预留调用，视觉预算包含历史复核与采用后的再次复核。
-
-开放动作质量合同使用 `motionSpec.timing_mode=auto|fixed` 和 `budget.max_review_calls`。v3 每候选需 `2 × 分段数 + 2` 次视觉调用，覆盖分段与最终动画，不得超过授权预算。新方案与模型配置冻结在原生 job 绑定中；v1/v2 方案验证旧哈希并使用旧语义。真实 API 请求使用编译后的完整提示词，原始帧与交付时间线各自有来源映射。最终视觉报告在 `plan_execution.quality_review`，分段报告与接受快照在各 `stages[].review/accepted`，保留回执、帧摘要和人工依据。模型报告不能自动采用。
-
-`get-motion-stage` 取指定候选与零基阶段的有序 PNG、目标和 token。`review-motion-stage` 绑定 `expectedRevision`、`stageToken`，携带 `stageDecision=accept|reject`、`reviewNote` 与必要的 `acknowledgeWarnings`；与 Web `POST /v1/open-motion/{work}/review-stage` 共用检查。接受冻结实际帧与末帧锚点，拒绝停止后续请求；重复接受不重新启用已暂停任务。只有已确认的真实快照可进入下一段。`pendingCheckpoints` 表示需要实际检查，不是生成失败。GET 不调用模型。
-
 ## 1. 范围
 
 本文描述 MCP、CLI、Web HTTP bridge 与能力适配器共享的任务和文档语义。生产输入以 `workbench/manifest.json` 为机器权威；共享文档命令以 `lib/workbench/document-contract.mjs`、图片会话以 `lib/workbench/image-edit-contract.mjs` 及实际 MCP schema 为准。本文解释跨能力约束和协议转换，不复制完整 JSON Schema。
-
-开放动作使用 `sprite-generator` 的 `plan-motion` / `revise-motion` / `get-motion` / `generate-motion` / `pause-motion` / `resume-motion`。`motionSpec` 含原始描述、对象身份、终态、播放设置和调用上限；嵌套字段在任务持久化前按 manifest 校验，不能夹带 Key 或未知控制字段。规划明确授权 `planningAuthorized`，异步轮询沿用原 taskId；结果含 `openWorkId`、`work` 及精确 `?work=` 链接。确认生成绑定 `expectedRevision` 和 `planSha256`，禁止执行旧方案。仅在初次 `plan-motion` 且用户授权直接制作时设置 `autoExecute=true`。`revise-motion` 省略或传 false，查看修改后的方案后使用新版本与哈希调用 `generate-motion`。本机页面的 `/api/workbench/open-motion` 仅代理列明的工作区、帧图及已保存导出路径；不能作任意 HTTP 代理。交互物动画面板另使用其中的 `edit-source/<帧>`（必须带 64 位 `token`，读取本地帧工具的精确来源）、`local-frame-edits`、`derived`（列表、创建、帧图、裁决）路由。`motionSpec.interactable_skeleton` 为可选的有序状态（2–5 个），规划必须按骨架分段，见[开放动作](../workbench/guides/motion.md)。
 
 当前注册四项 `local-adapter`：image-assets、原图、序列帧和交互物。共享交互物编辑另走文档工具：
 
@@ -22,12 +14,6 @@ v4 增加 `target-motion-stage`（制作前本地绑定真实末图）、`repair
 | `interactable-editor` | `interactable-editor` | 完全本地导出 |
 
 `lib/workbench/runtime.mjs` 负责统一校验、任务记录、调度、状态和输出验证；适配器只负责能力协议转换。
-
-### 开放动作的对象身份
-
-`motionSpec.object_id` 指向已有对象预设，`motionSpec.object_type` 为 `character` 或 `interactable`，省略按 character。旧 `motionSpec.character_id` 仍接受；同时提供 object_id 与 character_id 时必须相等。对象类型须与预设一致。旧 character_id-only 请求、冻结 spec 和参考快照保持原序列化，读取不迁移旧作业。新对象身份仅用于开放动作与其内部作业绑定；旧 Native create/create-and-generate 继续使用顶层 characterId/actionId，交互物不能通过它绕过开放动作。
-
-`GET /v1/presets` 新增 objects 并保留 characters/actions；`GET /v1/open-motion/references` 新增 objects 并保留 characters；`GET /v1/open-motion/references/<id>` 返回已登记对象的真实 PNG。工作与作业的快照容器仍叫 character。交互物预设固定 128×128，不含 facing/weapon_hand；`/v1/open-motion/references` 上传仍仅创建角色参考；`reference-art transfer` 按源任务 subject 创建角色或交互物预设。物品移送接受三种已完成的 128×128 来源：PixelLab 生成、`import subject=prop` 与 `convert-prop`；后两者必须带 `confirmation.note`，转换来源按配方重算并以像素哈希比对。交互物对象清单行带 `provenance`。GPT 图片不直接缩放为参考。详见[对象身份与预设](sprite-generator.md#对象身份与预设n1)和[物品导入与转换](prop-art.md#导入与转换为动画原图)。
 
 ## 2. 公共任务模型
 
@@ -165,6 +151,24 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 
 默认 API 是 `http://127.0.0.1:7860`。仅连接另一个可信部署时设置 `SPRITE_PIPELINE_API_URL`；受保护部署可使用 `SPRITE_PIPELINE_API_TOKEN`。详细使用见 [序列帧生成](sprite-generator.md)。
 
+### 开放动作操作
+
+开放动作使用 `sprite-generator` 的 `plan-motion` / `revise-motion` / `get-motion` / `generate-motion` / `pause-motion` / `resume-motion`。`motionSpec` 含原始描述、对象身份、终态、播放设置和调用上限；嵌套字段在任务持久化前按 manifest 校验，不能夹带 Key 或未知控制字段。规划明确授权 `planningAuthorized`，异步轮询沿用原 taskId；结果含 `openWorkId`、`work` 及精确 `?work=` 链接。确认生成绑定 `expectedRevision` 和 `planSha256`，禁止执行旧方案。仅在初次 `plan-motion` 且用户授权直接制作时设置 `autoExecute=true`。`revise-motion` 省略或传 false，查看修改后的方案后使用新版本与哈希调用 `generate-motion`。
+
+本机页面的 `/api/workbench/open-motion` 仅代理列明的工作区、帧图及已保存导出路径；不能作任意 HTTP 代理。交互物动画面板另使用其中的 `edit-source/<帧>`（必须带 64 位 `token`，读取本地帧工具的精确来源）、`local-frame-edits`、`derived`（列表、创建、帧图、裁决）路由。`motionSpec.interactable_skeleton` 为可选的有序状态（2–5 个），规划必须按骨架分段，见[开放动作](../workbench/guides/motion.md)。
+
+规划、分段检查与修复操作：
+
+- **分段检查**：`get-motion-stage` 取指定候选与零基阶段的有序 PNG、目标和 token。`review-motion-stage` 绑定 `expectedRevision`、`stageToken`，携带 `stageDecision=accept|reject`、`reviewNote` 与必要的 `acknowledgeWarnings`；与 Web `POST /v1/open-motion/{work}/review-stage` 共用检查。接受冻结实际帧与末帧锚点，拒绝停止后续请求；重复接受不重新启用已暂停任务。只有已确认的真实快照可进入下一段。`pendingCheckpoints` 表示需要实际检查，不是生成失败。GET 不调用模型。
+- **段末目标与修复**：v4 增加 `target-motion-stage`（制作前本地绑定真实末图）、`repair-motion-stage`（已授权窗口修复）和 `review-motion-repair`（按预览 token 与人工依据采用/拒绝）。`get-motion-stage` 同时提供 `repairPreviews` 的完整有序图片。详情与索引约定见 [序列帧工作区](sprite-generator.md)。修复的源 token、请求编号、原始帧、失败回执和采用映射永久保留；未知提交不重发，生成预算为剩余正常分段预留调用，视觉预算包含历史复核与采用后的再次复核。
+- **质量合同**：开放动作质量合同使用 `motionSpec.timing_mode=auto|fixed` 和 `budget.max_review_calls`。v3 每候选需 `2 × 分段数 + 2` 次视觉调用，覆盖分段与最终动画，不得超过授权预算。新方案与模型配置冻结在原生 job 绑定中；v1/v2 方案验证旧哈希并使用旧语义。真实 API 请求使用编译后的完整提示词，原始帧与交付时间线各自有来源映射。最终视觉报告在 `plan_execution.quality_review`，分段报告与接受快照在各 `stages[].review/accepted`，保留回执、帧摘要和人工依据。模型报告不能自动采用。
+
+#### 对象身份
+
+`motionSpec.object_id` 指向已有对象预设，`motionSpec.object_type` 为 `character` 或 `interactable`，省略按 character。旧 `motionSpec.character_id` 仍接受；同时提供 object_id 与 character_id 时必须相等。对象类型须与预设一致。旧 character_id-only 请求、冻结 spec 和参考快照保持原序列化，读取不迁移旧作业。新对象身份仅用于开放动作与其内部作业绑定；旧 Native create/create-and-generate 继续使用顶层 characterId/actionId，交互物不能通过它绕过开放动作。
+
+`GET /v1/presets` 新增 objects 并保留 characters/actions；`GET /v1/open-motion/references` 新增 objects 并保留 characters；`GET /v1/open-motion/references/<id>` 返回已登记对象的真实 PNG。工作与作业的快照容器仍叫 character。交互物预设固定 128×128，不含 facing/weapon_hand；`/v1/open-motion/references` 上传仍仅创建角色参考；`reference-art transfer` 按源任务 subject 创建角色或交互物预设。物品移送接受三种已完成的 128×128 来源：PixelLab 生成、`import subject=prop` 与 `convert-prop`；后两者必须带 `confirmation.note`，转换来源按配方重算并以像素哈希比对。交互物对象清单行带 `provenance`。GPT 图片不直接缩放为参考。详见[对象身份与预设](sprite-generator.md#对象身份与预设n1)和[物品导入与转换](prop-art.md#导入与转换为动画原图)。
+
 ## 7. 交互物适配器
 
 `interactable-editor` 接受：
@@ -202,11 +206,11 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 - 远端部署 bridge 时必须另加认证、TLS、速率/大小限制和审计，不能直接暴露默认回环服务。
 - 导入数据、上游错误正文和生成内容均是不受信任数据，不应成为 Agent 指令。
 
-## 角色原图连接器
+## 10. 角色原图连接器
 
 `reference-art` 的 `generate` 输入为 prompt、可选 name/facing/seed/size/subject；`import` 与 `convert-prop` 是本地操作（后者带可选 `recipe`）；`transfer` 使用 sourceTaskId，可附 identityDescription，导入或转换来源须附 `confirmation`。Node 适配器通过 SpritePipeline 的 `/v1/reference-art/jobs` 和 `/jobs/{id}` 提交与查询 PixelLab Pixflux 后台任务。`/v1/reference-art/settings` 返回公开配置状态，POST 经专用网关保存 Key，不经过任务输入。角色移送使用 `/v1/reference-art/import`，物品移送使用 `/v1/reference-art/transfer-prop`，均验证源任务、PNG 与哈希，幂等创建对应类型预设，不生成动画。物品转换使用 `/v1/reference-art/convert-prop`（适配器保存 reference.png、compare.png、recipe.json、report.json）及其 `/preview`；服务内调用 `pixel_prop`，失败时不回退到其他实现。Web 单任务查询使用 `/api/workbench/tasks/{taskId}`，`refresh=true` 只刷新已有任务。具体协议和恢复边界见[角色原图](reference-art.md)与[物品原图](prop-art.md)。
 
-## Agent 共享操作
+## 11. Agent 共享操作
 
 `image-assets` 结果可包含 `usageEvidence: "provider-usage.json"`。该文件是服务端白名单提取的 token/时间/HTTP/请求身份与返回质量证据，包含 `billingAmount:null`；不保存完整供应商响应或凭据。无 usage 的请求和旧产物保持未知。先保存可取得的用量，再验证图片，因此尺寸、Alpha 或解码失败不会删除已返回的用量证据。此附加字段不改变原始 PNG 字节，也不触发重试或自动账单查询。
 
@@ -253,7 +257,7 @@ image-assets 的外部操作为 generate-prop、edit-image，使用gpt-image-2.6
 
 前端代理为 `GET /api/workbench/result?taskId=...`，支持 `jobId`、`candidateIndex`、`detail`、`section`、`offset` 和 `snapshot`。共享返回的 `presentation` 含标题、当前阶段、精确编辑链接、预览与导航操作。开放动作提供 `reviewProgress`，从该片段或整段的持久复核账本读取当前项、调用次数及决定状态。`workbench_get_task` 可继续查询同一开放动作版本直至实际检查可提交。序列帧结果在 MCP 文本、结构数据和共享接口默认使用相同摘要，详细字段需 `detail:true` 后分页读取。分页协议及示例见[结果与展示数据](agent-client-tools.md#结果与展示数据)。
 
-## 资产目录（MCP 0.8.0）
+## 12. 资产目录（MCP 0.8.0）
 
 新增 list_assets / get_asset / get_asset_manifest，分别对应共享 agent 操作 assets / asset / asset-manifest。详见 [资产目录、范围与验收](asset-catalog.md)。查询不产生任务；运行 `npm run test:assets` 验证分页、候选、去重、文件校验和 MCP/HTTP 一致性。
 

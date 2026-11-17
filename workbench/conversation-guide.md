@@ -17,9 +17,9 @@
 | --- | --- |
 | 制作流程、工具选择 | `production` · [资产制作 Skill](../.agents/skills/2d-game-workbench/SKILL.md) |
 | 角色原图生成、已有图片导入与移送 | `reference-art` · [角色原图](../docs/reference-art.md) |
-| 角色与动作：规划、分段检查、导出 | `motion` · [开放动作](guides/motion.md) |
+| 角色与交互物动作：规划、分段检查、状态骨架、导出与状态写回 | `motion` · [开放动作](guides/motion.md) |
 | 选帧修改、原版与备选比较 | `adjustments` · [动画调整](../docs/motion-adjustments.md) |
-| 透明物品生成与整图编辑 | `image-generation` · [图片素材](../docs/prop-art.md) |
+| 透明物品生成与整图编辑；128 px 物品原图导入与像素化转换 | `image-generation` · [图片素材](../docs/prop-art.md) |
 | 已有图片的局部编辑与恢复 | `image-editing` · [图片编辑](../docs/image-editing.md) |
 | 交互物与共享工程 | `interactables` · [交互物](../docs/interactable-editor.md) |
 | 查找、下载、交接已有资产 | `assets` · [资产目录](../docs/asset-catalog.md) |
@@ -27,7 +27,7 @@
 | 展示作品、连接预览或页面跟随 | `presentation` · [预览协议](../docs/agent-preview-follow.md) |
 | 美术判断；专门研究复核准确率 | `visual-review` · [判断维度](experts/2d-production-expert.md)；`review-evaluation` · [评测](../docs/sprite-review-evaluation.md) |
 
-已有作品优先按资产查找，执行故障按任务查找。多个合理目标才需要用户选择；内部 ID 从结果中获取。角色图片可通过 `reference-art import` 导入，随后 transfer 为动画参考。
+已有作品优先按资产查找，执行故障按任务查找。多个合理目标才需要用户选择；内部 ID 从结果中获取。角色图片可通过 `reference-art import` 导入，随后 transfer 为动画参考；物品图片用 `import subject=prop`（已是 128 px）或 `convert-prop`（大图像素化），检查后带确认说明 transfer 为交互物动画参考。
 
 ## 执行与交付
 

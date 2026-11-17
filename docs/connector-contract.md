@@ -10,7 +10,7 @@ v4 增加 `target-motion-stage`（制作前本地绑定真实末图）、`repair
 
 本文描述 MCP、CLI、Web HTTP bridge 与能力适配器共享的任务和文档语义。生产输入以 `workbench/manifest.json` 为机器权威；共享文档命令以 `lib/workbench/document-contract.mjs`、图片会话以 `lib/workbench/image-edit-contract.mjs` 及实际 MCP schema 为准。本文解释跨能力约束和协议转换，不复制完整 JSON Schema。
 
-开放动作使用 `sprite-generator` 的 `plan-motion` / `revise-motion` / `get-motion` / `generate-motion` / `pause-motion` / `resume-motion`。`motionSpec` 含原始描述、对象身份、终态、播放设置和调用上限；嵌套字段在任务持久化前按 manifest 校验，不能夹带 Key 或未知控制字段。规划明确授权 `planningAuthorized`，异步轮询沿用原 taskId；结果含 `openWorkId`、`work` 及精确 `?work=` 链接。确认生成绑定 `expectedRevision` 和 `planSha256`，禁止执行旧方案。只有用户已授权直接制作时才设置 `autoExecute`。本机页面的 `/api/workbench/open-motion` 仅代理列明的工作区、帧图及已保存导出路径；不能作任意 HTTP 代理。
+开放动作使用 `sprite-generator` 的 `plan-motion` / `revise-motion` / `get-motion` / `generate-motion` / `pause-motion` / `resume-motion`。`motionSpec` 含原始描述、对象身份、终态、播放设置和调用上限；嵌套字段在任务持久化前按 manifest 校验，不能夹带 Key 或未知控制字段。规划明确授权 `planningAuthorized`，异步轮询沿用原 taskId；结果含 `openWorkId`、`work` 及精确 `?work=` 链接。确认生成绑定 `expectedRevision` 和 `planSha256`，禁止执行旧方案。只有用户已授权直接制作时才设置 `autoExecute`。本机页面的 `/api/workbench/open-motion` 仅代理列明的工作区、帧图及已保存导出路径；不能作任意 HTTP 代理。交互物动画面板另使用其中的 `edit-source/<帧>`（必须带 64 位 `token`，读取本地帧工具的精确来源）、`local-frame-edits`、`derived`（列表、创建、帧图、裁决）路由。`motionSpec.interactable_skeleton` 为可选的有序状态（2–5 个），规划必须按骨架分段，见[开放动作](../workbench/guides/motion.md)。
 
 当前注册四项 `local-adapter`：image-assets、原图、序列帧和交互物。共享交互物编辑另走文档工具：
 
@@ -27,7 +27,7 @@ v4 增加 `target-motion-stage`（制作前本地绑定真实末图）、`repair
 
 `motionSpec.object_id` 指向已有对象预设，`motionSpec.object_type` 为 `character` 或 `interactable`，省略按 character。旧 `motionSpec.character_id` 仍接受；同时提供 object_id 与 character_id 时必须相等。对象类型须与预设一致。旧 character_id-only 请求、冻结 spec 和参考快照保持原序列化，读取不迁移旧作业。新对象身份仅用于开放动作与其内部作业绑定；旧 Native create/create-and-generate 继续使用顶层 characterId/actionId，交互物不能通过它绕过开放动作。
 
-`GET /v1/presets` 新增 objects 并保留 characters/actions；`GET /v1/open-motion/references` 新增 objects 并保留 characters；`GET /v1/open-motion/references/<id>` 返回已登记对象的真实 PNG。工作与作业的快照容器仍叫 character。交互物预设固定 128×128，不含 facing/weapon_hand；上传接口仍仅创建角色参考，`reference-art transfer` 则按源任务 subject 创建角色或交互物预设。物品移送只接受已完成的 128×128 PixelLab 物品原图，不缩放 GPT 图片。详见[对象身份与预设](sprite-generator.md#对象身份与预设n1)和[物品移送](prop-art.md#旧-pixellab-流程)。
+`GET /v1/presets` 新增 objects 并保留 characters/actions；`GET /v1/open-motion/references` 新增 objects 并保留 characters；`GET /v1/open-motion/references/<id>` 返回已登记对象的真实 PNG。工作与作业的快照容器仍叫 character。交互物预设固定 128×128，不含 facing/weapon_hand；`/v1/open-motion/references` 上传仍仅创建角色参考；`reference-art transfer` 按源任务 subject 创建角色或交互物预设。物品移送接受三种已完成的 128×128 来源：PixelLab 生成、`import subject=prop` 与 `convert-prop`；后两者必须带 `confirmation.note`，转换来源按配方重算并以像素哈希比对。交互物对象清单行带 `provenance`。GPT 图片不直接缩放为参考。详见[对象身份与预设](sprite-generator.md#对象身份与预设n1)和[物品导入与转换](prop-art.md#导入与转换为动画原图)。
 
 ## 2. 公共任务模型
 
@@ -124,6 +124,8 @@ Image 2.6 先持久化 running 任务和执行进程租约，再提交后台请�
 | `POST /v1/documents/<id>/apply|save|restore` | 类型化事务、人工完整快照保存、历史恢复；带 expectedRevision 与 commandId |
 | `POST /v1/documents/<id>/validate|simulate` | 保存版本的校验和事件模拟 |
 | `POST /v1/documents/<id>/adopt-image` | 校验已完成图片任务的 ID / SHA-256 后明确采用 |
+| `GET /v1/documents/<id>/motion-bindings` | 只读：按命令历史与当前内容列出各切换状态 / 序列条目绑定的动画资产与是否仍在使用；可带 `definitionId` |
+| `POST /v1/reference-art/convert-prop/preview` | PixelProp 转换预览，经 SpritePipeline 计算；不建任务、不写文件、不调用付费接口 |
 
 通用 JSON 请求上限为 50 MiB；任务提交为 120 MiB，以容纳最多 80 MiB 图片源及 base64 开销；文档请求为 350 MiB，文档媒体仍限制总计 256 MiB。交互物上传端点另按素材契约限制单文件 64 MiB；交互物项目导入由 Web 编辑器限制为 256 MiB。`/v1/artifacts` 只接受以 `outputs/` 开头、解析后仍位于真实输出根目录内的文件。
 
@@ -202,7 +204,7 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 
 ## 角色原图连接器
 
-`reference-art` 的 `generate` 输入为 prompt、可选 name/facing/seed/size/subject；`transfer` 使用 sourceTaskId，可附 identityDescription。Node 适配器通过 SpritePipeline 的 `/v1/reference-art/jobs` 和 `/jobs/{id}` 提交与查询 PixelLab Pixflux 后台任务。`/v1/reference-art/settings` 返回公开配置状态，POST 经专用网关保存 Key，不经过任务输入。角色移送使用 `/v1/reference-art/import`，物品移送使用 `/v1/reference-art/transfer-prop`，均验证源任务、PNG 与哈希，幂等创建对应类型预设，不生成动画。Web 单任务查询使用 `/api/workbench/tasks/{taskId}`，`refresh=true` 只刷新已有任务。具体协议和恢复边界见[角色原图](reference-art.md)与[物品原图](prop-art.md)。
+`reference-art` 的 `generate` 输入为 prompt、可选 name/facing/seed/size/subject；`import` 与 `convert-prop` 是本地操作（后者带可选 `recipe`）；`transfer` 使用 sourceTaskId，可附 identityDescription，导入或转换来源须附 `confirmation`。Node 适配器通过 SpritePipeline 的 `/v1/reference-art/jobs` 和 `/jobs/{id}` 提交与查询 PixelLab Pixflux 后台任务。`/v1/reference-art/settings` 返回公开配置状态，POST 经专用网关保存 Key，不经过任务输入。角色移送使用 `/v1/reference-art/import`，物品移送使用 `/v1/reference-art/transfer-prop`，均验证源任务、PNG 与哈希，幂等创建对应类型预设，不生成动画。物品转换使用 `/v1/reference-art/convert-prop`（适配器保存 reference.png、compare.png、recipe.json、report.json）及其 `/preview`；服务内调用 `pixel_prop`，失败时不回退到其他实现。Web 单任务查询使用 `/api/workbench/tasks/{taskId}`，`refresh=true` 只刷新已有任务。具体协议和恢复边界见[角色原图](reference-art.md)与[物品原图](prop-art.md)。
 
 ## Agent 共享操作
 
@@ -212,7 +214,7 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 
 - 发现与结果：guidance、environment、start、frontend、presets、interactable-template、tasks、assets、asset、asset-manifest、result、artifact。
 - 展示与项目交付：present、frontend-context、game-exports、game-export、export-to-game、install-game-export、complete-game-export。
-- 共享文档：documents、document-get、document-create、document-save、document-apply、document-restore、document-validate、document-simulate、document-adopt-image。
+- 共享文档：documents、document-get、document-create、document-save、document-apply、document-restore、document-validate、document-simulate、document-adopt-image、document-motion-bindings（只读）。
 - 图片局部编辑：image-inspect、image-resolve、image-edit、image-apply、image-session-get；内部 image-session-create 复用同一会话服务，不单独注册 MCP 工具。
 - 部件与属性计划：image-part-context、image-part-suggest、image-part-get、image-plan-prepare、image-plan-get。
 - 图片判断与复核：image-review-record、image-critic-prepare、image-critic-run、image-critic-get。完整操作与保证边界见[属性计划与独立复核](../workbench/guides/image-attribute-editing.md#接口与恢复)。
@@ -222,6 +224,8 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 ### 共享文档事务
 
 文档 kind 仅为 interactable，id 对应交互物 projectId。create/get/list 与 apply/save/restore 共用验证器；单个 apply 最多 100 条已声明命令，事务只作用于一个文档。写入要求 expectedRevision 与 commandId；版本冲突为 409 / REVISION_CONFLICT，相同命令重试返回原提交版本，currentRevision 另指出当前头版本。复用同一 commandId 提交不同请求会失败。快照内嵌媒体，历史版本不可变，restore 新增版本而不删除历史。
+
+`import-motion-asset` 把资产库中的状态图、已接受过渡或已接受派生素材写入切换状态或序列条目；过渡可带 `durations`（与过渡帧数相同的相对时长，0.01–100）和 `playback: ping_pong`，状态图不接受这两项。回执记录作品、版本、候选、段、检查点令牌、帧哈希、`motionSource`，以及派生方式与播放设置；`document-motion-bindings` 据此给出各槽绑定。
 
 validate 检查交互物模型和媒体；simulate 使用确定性交互模拟器，最多 200 个类型化输入事件，返回状态、顺序事件与 expectEvents/expectStates 检查。definitionId 作为单独交互物工程的模拟 instanceId。模拟不写文档，不代表真实音频、游戏存档或 Godot 引擎验证。导出使用 interactable-editor 的 export-godot。字段见[交互物](interactable-editor.md)。
 

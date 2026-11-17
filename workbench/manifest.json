@@ -160,7 +160,7 @@
       },
       {
         "id": "motion",
-        "title": "Open motion production and review",
+        "title": "Character and interactable motion production, review and state writeback",
         "source": "workbench/guides/motion.md",
         "capabilityId": "sprite-generator"
       },
@@ -172,7 +172,7 @@
       },
       {
         "id": "image-generation",
-        "title": "Transparent props and reference image editing",
+        "title": "Transparent props, prop reference import/conversion and image editing",
         "source": "docs/prop-art.md",
         "capabilityId": "image-assets"
       },

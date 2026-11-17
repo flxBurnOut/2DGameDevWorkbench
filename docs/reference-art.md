@@ -56,12 +56,14 @@ npm run workbench -- status <task-id> --json
 
 本地导入输入为 `operation: import`，`sourceImagePath`（仓库内 PNG 路径）与 `sourceImage`（严格的 `data:image/png;base64,...`）二选一，二者使用同一尺寸、像素和透明度校验。`sourceImage` 的原始字节上限为 2,000,000；最多 2,666,690 个字符包含 data URL 前缀。`prompt` 是导入时补充的展示描述，`result.json` 将其标为 `description-added-on-import`，不冒充原始生成提示词；`model=null`、`providerCalled=false` 和实际字节哈希表明本次只保存已有图片。
 
+物品原图另有两条本地路径：`import` 加 `subject=prop`（只接受 128×128 透明 PNG，记录颜色数与半透明诊断），以及 `convert-prop`（`sourceTaskId` 指向 image-assets 物品任务、`sourceImagePath` 或 `sourceImage` 三选一，可带 PixelProp `recipe`）。两者都不调用 PixelLab；移送时必须附 `confirmation: {note}`。字段、确认规则与重算核对见[物品原图导入与转换](prop-art.md#导入与转换为动画原图)。
+
 ## 验证
 
-`npm run test:reference-art` 覆盖准备、配置缺失、异步恢复、产物校验、移送和 HTTP；SpritePipeline 的 `tests/test_reference_art.py` 覆盖官方请求结构、一次提交、密钥共用与不回显、图片校验、幂等角色导入及真实 Gradio 角色选择回调。测试使用模拟服务或内存传输，不产生 PixelLab 费用。真实付费生成需要用户在界面或 Agent 中另行发起。
+`npm run test:reference-art` 覆盖准备、配置缺失、异步恢复、产物校验、移送和 HTTP；SpritePipeline 的 `tests/test_reference_art.py` 覆盖官方请求结构、一次提交、密钥共用与不回显、图片校验、幂等角色导入、物品导入与转换的来源核验、确认说明、重算比对（含不同 PNG 压缩下按像素通过）及真实 Gradio 角色选择回调；`npm run test:pixel-prop` 覆盖转换工具本身。测试使用模拟服务或内存传输，不产生 PixelLab 费用。真实付费生成需要用户在界面或 Agent 中另行发起。
 
 长于 300 字符的生图提示词默认不原样附入动画提示，改用参考图身份锁定，避免“站立不动”等原图要求污染动作或超过动画 API 上限。完整生图提示保留在源任务。物品原图仍固定 128×128。
 
 ## 与对象库存的边界
 
-开放动作的 objects 库存支持选择已有角色或交互物预设；本页仍只生成、导入与移送角色参考。旧 `?character=` 深链继续有效，开放动作另接受 `?object=`。上传不创建交互物预设，PixelLab 物品的移送操作见[物品原图](prop-art.md#旧-pixellab-流程)。详见[序列帧对象身份](sprite-generator.md#对象身份与预设n1)。
+开放动作的 objects 库存支持选择已有角色或交互物预设；本页仍只生成、导入与移送角色参考。旧 `?character=` 深链继续有效，开放动作另接受 `?object=`，交互物对象打开 `/tools/interactable-motion?object=`。本页上传不创建交互物预设；物品原图的生成、导入、转换与移送入口在交互物编辑器和交互物动画面板，见[物品原图](prop-art.md#导入与转换为动画原图)。详见[序列帧对象身份](sprite-generator.md#对象身份与预设n1)。

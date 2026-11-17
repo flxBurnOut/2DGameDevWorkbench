@@ -1,8 +1,8 @@
 # 系统架构
 
-本文描述 `paper-vbyc` 分支的当前实现，核对基准为 `c501e63`，更新于 2026-11-16。实施历史与验收记录见[论文分支执行计划](论文分支执行计划.md)和[工程问题清单](问题清单/README.md)。
+本文描述 `paper-vbyc` 分支的当前实现，核对基准为 `48deac3`，更新于 2026-11-17。实施历史与验收记录见[论文分支执行计划](论文分支执行计划.md)和[工程问题清单](问题清单/README.md)。
 
-Forge 是本地优先的资产制作工作台：Node 负责接入、任务适配、共享编辑与交付，Python SpritePipeline 负责原图服务、动画生产、检查点与备选。当前分支保留角色与交互物序列帧、物品图片、局部调整、交互物编辑和 Godot 交付；地图拼接、场景组装、场景协作、地图分层及可站面原型保留在 `new-arch`，不属于本分支运行架构。
+Forge 是本地优先的资产制作工作台：Node 负责接入、任务适配、共享编辑与交付，Python SpritePipeline 负责原图服务、动画生产、检查点与备选，并调用独立打包的 PixelProp 做物品图像素化转换。当前分支保留角色与交互物序列帧、物品图片、局部调整、交互物编辑和 Godot 交付；地图拼接、场景组装、场景协作、地图分层及可站面原型保留在 `new-arch`，不属于本分支运行架构。
 
 Codex、WorkBuddy 等外部客户端是主 Agent。Web 提供编辑、预览、检查和导出；动画服务中的多专家规划器只处理明确的制作任务及其调用预算。实验策略通过独立工具运行，不进入产品生成界面。
 
@@ -47,7 +47,7 @@ flowchart TB
 | --- | --- | --- |
 | Web | `http://localhost:3000` | React 工作台、Vinext/Vite 与服务端 API 路由；角色动画界面位于 `components/sprite-generator/`，交互物动画面板位于 `components/interactable-motion/` |
 | HTTP Bridge | `http://127.0.0.1:8790` | `scripts/workbench-http.mjs`；任务 API、共享文档、图片会话、资产与交付接口 |
-| SpritePipeline | `http://127.0.0.1:7860` | FastAPI/Uvicorn；开放动作、原图、原生 Job、像素编辑及导出接口；Gradio UI 与 API 共用服务实例 |
+| SpritePipeline | `http://127.0.0.1:7860` | FastAPI/Uvicorn；开放动作、原图（含物品导入与 PixelProp 转换）、派生素材、原生 Job、像素编辑及导出接口；Gradio UI 与 API 共用服务实例 |
 
 调用分为三条路径：
 
@@ -67,17 +67,18 @@ flowchart TB
 | 共用业务层 | [agent-api.mjs](../lib/workbench/agent-api.mjs)、[runtime.mjs](../lib/workbench/runtime.mjs)、`lib/workbench/adapters/` | Agent 操作分派、任务校验与持久化、适配器执行和异步恢复 |
 | Web 外壳与交互层 | `components/workbench/`、`components/ui/`、`app/interaction.css`、`app/theme-tokens.css` | 统一顶栏与首页、制作记录与帮助、交互状态（悬停、按下、选中、禁用、加载、焦点）、Toast 与 Tooltip、主题变量 |
 | Web 编辑层 | `app/`、`components/`、`features/` | 页面、图形交互、播放、检查、草稿和共享编辑同步 |
-| 动画生产层 | `Tools/SpritePipeline/sprite_pipeline/`，开放动作位于 `collaboration/` | 对象、规划、生成、技术 QA、复核、检查点、修正与导出 |
+| 动画生产层 | `Tools/SpritePipeline/sprite_pipeline/`，开放动作位于 `collaboration/` | 对象、规划、生成、技术 QA、复核、检查点、修正、派生素材与导出 |
+| 像素化转换工具 | `Tools/PixelProp/`（独立包 `forge-pixel-prop`，只依赖 Pillow） | 把大图确定性转换为 64/128 px 像素风物品图；CLI、Python API、配方哈希、报告与对比图。工作台经 `pixel_prop_gateway.py` 调用，不另写 Node 算法 |
 | 共享编辑层 | `lib/workbench/editor-documents.mjs`、`image-edits.mjs`、`features/editor-documents/` | 文档命令、版本、请求身份、图片会话、媒体与恢复 |
 | 资产与交付层 | `asset-catalog.mjs`、`asset-packages.mjs`、`game-export.mjs`、`features/godot-export/` | 资产发现、导入、打包、安装计划、备份与交付证据 |
 
-Web 页面为首页 `/`、角色原图 `/tools/reference-art`、角色动画 `/tools/sprite-generator`、交互物编辑 `/tools/interactable-editor`、资产库 `/assets` 和工作台管理 `/advanced`；旧的 `/player` 总览在服务端重定向到首页。所有页面共用 `components/workbench/shared-navigation.tsx` 的顶栏；页面只读取由 manifest 派生的精简 `lib/workbench/ui-manifest.json`。主题颜色以 `lib/workbench/theme-palette.json` 为源，经 `npm run theme:sync` 生成 `app/theme-tokens.css` 与 SpritePipeline 的同名文件，`test:theme` 检查两种模式的对比度。界面结构与交互规则见[工作台界面](workbench-interface.md)与[前端界面与交互优化方案](前端界面与交互优化方案.md)。
+Web 页面为首页 `/`、角色原图 `/tools/reference-art`、角色动画 `/tools/sprite-generator`、交互物动画 `/tools/interactable-motion`、交互物编辑 `/tools/interactable-editor`、资产库 `/assets` 和工作台管理 `/advanced`；旧的 `/player` 总览在服务端重定向到首页。所有页面共用 `components/workbench/shared-navigation.tsx` 的顶栏；页面只读取由 manifest 派生的精简 `lib/workbench/ui-manifest.json`。主题颜色以 `lib/workbench/theme-palette.json` 为源，经 `npm run theme:sync` 生成 `app/theme-tokens.css` 与 SpritePipeline 的同名文件，`test:theme` 检查两种模式的对比度。界面结构与交互规则见[工作台界面](workbench-interface.md)与[前端界面与交互优化方案](前端界面与交互优化方案.md)。
 
-manifest 是工作台级能力目录；各入口消费同一套能力 ID、输入 schema、连接器和产物声明。当前注册四项能力，适配器由 [adapters/index.mjs](../lib/workbench/adapters/index.mjs) 绑定：
+manifest 是工作台级能力目录；各入口消费同一套能力 ID、输入 schema、连接器和产物声明。`editorModules` 登记没有独立连接器的页面模块（当前为交互物动画面板 `interactable-motion`，它读写 `sprite-generator` 的作品），只用于导航、页面跟随与展示路由。当前注册四项能力，适配器由 [adapters/index.mjs](../lib/workbench/adapters/index.mjs) 绑定：
 
 | capability ID | adapter | 主要职责 |
 | --- | --- | --- |
-| `reference-art` | `reference-art` | PixelLab 角色与 128 像素物品原图、角色参考导入及对象移送 |
+| `reference-art` | `reference-art` | PixelLab 角色与 128 像素物品原图、角色与物品参考导入、PixelProp 物品转换（`convert-prop`）及对象移送 |
 | `sprite-generator` | `sprite-pipeline` | 角色与交互物开放动作、检查、修改与导出 |
 | `image-assets` | `image-assets` | GPT Image 透明物品、图片生成式编辑与本地图片处理 |
 | `interactable-editor` | `interactable-editor` | 项目校验与 Godot 交互物资源包导出 |
@@ -140,7 +141,7 @@ flowchart TD
 
 `reference-art` 通过 Node 适配器访问 Python 原图服务，共用受保护的 PixelLab Key。角色原图支持 64/128 像素，物品原图固定为 128×128；异步 Pixflux 作业 ID 保存在 runtime task。完成后核验透明 PNG、尺寸和产物身份。
 
-`transfer` 使用已完成源任务，不生成动画。角色生成或导入图移送为角色对象；已完成的 128 像素 PixelLab 物品生成任务经 `prop_reference.py` 核验注册来源、真实文件、尺寸及哈希后，移送为 `object_type=interactable` 的对象。通用入口已接通这条路径；它不接受任意上传物品，也不把 GPT Image 大尺寸物品图直接作为动画参考。详见[角色原图](reference-art.md)。
+`transfer` 使用已完成源任务，不生成动画。角色生成或导入图移送为角色对象。物品原图有三种来源，经 `prop_reference.py` 分别核验后移送为 `object_type=interactable` 的对象：PixelLab 生成（`pixflux` 与上游任务身份）；本地导入（`import subject=prop`，128×128 透明 PNG）；PixelProp 转换（`convert-prop`，由 `pixel_prop_gateway.py` 读取登记的 image-assets 任务、仓库文件或上传图并在服务内转换）。导入与转换来源移送时必须附 `confirmation.note`；转换来源还会按记录的配方重新转换，并按解码像素哈希 `pixelSha256` 与登记原图比对，不比较 PNG 文件字节。来源写入预设旁的 `provenance.json`（不改 `object.json` 模型，旧对象按 PixelLab 读取），对象清单与新作品的 `character.provenance` 保留来源摘要。GPT Image 大图不会直接成为参考，只能经转换并确认。详见[物品原图](prop-art.md#导入与转换为动画原图)与[方案](物品原图导入与像素化转换方案.md)。
 
 `object_identity.py` 使 TaskSpec、GenerationRequest 与预设共用 `object_id` / `object_type`，类型为 `character` 或 `interactable`。`presets.py` 兼容旧角色目录并拒绝身份冲突；交互物预设不带 facing/weapon_hand。库存同时保留 objects 与兼容的 characters/actions 接口。
 
@@ -150,7 +151,7 @@ flowchart TD
 
 `collaboration/contracts.py` 定义 TaskSpec、PlanProposal、PlanBinding、段级合同与回执；`workspace.py` 保存原始需求、专家质询、参考与版本，`execution.py` 复用原生 Job、提供方提交与帧存储。规划和绘图分别在外部调用前保存意图，锁阻止并发重发；模糊回执需沿原请求恢复或人工核对。GET 不发起新的付费请求。
 
-角色与交互物使用同一流程，按对象类型提供不同合同与复核维度。交互物合同区分起终状态、固定内容、运动部件与轨迹；描述和参考图差异按影响分类，规划前查询可用绘图额度并校验候选数、帧数和预计用量。`prop_measurements.py` 的固定区、铰接半径测量与模型通过意见冲突时保留证据并转入裁决，不用测量代替所有运动判断。
+角色与交互物使用同一流程，按对象类型提供不同合同与复核维度。交互物可在 `motionSpec.interactable_skeleton` 给出有序状态（2–5 个）：规划指令要求每对相邻状态一段，本机校验段数不符时退回协调专家，骨架摘要作为用户要求写入方案并进入 `plan_sha256`；省略时序列化与哈希不变。交互物合同区分起终状态、固定内容、运动部件与轨迹；描述和参考图差异按影响分类，规划前查询可用绘图额度并校验候选数、帧数和预计用量。`prop_measurements.py` 的固定区、铰接半径测量与模型通过意见冲突时保留证据并转入裁决，不用测量代替所有运动判断。
 
 规划策略、格式、模型与输入随 Work 和 Job 冻结。当前规划路径用 `planning_draft.py` 分开策略草案和最终执行说明，`planning_budget.py` 预留专家额度，`executable_brief.py` 校验实际 `stage.prompt`；最终绘图说明最多 1000 字符，不通过额外付费压缩、截断或自动重试来补救。历史协议继续按其冻结版本读取。
 
@@ -212,7 +213,7 @@ flowchart TD
 
 `document-kinds.mjs` 登记实现，`interactable-documents.mjs`、`interactable-document-commands.mjs` 和 `interactable-document-assets.mjs` 分别负责模型、命令与资产。公共合同维护版本、媒体与身份边界；`portableProject` 位于 `features/interactable-editor/portable-project.ts`。
 
-`state_assets.py` 将确认状态图和已接受过渡纳入资产目录；`import-motion-asset` 经共享文档类型化命令写入指定切换槽或序列条目。`interactable-motion-import.mjs` 保留作品、素材版本、检查点令牌与帧哈希，核验来源后写入静态状态图或非循环过渡片段，不改变其他消费者。单独确认的状态图可按自身条件导入，过渡必须已接受；末尾停留帧按真实播放映射处理。
+`state_assets.py` 将确认状态图和已接受过渡纳入资产目录，`derived_assets.py` 将人工接受的派生素材纳入；`import-motion-asset` 经共享文档类型化命令写入指定切换槽或序列条目，可选 `durations`（逐帧相对时长）与 `playback: ping_pong` 只改变写入的动画片段。`interactable-motion-import.mjs` 保留作品、素材版本、检查点令牌与帧哈希，核验来源后写入静态状态图或非循环过渡片段，不改变其他消费者。单独确认的状态图可按自身条件导入，过渡必须已接受；末尾停留帧按真实播放映射处理。
 
 交互物动画在 `/tools/interactable-motion` 面板制作（manifest `editorModules` 中的 `interactable-motion`，不是新能力）：数据仍是 `sprite-generator` 的开放动作作品，`object_type=interactable` 的作品默认在此打开。写回页签与编辑器“导入位置”都只提交 `import-motion-asset`；只读的 `document-motion-bindings` 由命令历史与当前内容给出各槽绑定。确定性帧工具在浏览器用精确 PNG 编解码计算，经 `local-frame-edits` 提交；派生过渡与非生成状态图由 `derived_assets.py` 记录来源，人工接受后以 `motion-derived:` 资产进入目录。详见[交互物动画独立面板方案](交互物动画独立面板方案.md)。`?document=<id>` 打开共享工程；繁忙、有本地修改、离线或版本冲突时保留草稿。`contentHash` 始终表示已存储内容，草稿不冒充服务端版本。
 
@@ -220,7 +221,7 @@ flowchart TD
 
 ## 7. 资产目录与 Godot 交付
 
-`asset-catalog.mjs` 按来源身份合并任务产物、原生候选、确认状态/过渡与已导入素材，保留来源版本和创建时间。执行历史归档与资产可见性分离；历史查询先过滤再按快照分页。浏览器草稿不自动收录，资产清单只描述作品，下载真实文件或素材包才完成文件交付。
+`asset-catalog.mjs` 按来源身份合并任务产物、原生候选、确认状态/过渡、人工接受的派生素材（`motion-derived:<work>:<id>`，资产库标为“派生状态图 / 派生过渡”）与已导入素材，保留来源版本和创建时间。执行历史归档与资产可见性分离；历史查询先过滤再按快照分页。浏览器草稿不自动收录，资产清单只描述作品，下载真实文件或素材包才完成文件交付。
 
 `asset-packages.mjs` 负责源包检查与导入；资产库可直接提供图片、动画和完整项目给交互物编辑器，无需下载再上传，也不创建新的生成任务。`asset-trash.mjs` 以独立索引、跨进程目录锁与原子替换管理稳定 ID、别名和摘要；回收站改变可见性，不删除源文件，来源离线时仍可恢复摘要。MCP 资产工具保持只读查询与下载边界，Web 管理操作经相应接口执行。
 
@@ -246,7 +247,7 @@ Web 合并展示 runtime task、原生 Job 与浏览器草稿，提供图形编�
 
 ## 10. 实现状态与验证边界
 
-当前实现已包含对象泛化、128 像素物品图移送、交互物合同、状态链、状态/过渡写回与外部 B 图条件（N1–N6），以及动画帧修正、共用模型配置与界面接线（M1–M7）、冻结实验协议、对照流程和导出支撑（E1–E4）。M8 的角色结构蒙版建议仍为可选未实施项，不能当作自动选区来源。交互物动画的独立网页面板、专用工具与 B1–B5 后端扩展已实施，见[实施记录](交互物动画独立面板方案.md#8-实施记录)。
+当前实现已包含对象泛化、128 像素物品图移送（PixelLab 生成、导入与 PixelProp 转换）、交互物合同、状态链、状态/过渡写回与外部 B 图条件（N1–N6），以及动画帧修正、共用模型配置与界面接线（M1–M7）、冻结实验协议、对照流程和导出支撑（E1–E4）。M8 的角色结构蒙版建议仍为可选未实施项，不能当作自动选区来源。交互物动画的独立网页面板、专用工具与 B1–B5 后端扩展已实施，见[实施记录](交互物动画独立面板方案.md#8-实施记录)；物品原图导入与 PixelProp 转换已实施，见[实施记录](物品原图导入与像素化转换方案.md#8-实施记录)。
 
 现有工程验收包含模拟提供方、隔离工程与归档真实帧回放。它们验证合同、来源、像素保护、版本冲突、恢复、播放和交付行为；真实生成下的跨段状态链有效性、固定部件/铰接测量对更多对象的适用性，以及论文实验规模和预算仍需另行验证。当前进度见[论文方向与方法](论文方向与方法.md)，历史验收见执行计划与工程问题清单。
 
@@ -255,7 +256,7 @@ Web 合并展示 runtime task、原生 Job 与浏览器草稿，提供图形编�
 ## 11. 共同约束与扩展
 
 - 凭据由服务端环境或受保护配置读取，设置入口不回显，不进入浏览器存储、任务、产物或日志。
-- Bridge 与默认 Python 服务监听回环地址；Web 代理限制路径、方法和参数，不提供任意 URL 转发。
+- Bridge 与默认 Python 服务监听回环地址；Web 代理限制路径、方法和参数，不提供任意 URL 转发。开放动作代理的白名单包含交互物面板使用的 `edit-source`（带 64 位帧来源 token）与 `derived` 路由；物品转换预览走 `/api/workbench/reference-art/convert-prop/preview` → Bridge → SpritePipeline，不建任务、不写文件。
 - 文件来源、产物、媒体与安装位置经过受控目录解析及哈希校验，不接受任意文件冒充任务产物。
 - 外部模型调用需要相应执行与费用授权；输入准备、只读检查、候选执行和采用分别表达，不因讨论创建生产任务。
 - 保留原请求身份、上游编号、账本与恢复记录；未知付费提交不换身份自动重发。

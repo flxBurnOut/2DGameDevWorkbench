@@ -44,7 +44,7 @@
 
 `workbench_adopt_document_image` 只消费已完成 image-assets 任务，以 sourceTaskId + sha256 重读原 PNG，并指定已有 definitionId。采用保留行为与状态图片，是一次版本事务，不调用模型、导出或另建图片任务。不能用预览、缩略图或下载 URL 替代原图证据。
 
-写回状态链时，用 `workbench_list_assets` 按 `motionSource=state` 或 `transition` 查询，取所选资产详情的 `revision`。通过 `workbench_apply_document_commands` 提交 `import-motion-asset` 命令，指定 `assetId`、`assetRevision`、`definitionId`、`target`（`toggle-state` 或 `sequence-entry`）和从 0 开始的 `index`。文档提交仍使用 `expectedRevision` 和原 `commandId`。状态图覆盖该条目的待机动画继承。过渡按确认的帧序和 FPS 播放，最终段包含约定的末帧停留。采用回执中的 `frameHashes` 按播放顺序列出 SHA-256。
+写回状态链时，用 `workbench_list_assets` 按 `motionSource=state` 或 `transition` 查询（带 `derivation` 的是人工接受的派生素材），取所选资产详情的 `revision`。通过 `workbench_apply_document_commands` 提交 `import-motion-asset` 命令，指定 `assetId`、`assetRevision`、`definitionId`、`target`（`toggle-state` 或 `sequence-entry`）和从 0 开始的 `index`。文档提交仍使用 `expectedRevision` 和原 `commandId`。状态图覆盖该条目的待机动画继承。过渡按确认的帧序和 FPS 播放，最终段包含约定的末帧停留。采用回执中的 `frameHashes` 按播放顺序列出 SHA-256。过渡可另带 `durations` 与 `playback: ping_pong` 调整写入片段的节奏，原帧不变。写回前后可用 `workbench_get_motion_bindings` 只读核对各槽当前绑定；网页上的同一流程在交互物动画面板的“写回”页签。
 
 validate/simulate 检查结构、媒体与有限交互事件，不代表 Godot 物理、真实音频或游戏存档。交互物导出继续使用 `interactable-editor` 的 `export-godot`；共享文档不提供观察图片或独立导出操作。
 

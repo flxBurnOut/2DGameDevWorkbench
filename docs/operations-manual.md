@@ -103,9 +103,9 @@ npm run sprite-pipeline:setup
 npm run dev
 ```
 
-npm ci 安装锁定的前端与 Node 依赖。setup 查找 Python，在 Tools/SpritePipeline/.venv 创建独立环境并安装锁定依赖。它用于准备 Python 工具运行条件，不会生成图片。不同操作系统之间不要直接复制 .venv；在新机器上重新 setup。
+npm ci 安装锁定的前端与 Node 依赖。setup 查找 Python，在 Tools/SpritePipeline/.venv 创建独立环境并安装锁定依赖，同时以可编辑方式安装物品转换工具 PixelProp（`Tools/PixelProp`）；已有 .venv 在拉取新版本后也应重新运行一次 setup。它用于准备 Python 工具运行条件，不会生成图片。不同操作系统之间不要直接复制 .venv；在新机器上重新 setup。
 
-如果只需要交互物和静态图片编辑，首次运行 npm ci 后，使用 npm run dev:interactable 即可。这个命令名称虽然包含 interactable，启动的前端仍包含其他页面，只是不启动 SpritePipeline。
+如果只需要交互物和静态图片编辑，首次运行 npm ci 后，使用 npm run dev:interactable 即可。这个命令名称虽然包含 interactable，启动的前端仍包含其他页面，只是不启动 SpritePipeline；交互物动画、物品原图导入与转换都依赖 SpritePipeline，需要用 npm run dev。
 
 ### 日常打开与关闭
 
@@ -153,7 +153,7 @@ Web API 和 Bridge 会校验请求的访问地址与来源。默认使用清单�
 
 ### 从哪里进入
 
-开始页使用 Forge 的 F 标识。“角色美术”进入 /player，可选择制作角色原图或进入序列帧；“交互物”直接进入 /tools/interactable-editor，与角色制作并列。“资产库”位于 /assets，“高级工具”位于 /advanced。
+开始页使用 Forge 的 F 标识，列出角色原图、角色动画、交互物动画、交互物编辑四个工具卡；顶栏主导航依次为角色原图 /tools/reference-art、角色动画 /tools/sprite-generator、交互物动画 /tools/interactable-motion、交互物编辑 /tools/interactable-editor 和资产库 /assets，齿轮图标进入工作台管理 /advanced。旧的 /player 重定向到首页。
 
 顶栏主导航标出当前工具，作品名显示在工具自己的工具栏中，制作记录可恢复正在做的内容。序列帧的生成、检查、修补与导出使用其内部标签。
 
@@ -261,6 +261,12 @@ Web API 和 Bridge 会校验请求的访问地址与来源。默认使用清单�
 
 通过 WorkBuddy 可说：“为当前电池物件生成一张侧视像素原图，先预览，不要改行为。”对应 reference-art 的 subject=prop；只要求图片时不会创建角色预设。采用后再配置行为或导出。详见[物品原图](prop-art.md)。
 
+已有 128×128 透明 PNG 时，用“导入 PNG / 从物品图转换”中的“导入 128 px 物品原图”；只有 GPT Image 生成的大图时，用“从物品图转换”调整预设和参数，对照源图与 1×/4× 结果后保存。两者都在本机处理、不消耗额度。要用作动画起点，还需写确认说明（核对视角、初始状态、部件完整和透明背景）再“用作交互物动画对象”。详见[物品原图导入与转换](prop-art.md#导入与转换为动画原图)。
+
+### 制作状态动画
+
+切换或序列物件需要开关、点亮等状态动画时，在左栏“素材”点“制作状态动画”，工作台保存工程后打开交互物动画面板，并带上当前工程与物件。在左侧状态图写好各状态的名称与外观（切换物件默认两个状态，序列物件按条目），铰接或形变动作在“部件结构”中选择已核对的结构，再制定方案、确认制作。每段过渡生成后在中间画布逐帧检查，可先只确认状态帧；需要修正时用“工具”页签的固定部件回填、对齐、清理、旋转草稿或选帧修改，结果都是备选，对比后再采用。完成后在“写回”页签把状态图和过渡写到切换 A/B 或序列条目，可调整逐帧节奏或往返播放，并在场景预览中检查“触发 → 过渡 → 停在新状态”。规划与生成按实际调用计费，确定性工具不计费。详见[交互物动画面板](交互物动画独立面板方案.md)。
+
 ### 先选行为
 
 从首页进入独立交互物编辑器。没有外观图也可以先制作逻辑草稿，但这不能称为完整美术成品。导入图片或序列帧后，分别调整外观、感知范围、点击区域和自身碰撞。
@@ -337,6 +343,7 @@ WorkBuddy 在首次用户消息后检查前端，离线时启动一次并等待�
 | workbench_create_document / workbench_apply_document_commands | 创建共享工程与提交版本受控的编辑 |
 | workbench_adopt_document_image | 将已检查的生成图片采用到指定工程 |
 | workbench_simulate_document | 对保存的交互物版本检查有限交互事件 |
+| workbench_get_motion_bindings | 只读查看交互物各状态 / 条目绑定的状态图与过渡 |
 | workbench_get_environment | 检查服务、兼容性、前端与 Key 状态 |
 | workbench_start_services | 启动离线的本机 SpritePipeline |
 | workbench_start_frontend | 启动前端和 Bridge，不直接打开浏览器 |
@@ -470,7 +477,7 @@ Helper 不自动合并到游戏，不生成美术，不需要 API Key。Agent �
 
 ### 角色像素颗粒
 
-角色原图可选择 64×64（粗像素）或 128×128（精细像素，默认）。小角色优先检查原生 64 像素在游戏实际显示尺寸下的轮廓；移送保留原生尺寸。可移送为动画参考的 PixelLab 物品原图保持 128×128；GPT 图片使用自身尺寸规则。角色 transfer 可用简短 identityDescription 锁定外观，源提示词完整保留。
+角色原图可选择 64×64（粗像素）或 128×128（精细像素，默认）。小角色优先检查原生 64 像素在游戏实际显示尺寸下的轮廓；移送保留原生尺寸。可移送为动画参考的物品原图保持 128×128（PixelLab 生成、导入或 PixelProp 转换）；GPT 图片使用自身尺寸规则，不能直接作为动画参考。角色 transfer 可用简短 identityDescription 锁定外观，源提示词完整保留。
 
 ## 清理资产库与恢复
 
@@ -498,7 +505,7 @@ Helper 不自动合并到游戏，不生成美术，不需要 API Key。Agent �
 
 ### 导入已有角色原图
 
-`reference-art` 的 `import` 操作接受仓库内的 `sourceImagePath`、`prompt`（补充展示描述），以及名称、朝向、size（64/128）。只复制经过校验的透明 PNG；不调用模型，也不要求 PixelLab 服务或 Key。任务和结果记录导入来源、原始哈希、`generatedHere:false` 与 `promptOrigin:description-added-on-import`。原图历史显示“导入素材”，点击后恢复提示词并预览，可通过原有校验流程移送序列帧。移送需要本地序列帧服务，但不生成动画。不能把导入记录说成真实生图调用；不改图片、不倒填生成日期。
+`reference-art` 的 `import` 操作接受仓库内的 `sourceImagePath`、`prompt`（补充展示描述），以及名称、朝向、size（64/128）；加 `subject=prop` 时导入 128×128 物品原图（不接受朝向）。`convert-prop` 用 PixelProp 把 image-assets 物品任务或仓库内图片转换为 128 px 物品原图，可带 `recipe`。物品导入与转换的移送必须带 `confirmation.note`。命令行可直接运行 `npm run pixel-prop -- convert <源图> -o <输出>`，不经工作台任务。只复制经过校验的透明 PNG；不调用模型，也不要求 PixelLab 服务或 Key。任务和结果记录导入来源、原始哈希、`generatedHere:false` 与 `promptOrigin:description-added-on-import`。原图历史显示“导入素材”，点击后恢复提示词并预览，可通过原有校验流程移送序列帧。移送需要本地序列帧服务，但不生成动画。不能把导入记录说成真实生图调用；不改图片、不倒填生成日期。
 
 ### 图片生成与局部调整
 

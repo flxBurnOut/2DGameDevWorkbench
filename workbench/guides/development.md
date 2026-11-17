@@ -16,6 +16,7 @@
 | 交互物共享文档 | `features/interactable-editor/`、`features/editor-documents/`、`lib/workbench/document-*.mjs`、`interactable-document*.mjs` | `test:editor-documents`、`test:interactable`；保存与模拟变化加相应测试 |
 | 开放动作 | `Tools/SpritePipeline/sprite_pipeline/collaboration/`、`components/sprite-generator/` | 受影响的 Python 测试、`test:open-motion` |
 | 交互物动画面板 | `components/interactable-motion/`、`features/interactable-motion/`、`derived_assets.py`、`interactable-motion-bindings.mjs` | `test:interactable-motion`、`test_interactable_panel_backend.py`、`test_interactable_state_chain.py`（含跨服务写回）；网页验收 `tests/interactable-motion/browser.mjs` |
+| 物品原图导入与像素化转换 | `Tools/PixelProp/`、`sprite_pipeline/pixel_prop_gateway.py`、`prop_reference.py`、`lib/workbench/adapters/reference-art.mjs`、`components/interactable-editor/prop-reference-tools.tsx` | `test:pixel-prop`（黄金样例按 `pixelSha256` 固定，改算法须升 `ALGORITHM_VERSION`）、`tests/test_reference_art.py`、`test:reference-art`、`test:prop-art`；网页验收 `tests/prop-art/browser.mjs`（先 `npm run build`） |
 | 游戏交付 / 工程 helper | `features/godot-export/`、`lib/workbench/game-export*.mjs`、工程 Skill 的脚本 | `test:game-export`、`test:engineering` |
 | 启动器与平台支持 | `scripts/dev.mjs`、服务 supervisor、平台凭据模块 | `test:frontend`、`test:dev-supervisor`、`test:desktop-services` 或凭据测试 |
 

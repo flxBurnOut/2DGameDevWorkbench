@@ -31,11 +31,14 @@ const actionLabels: Record<WorkItemState, string> = { attention: '处理', runni
 const previewKinds: Record<string, string[]> = {
   'reference-art': ['character'],
   'sprite-generator': ['animation'],
+  // Confirmed state images are catalogued as props; the editor keeps its own preference order.
+  'interactable-motion': ['prop'],
   'interactable-editor': ['interactable', 'prop'],
 };
 const samples: Record<string, () => ReactNode> = {
   'reference-art': SampleCharacter,
   'sprite-generator': SampleAnimation,
+  'interactable-motion': SampleInteractable,
   'interactable-editor': SampleInteractable,
 };
 

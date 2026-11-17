@@ -12,6 +12,7 @@ MCP 0.8.0 增加三个只读工具，前端入口为“资产库”。资产与�
 - `image-assets` 的 `generate-prop` 和 `edit-image` 使用 GPT Image 2.6（模型 `gpt-image-2.6-sunburst`）。每个完成任务形成独立的 `image:<taskId>`；`kind=prop` 为透明物件。编辑不覆盖源图，也不因像素相同合并独立来源。候选仍标记 `requiresAdoption=true`，资产存在不代表已被任何交互物采用。
 - 动画 ID 为 `animation:<jobId>:<candidateIndex>`。创建、查询、检查和导出同一候选的多条任务不会增加资产数。旧的本地产物快照与当前原生资产区分标注。
 - N1 的现代动画记录可带 `objectId` / `objectType`，与兼容 characterId 表示同一来源。交互物动画仍为 kind=animation，不伪装成已配置行为的交互物；帧与精灵表表示不添加角色朝向。旧角色记录未带对象字段时保持原元数据。
+- 交互物状态链：确认的状态图为 `motion-state:<jobId>:<候选>:<序号>`（kind=prop，`motionSource=state`），已接受过渡为 `motion-transition:…`（kind=animation）。人工接受的派生素材（倒放、旋转草稿、色调派生、上传状态图）为 `motion-derived:<workId>:<派生ID>`，带 `derivation`，状态标签为“派生状态图 / 派生过渡”；待检查、已放弃和诊断任务的派生不收录。三者都可经 `import-motion-asset` 写回，文件读取时重新核对哈希。
 - 交互物以 projectId + definitionId 标识。完整保存更新当前对象集合；导出部分对象不删除其余对象。重新保存后不把旧导出包声称为当前版本。
 - 素材包导入使用独立的 `imported-package` 来源与 `imported:<内容身份>` 本机资产 ID，保存在 `workspace.importedAssetDirectory`。原始上传、素材文件、规范化元数据及来源身份一起持久保存；原服务离线时仍可查看详情、预览、下载、放入回收站及从编辑器选用。它不创建原生生成任务或伪造原作业。来源审核文字和已有 Godot 包只作未经本机验证的来源说明。
 

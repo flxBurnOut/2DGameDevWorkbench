@@ -41,6 +41,7 @@ Server 还提供只读资源 `workbench://manifest`。工具数量和版本以�
 | `workbench_validate_document` | 检查保存版本的结构、媒体与诊断 |
 | `workbench_simulate_document` | 执行类型化输入事件并检查交互结果，不改文档 |
 | `workbench_adopt_document_image` | 使用确切图片任务与 SHA-256，明确采用到指定工程 |
+| `workbench_get_motion_bindings` | 只读：各切换状态 / 序列条目绑定的状态图与过渡、来源作品版本与是否仍在使用 |
 | `workbench_inspect_image_target` | 发现或读取既有图片目标、源版本和候选 |
 | `workbench_resolve_image_region` | 按确切源版本解析区域；可显式保存命名区域 |
 | `workbench_prepare_part_context` / `workbench_request_part_suggestion` / `workbench_get_part_suggestion` | 准备并查看三张规划视图，明确请求一次视觉定位，或查询已有部件建议 |

@@ -137,6 +137,37 @@ def test_policy_6_correction_receives_the_original_wire_fields_again(wire_planne
     assert '\nAction: ' + final['plan']['stages'][0]['goal'] in work.plan.stages[0].prompt
 
 
+def test_coordinator_uses_the_last_call_to_conclude_after_deferring_consultation(wire_planner):
+    from test_generation_conditions import StructuredConditionsPlanner
+
+    _, workspace, provider = wire_planner
+    workspace.model.registry.save(ModelConfiguration(default=ModelProfile(model='kimi-k3.1-pro')))
+    work = workspace.create(spec(budget={'max_planning_calls': 5}), uuid.uuid4().hex, planning_authorized=True)
+    work.generation_policy_version = 6
+    workspace.save(work)
+    final, _ = StructuredConditionsPlanner()('coordinator', work, workspace.reference(work))
+    strategy = {'action': 'propose', 'summary': '两段策略', 'proposal': copy.deepcopy(final['plan'])}
+    for stage in strategy['proposal']['stages']:
+        stage.pop('structure_usage')
+        stage['prompt'] = stage['goal']
+    for stage in final['plan']['stages']:
+        stage.pop('structure_usage')
+    final['plan']['questions'] = ['请确认能否以低姿势着地。']
+    consult = {'action': 'consult', 'target': 'motion', 'question': '落地姿势是不是能满足要求？',
+               'summary': '需要核对落地姿势。'}
+    replies = [observation(), observation(), strategy, consult, final]
+    chat = ChatFixture((json.dumps(reply, ensure_ascii=False), 'stop') for reply in replies)
+    with patch('sprite_pipeline.vision_review.httpx.Client', return_value=chat):
+        result = workspace.plan(work.id)
+
+    assert result.status == 'needs_input' and result.plan.questions == final['plan']['questions']
+    assert not provider.requests and not result.job_id
+    assert [call['role'] for call in result.planning_calls] == ['appearance', 'motion', 'strategy', 'coordinator', 'coordinator']
+    assert result.messages[-2]['deferred_request']['resolved'] is False
+    assert chat.requests[-1]['response_format']['json_schema']['schema']['properties']['action']['const'] == 'finalize'
+    assert 'no further expert calls can be requested' in chat.requests[-1]['messages'][0]['content'][0]['text']
+
+
 @pytest.mark.parametrize('budget,finish_reason,attempts', [(4, 'stop', 1), (8, 'stop', 2), (8, 'length', 1)])
 def test_correction_cannot_overrun_budget_or_repeat_an_incomplete_response(wire_planner, budget, finish_reason, attempts):
     _, workspace, _ = wire_planner

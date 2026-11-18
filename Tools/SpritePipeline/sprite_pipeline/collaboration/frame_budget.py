@@ -1,6 +1,41 @@
 """Planning-time estimate. PixelLab rounds each submission independently."""
-from ..errors import HarnessError
+from ..errors import HarnessError, ValidationHarnessError
 from ..service import SpritePipelineService
+from .contracts import review_calls_per_check
+
+
+def minimum_stage_count(spec):
+    return spec.interactable_skeleton.transitions() if spec.interactable_skeleton else 1
+
+
+def require_minimum_budget(spec):
+    budget = spec.budget
+    stages = minimum_stage_count(spec)
+    draws = stages * spec.candidate_count
+    reviews = (stages + 1) * spec.candidate_count * review_calls_per_check(spec)
+    missing = []
+    if budget.max_generation_calls < draws:
+        missing.append(f'至少需要 {draws} 次生成')
+    if budget.max_total_frames is not None and budget.max_total_frames < 4 * draws:
+        missing.append(f'至少需要 {4 * draws} 帧')
+    if spec.provider != 'fixture' and budget.max_review_calls < reviews:
+        missing.append(f'至少需要 {reviews} 次视觉额度（逐段检查和整段复核）')
+    if missing:
+        raise ValidationHarnessError('；'.join(missing) + '。尚未调用规划模型，请先调整预算')
+
+
+def minimum_drawing_problem(work):
+    limits = work.frame_budget
+    draws = minimum_stage_count(work.spec) * work.spec.candidate_count
+    if limits['max_frames_per_request'] < 4 or limits['max_total_frames'] < 4 * draws:
+        return f'绘图额度或帧数上限不足，当前需求至少需要 {draws} 次生成、合计 {4 * draws} 帧；尚未调用规划模型'
+    remaining = limits['remaining_units']
+    if remaining is not None:
+        units = SpritePipelineService._pixellab_generation_units(
+            work.character['cell_width'], work.character['cell_height'], 4) * draws
+        if remaining < units:
+            return f'逐次计费至少需要 {units} 单位，余额 {remaining}；尚未调用规划模型'
+    return None
 
 
 def planning_limits(service, work):

@@ -157,6 +157,53 @@ try {
     assert.equal(graph.panelHref({ work: 'w', version: undefined }, { documentId: 'doc', definitionId: 'lever' }), '/tools/interactable-motion?work=w&document=doc&definition=lever');
   });
 
+  test('saved state drafts restore a return to the initial state and bind targets to the preceding stages', () => {
+    const draft = graph.defaultDraft('toggle', ['关', '开'], true);
+    draft.states[0].appearance = '亮'.repeat(graph.draftLimits.appearance);
+    draft.states[1] = { name: '关', appearance: '灯面熄灭', targetPng: 'fixture' };
+    draft.loop = true;
+    draft.hold = '停留半秒';
+    draft.returnToStart = true;
+    const skeleton = graph.draftSkeleton(draft);
+    assert.deepEqual(skeleton.states.map(s => s.name), ['开', '关', '开']);
+    assert.equal(skeleton.states[2].appearance.length, graph.draftLimits.appearance);
+    assert.equal(graph.draftTransitionCount(draft), 2);
+    const work = { spec: { interactable_skeleton: skeleton, loop: true, return_to_reference: true } };
+    const restored = graph.draftFromWork(work);
+    assert.deepEqual(restored, { ...draft, states: draft.states.map(({ name, appearance }) => ({ name, appearance })) });
+    assert.deepEqual(graph.pendingDraftTargets(work, draft), [{ name: '关', png: 'fixture', stage: 0 }]);
+    assert.deepEqual(graph.pendingDraftTargets({ ...work, end_targets: [{ stage: 0 }] }, draft), []);
+  });
+
+  test('historical state and target URLs are tied to their exact work revision', () => {
+    const work = { id: 'w', revision: 2, latest_revision: 3 };
+    for (const path of ['candidates/1/stages/0/state-image', 'targets/1']) {
+      const url = new URL(graph.nodeImageUrl({ index: 1, image: { path, v: 'hash' } }, work, ''), 'http://example.test');
+      assert.equal(url.searchParams.get('path'), `open-motion/w/${path}`);
+      assert.equal(url.searchParams.get('revision'), '2');
+      assert.equal(url.searchParams.get('v'), 'hash');
+    }
+  });
+
+  test('toggle writeback suggestions require the graph to start in the bound initial state', async () => {
+    const { proposedSlots } = await server.ssrLoadModule('/components/interactable-motion/writeback-tab.tsx');
+    const entries = ['关', '开'];
+    const toggle = graph.defaultDraft('toggle', entries, true);
+    const chain = graph.workGraph(null, 1, toggle);
+    const choices = [
+      { assetId: 'reference', source: 'state', stage: null },
+      { assetId: 'end', source: 'state', stage: 0 },
+      { assetId: 'forward', source: 'transition', stage: 0 },
+      { assetId: 'reverse-other-stage', source: 'transition', derived: 'reverse', stage: 1 },
+    ];
+    const automatic = (value, assets = choices) =>
+      proposedSlots('toggle', entries, true, value.nodes, value.edges, assets).map(slot => [slot.index, slot.suggested]);
+    assert.deepEqual(automatic(chain), [[1, 'reference'], [0, 'end'], [0, 'forward'], [1, undefined]]);
+    assert.deepEqual(automatic(chain, [...choices, { assetId: 'back', source: 'transition', derived: 'reverse', stage: 0 }]).at(-1), [1, 'back']);
+    const reversed = graph.workGraph(null, 1, graph.defaultDraft('toggle', entries));
+    assert.deepEqual(automatic(reversed), [[1, undefined], [0, undefined], [0, undefined], [1, undefined]]);
+  });
+
   test('slot bindings report the last import per slot and whether the content still uses it', () => {
     const project = createProject();
     project.objects = [createObject('toggle')];

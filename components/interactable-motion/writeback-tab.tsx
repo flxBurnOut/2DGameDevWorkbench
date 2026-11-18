@@ -30,12 +30,18 @@ export function proposedSlots(kind: 'toggle' | 'sequence', entries: string[], in
   const edgeChoice = (edge?: GraphEdge) => edge && choices.find(c => c.source === 'transition' && !c.derived && c.stage === edge.stage)?.assetId;
   if (kind === 'toggle') {
     const first = initialToggle ? 1 : 0, second = 1 - first;
-    const back = edges.find(e => e.from === 1 && nodes[e.to]?.name === nodes[0]?.name);
-    const reverse = choices.find(c => c.derived === 'reverse')?.assetId;
+    const name = (index: number) => nodes[index]?.name.trim();
+    const initialName = entries[first]?.trim(), nextName = entries[second]?.trim();
+    // The reference belongs to the actual initial state. A mislabeled or
+    // differently ordered chain cannot safely seed these writeback slots.
+    const matching = initialName && nextName && initialName !== nextName && name(0) === initialName && name(1) === nextName;
+    const forward = matching ? edges.find(e => e.from === 0 && e.to === 1) : undefined;
+    const back = matching ? edges.find(e => e.from === 1 && name(e.to) === initialName) : undefined;
+    const reverse = forward && choices.find(c => c.source === 'transition' && c.derived === 'reverse' && c.stage === forward.stage)?.assetId;
     return [
-      { index: first, name: entries[first], kind: 'state', label: `${entries[first]} · 状态图（初始）`, suggested: stateChoice(nodes[0]) },
-      { index: second, name: entries[second], kind: 'state', label: `${entries[second]} · 状态图`, suggested: stateChoice(nodes[1]) },
-      { index: second, name: entries[second], kind: 'transition', label: `进入「${entries[second]}」的过渡`, suggested: edgeChoice(edges[0]) },
+      { index: first, name: entries[first], kind: 'state', label: `${entries[first]} · 状态图（初始）`, suggested: matching ? stateChoice(nodes[0]) : undefined },
+      { index: second, name: entries[second], kind: 'state', label: `${entries[second]} · 状态图`, suggested: matching ? stateChoice(nodes[1]) : undefined },
+      { index: second, name: entries[second], kind: 'transition', label: `进入「${entries[second]}」的过渡`, suggested: edgeChoice(forward) },
       { index: first, name: entries[first], kind: 'transition', label: `回到「${entries[first]}」的过渡`, suggested: edgeChoice(back) || reverse },
     ];
   }
@@ -101,7 +107,12 @@ export function WritebackTab({ work, candidate, graph, documentId, definitionId,
   }, [jobId, candidate, graph, derived]);
   const object = bindings?.objects.find(o => o.definitionId === definitionId);
   const entries = object?.slots.map(s => s.name) || [];
-  const slots = object ? proposedSlots(object.kind, entries, Boolean(object.initialToggle), graph.nodes, graph.edges, choices) : [];
+  const skeleton = work?.spec.interactable_skeleton?.states;
+  const knownNames = entries.map(name => name.trim());
+  const bindingNodes = skeleton?.length === graph.nodes.length
+    ? graph.nodes.map((node, index) => knownNames.includes(node.name.trim()) ? node : { ...node, name: skeleton[index].name })
+    : graph.nodes;
+  const slots = object ? proposedSlots(object.kind, entries, Boolean(object.initialToggle), bindingNodes, graph.edges, choices) : [];
   const key = (slot: Slot) => `${slot.kind}:${slot.index}`;
   const value = (slot: Slot) => selected[key(slot)] ?? slot.suggested ?? '';
   const write = async () => {

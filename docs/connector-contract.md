@@ -22,6 +22,7 @@
 ```json
 {
   "capabilityId": "reference-art",
+  "commandId": "reference:take-1",
   "input": {
     "operation": "generate",
     "prompt": "透明背景的侧视像素骑士"
@@ -58,6 +59,10 @@
 
 字段只在有值时出现。调用方必须保留原始字符串，不自行推导文件名或把缺失输出补齐。
 
+`commandId` 可省略。提供时，工作台在调用适配器前保存请求的 SHA-256 与唯一任务身份。用相同 `commandId` 和相同请求可把已准备任务推进到运行状态，也可查询已开始的原任务。相同标识配不同能力或输入返回 `COMMAND_ID_REUSED`。摘要的 `replayed: true` 表示沿用原任务。输入对象的属性顺序不影响请求身份。
+
+MCP 的 `workbench_get_task` 支持 `taskId` 或 `commandId`。CLI 的 `prepare`、`run` 和 `status` 支持 `--command-id`。默认任务查询和列表返回精简输入与状态。MCP 的 `detail: true`、CLI 的 `status --detail` 或 HTTP 的 `detail=true` 可读取保存的完整输入。产物与审核证据通过 `workbench_get_result` 或登记的文件入口读取。
+
 ## 3. 状态机
 
 ```text
@@ -78,7 +83,7 @@ get/status: running ───→ 刷新同一上游任务后保持或进入终�
 
 刷新运行中任务发生短暂异常时，原任务保持 `running`，读取结果可以附带 `refreshError`。轮询不得重新提交计费请求。
 
-Image 2.6 先持久化 running 任务和执行进程租约，再提交后台请求，前端不必等待模型响应才获得 taskId。查询只观察原执行与产物；执行进程退出或租约失效时转为 attention_required，提示结果可能未知，不自动重新提交。已保存输入、原始返回图和诊断文件用于检查；running 不代表已经收到图片。
+Image 2.6 先持久化 running 任务和执行进程租约，再提交后台请求，前端可以先获得 taskId。执行进程退出或租约失效后，刷新返回 attention_required。这类记录仍可归档与按原标识查询，晚到的原执行结果仍能提交到原记录。
 
 ## 4. 输出与路径约束
 
@@ -99,8 +104,10 @@ Image 2.6 先持久化 running 任务和执行进程租约，再提交后台请�
 | 方法与路径 | 行为 |
 | --- | --- |
 | `GET /health` | 返回服务名称与协议版本 |
-| `GET /v1/tasks?limit=30&refresh=false` | 按更新时间列出任务；`refresh=true` 刷新运行中适配器任务 |
-| `POST /v1/tasks` | 接收 `{capabilityId,input}` 并直接运行授权任务 |
+| `GET /v1/tasks?limit=30&refresh=false` | 按更新时间列出任务。可用 `refresh=true` 更新本页运行与恢复中的任务 |
+| `GET /v1/tasks/<id>`、`GET /v1/tasks?commandId=...` | 读取任务。可用 `refresh=true` 更新状态，`detail=true` 返回完整输入 |
+| `POST /v1/tasks/prepare` | 接收 `{capabilityId,input,commandId?}` 并保存通过校验的请求 |
+| `POST /v1/tasks` | 接收 `{capabilityId,input,commandId?}` 并运行授权任务 |
 | `GET /v1/artifacts?path=outputs/...` | 下载 `outputs/` 内的真实文件 |
 | `GET/POST /v1/image-assets/settings` | Image 2.6 公开配置状态 / 专用受保护配置写入；共用 canonical provider 配置，不返回 key |
 | `GET /v1/interactable-assets?path=...` | 预览允许的本地交互物素材 |
@@ -115,7 +122,7 @@ Image 2.6 先持久化 running 任务和执行进程租约，再提交后台请�
 
 通用 JSON 请求上限为 50 MiB；任务提交为 120 MiB，以容纳最多 80 MiB 图片源及 base64 开销；文档请求为 350 MiB，文档媒体仍限制总计 256 MiB。交互物上传端点另按素材契约限制单文件 64 MiB；交互物项目导入由 Web 编辑器限制为 256 MiB。`/v1/artifacts` 只接受以 `outputs/` 开头、解析后仍位于真实输出根目录内的文件。
 
-`app/api/workbench/**` 是 Web 同源代理：它转发到 `WORKBENCH_RUNTIME_URL`，不把密钥返回浏览器。当前 HTTP bridge 没有通用 `prepare` endpoint；需要只准备任务时使用 MCP 或 CLI。
+`app/api/workbench/**` 是 Web 同源代理，转发到 `WORKBENCH_RUNTIME_URL`。
 
 ## 6. SpritePipeline 适配器
 
@@ -148,6 +155,8 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 本地任务 ID 用作默认幂等键，避免不明确重试创建第二个可能计费的作业。`wait` 默认 false；生成异步返回时，任务保存上游 job ID，后续 `get`/`status` 刷新同一 job。
 
 标准化输出类型为 `jobRecord`、`orderedFrames`、`spriteSheet`、`godotPackage`、`preview` 和 `metadata`。需要交付的帧与导出文件被复制到当前任务输出目录，不暴露上游私有路径。
+
+工作台先保存原生回执，再按原生作业版本读取帧、图集、预览和 Godot 包。所有原生回执中的产物哈希都参与校验。通过校验的完整文件集合才发布到任务输出路径。下载失败后，刷新原任务会从已保存的回执继续读取。对携带 `commandId` 的 `plan-motion`，工作台默认将任务标识用作原生请求键，丢失提交响应后可按该键查询原作品。
 
 默认 API 是 `http://127.0.0.1:7860`。仅连接另一个可信部署时设置 `SPRITE_PIPELINE_API_URL`；受保护部署可使用 `SPRITE_PIPELINE_API_TOKEN`。详细使用见 [序列帧生成](sprite-generator.md)。
 

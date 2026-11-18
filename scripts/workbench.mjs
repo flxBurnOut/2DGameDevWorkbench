@@ -6,9 +6,11 @@ import process from 'node:process';
 
 import {
   agentRequest,
+  commandTaskId,
   findCapability,
   loadManifest,
-  prepareTask,
+  prepareAgentTask,
+  publicTaskRecord,
   publicCapability,
   refreshTask,
   repositoryRoot,
@@ -79,9 +81,9 @@ Commands:
   describe <capability-id> [--json]
   doctor [--json]
   agent <guidance|environment|start|frontend|present|frontend-context|presets|tasks|result|artifact|interactable-template|assets|asset|asset-manifest|game-exports|game-export|export-to-game|install-game-export|complete-game-export|documents|document-get|document-create|document-save|document-apply|document-restore|document-validate|document-simulate|document-adopt-image> [--input <json-file>] [--json]
-  prepare <capability-id> --input <json-file> [--json]
-  run <capability-id> --input <json-file> [--json]
-  status <task-id> [--json]
+  prepare <capability-id> --input <json-file> [--command-id <id>] [--json]
+  run <capability-id> --input <json-file> [--command-id <id>] [--json]
+  status <task-id>|--command-id <id> [--detail] [--json]
 
 Image editing agent operations: image-inspect, image-resolve,
   image-part-context, image-part-suggest, image-part-get, image-plan-prepare, image-plan-get,
@@ -158,24 +160,22 @@ async function main() {
   }
 
   if (command === 'status') {
-    if (!target) throw new Error('Provide a task ID.');
-    const refreshed = await refreshTask(manifest, target);
-    print(
-      refreshed.refreshError
-        ? { ...refreshed.task, refreshError: refreshed.refreshError }
-        : refreshed.task,
-      jsonMode,
-    );
+    const commandId = flags.get('command-id');
+    if (Boolean(target) === flags.has('command-id')) throw new Error('Provide exactly one task ID or --command-id.');
+    const refreshed = await refreshTask(manifest, target || commandTaskId(commandId));
+    print({ ...publicTaskRecord(refreshed.task, flags.has('detail')),
+      ...(refreshed.refreshError ? { refreshError: refreshed.refreshError } : {}) }, jsonMode);
     return;
   }
 
   if (command === 'prepare' || command === 'run') {
     const capability = findCapability(manifest, target);
     const input = await loadInput(flags);
+    const options = { commandId: flags.get('command-id') };
     const result =
       command === 'prepare'
-        ? await prepareTask(manifest, capability, input)
-        : await runConnector(manifest, capability, input);
+        ? await prepareAgentTask(manifest, capability, input, options)
+        : await runConnector(manifest, capability, input, options);
     print(summarizeTask(result), jsonMode);
     return;
   }

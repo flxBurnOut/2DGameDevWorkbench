@@ -128,22 +128,33 @@ try {
   })
     .png()
     .toBuffer();
-  const response = await fetch(`${baseUrl}/v1/tasks`, {
+  const image = `data:image/png;base64,${tile.toString('base64')}`;
+  const body = {
+    commandId: 'http:process-image',
+    capabilityId: 'image-assets',
+    input: { operation: 'process-image', kind: 'prop', image, alphaCleanupThreshold: 0 },
+  };
+  const postTask = (suffix, value) => fetch(`${baseUrl}/v1/tasks${suffix}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      capabilityId: 'image-assets',
-      input: {
-        operation: 'process-image',
-        kind: 'prop',
-        image: `data:image/png;base64,${tile.toString('base64')}`,
-        alphaCleanupThreshold: 0,
-      },
-    }),
+    body: JSON.stringify(value),
   });
+  const preparation = await (await postTask('/prepare', body)).json();
+  assert.equal(preparation.status, 'prepared');
+  const response = await postTask('', body);
   assert.equal(response.status, 200);
   const task = await response.json();
   assert.equal(task.status, 'completed');
+  assert.equal(task.taskId, preparation.taskId);
+  const replay = await (await postTask('', body)).json();
+  assert.equal(replay.taskId, task.taskId);
+  assert.equal(replay.replayed, true);
+  const conflict = await postTask('', { ...body, input: { ...body.input, alphaCleanupThreshold: 1 } });
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).code, 'COMMAND_ID_REUSED');
+  const query = `/v1/tasks?commandId=${encodeURIComponent(body.commandId)}`;
+  assert.equal((await jsonFetch(baseUrl + query)).task.input.image, undefined);
+  assert.equal((await jsonFetch(baseUrl + query + '&detail=true')).task.input.image, image);
   const artifact = task.outputs.find((value) =>
     value.endsWith('/image.png'),
   );
@@ -151,6 +162,7 @@ try {
 
   const tasks = await jsonFetch(`${baseUrl}/v1/tasks?limit=1`);
   assert.equal(tasks.tasks[0].id, task.taskId);
+  assert.equal(tasks.tasks[0].input.image, undefined);
   const artifactResponse = await fetch(
     `${baseUrl}/v1/artifacts?path=${encodeURIComponent(artifact)}`,
   );

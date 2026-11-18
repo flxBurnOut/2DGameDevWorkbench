@@ -97,6 +97,64 @@ await controller.retry();
 assert.equal((await api.read()).document.content.name, 'Must persist before sending');
 controller.dispose();
 
+// A tab that was already connected must recover a different tab's durable
+// command. Its own draft and baseline still govern whether it follows the head.
+for (const dirty of [false, true]) {
+  const project = createProject(); project.projectId = `existing-tabs-${dirty}`;
+  const { document } = await createDocument(root, manifest, { kind: 'interactable', content: project, commandId: 'initial-create' });
+  let firstDraft = structuredClone(document.content), secondDraft = structuredClone(document.content);
+  let sharedCache = { revision: document.revision, fingerprint: await documentFingerprint(document.content) };
+  let loseFirstReceipt = true;
+  const sent = [];
+  const makeTab = (tab, current, applyRemote) => new DocumentSyncController({
+    id: project.projectId, kind: 'interactable', current, applyRemote, busy: () => false,
+    journal: journal('existing-tab-sync', project.projectId), prepare: normalizeProject,
+    saveLocal: async () => {}, backupLocal: async () => 'backup',
+    readCache: async () => structuredClone(sharedCache), writeCache: async value => { sharedCache = structuredClone(value); },
+    api: {
+      read: () => getDocument(root, manifest, { documentId: project.projectId }),
+      save: async (documentId, expectedRevision, content, commandId) => {
+        const input = { documentId, expectedRevision, content, commandId };
+        sent.push({ tab, input: structuredClone(input) });
+        const result = await saveDocument(root, manifest, input);
+        if (tab === 'first' && loseFirstReceipt) { loseFirstReceipt = false; throw new Error('reply lost'); }
+        return result;
+      },
+    },
+  });
+  const firstTab = makeTab('first', () => firstDraft, next => { firstDraft = next; });
+  const secondTab = makeTab('second', () => secondDraft, next => { secondDraft = next; });
+  await firstTab.sync();
+  await secondTab.sync();
+  firstDraft = { ...firstDraft, name: 'First tab lost the receipt' };
+  await firstTab.sync();
+  assert.equal(firstTab.getState().status, 'offline');
+  const pendingJournal = journal('existing-tab-sync', project.projectId);
+  assert.ok(await pendingJournal.pending());
+  if (dirty) {
+    secondDraft = { ...secondDraft, name: 'Independent second-tab draft' };
+    await secondTab.sync();
+    assert.equal(secondTab.getState().status, 'offline');
+    assert.equal(sharedCache.pending.commandId, sent[0].input.commandId, 'a rejected new request cannot replace the existing recovery hint');
+  }
+
+  const latest = (await saveDocument(root, manifest, { documentId: project.projectId,
+    expectedRevision: 2, commandId: 'newer-shared-version', content: { ...firstDraft, name: 'Newer shared version' },
+  })).document;
+  await secondTab.retry();
+  assert.deepEqual(sent, [{ tab: 'first', input: sent[0].input }, { tab: 'second', input: sent[0].input }]);
+  assert.equal(await pendingJournal.pending(), null);
+  assert.equal(secondTab.getState().revision, latest.revision);
+  assert.equal(secondTab.getState().status, dirty ? 'conflict' : 'synced');
+  assert.equal(secondDraft.name, dirty ? 'Independent second-tab draft' : latest.content.name);
+  await firstTab.retry();
+  assert.deepEqual(sent.at(-1), sent[0]);
+  assert.equal(firstTab.getState().revision, latest.revision, 'an old replay receipt cannot regress the recovered head');
+  assert.equal(firstDraft.name, latest.content.name);
+  assert.equal((await getDocument(root, manifest, { documentId: project.projectId })).document.revision, latest.revision);
+  firstTab.dispose(); secondTab.dispose();
+}
+
 // Losing the local rejection receipt must not throw from an autosave timer or
 // discard the identity needed to confirm that same rejected request.
 current = { ...current, name: 'Rejected request receipt' };
@@ -198,4 +256,4 @@ for (const failedRead of ['cache', 'journal']) for (const scenario of ['local-ed
   }
   recovering.dispose();
 }
-console.log('Durable request journal passed: tab races, immutable bodies, receipts, stale completion, restart replay, CAS, persistence-before-send and initialization read recovery.');
+console.log('Durable request journal passed: tab races, reconnect recovery, immutable bodies, receipts, stale completion, restart replay, CAS, persistence-before-send and initialization read recovery.');

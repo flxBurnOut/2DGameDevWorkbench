@@ -46,6 +46,21 @@ export class DocumentSyncController {
     await this.options.writeCache(cache);
     this.cache = cache;
   }
+  async restorePendingRequest({ fromAnotherTab = false } = {}) {
+    const original = await this.options.journal?.pending();
+    if (!original) return false;
+    const { operation, input } = original.request;
+    const expectedRevision = operation === 'create' ? 0 : input.expectedRevision;
+    if (!['save', 'create'].includes(operation) || input.documentId !== this.options.id ||
+        input.kind !== this.options.kind || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !input.content)
+      throw new Error('原共享保存记录与当前工程不匹配，请保留记录后恢复。');
+    if (this.pending?.commandId !== input.commandId) {
+      this.pending = { commandId: input.commandId, expectedRevision, content: input.content, fromAnotherTab,
+        fingerprint: await documentFingerprint(await this.options.prepare(input.content)) };
+    }
+    this.update({ status: 'pending', message: '已恢复原共享保存请求，正在核对结果', conflict: false });
+    return true;
+  }
   async reconcile() {
     if (this.disposed) return;
     const local = await this.prepared();
@@ -92,17 +107,8 @@ export class DocumentSyncController {
     if (this.initializing) return this.initializing;
     this.initializing = (async () => {
       this.cache = await this.options.readCache() || null;
-      const original = await this.options.journal?.pending();
-      if (original) {
-        const { operation, input } = original.request;
-        const expectedRevision = operation === 'create' ? 0 : input.expectedRevision;
-        if (!['save', 'create'].includes(operation) || input.documentId !== this.options.id ||
-            input.kind !== this.options.kind || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !input.content)
-          throw new Error('原共享保存记录与当前工程不匹配，请保留记录后恢复。');
-        this.pending = { commandId: input.commandId, expectedRevision, content: input.content,
-          fingerprint: await documentFingerprint(await this.options.prepare(input.content)) };
+      if (await this.restorePendingRequest()) {
         this.initialized = true;
-        this.update({ status: 'pending', message: '已恢复原共享保存请求，正在核对结果', conflict: false });
         return;
       }
       await this.reconcile();
@@ -119,7 +125,8 @@ export class DocumentSyncController {
       while (!this.disposed && !this.options.busy()) {
         const local = await this.prepared();
         if (!this.pending && local.fingerprint === this.cache?.fingerprint) return;
-        await this.options.saveLocal(local.snapshot);
+        if (!this.pending?.fromAnotherTab || local.fingerprint !== this.cache?.fingerprint)
+          await this.options.saveLocal(local.snapshot);
         if (this.disposed || this.options.busy()) return;
         let pending = this.pending;
         if (!pending) {
@@ -129,10 +136,6 @@ export class DocumentSyncController {
             expectedRevision: cached?.fingerprint === local.fingerprint ? cached.expectedRevision : this.cache?.revision ?? 0,
             fingerprint: local.fingerprint, content: local.content,
           };
-          this.pending = pending;
-          await this.remember(this.cache?.revision ?? null, this.cache?.fingerprint ?? null, {
-            commandId: pending.commandId, expectedRevision: pending.expectedRevision, fingerprint: pending.fingerprint,
-          });
         }
         if (this.disposed || this.options.busy()) return;
         const request = { operation: pending.expectedRevision ? 'save' : 'create', input: {
@@ -140,6 +143,13 @@ export class DocumentSyncController {
           expectedRevision: pending.expectedRevision, content: pending.content,
         } };
         await this.options.journal?.begin(request);
+        if (!this.pending) {
+          this.pending = pending;
+          await this.remember(this.cache?.revision ?? null, this.cache?.fingerprint ?? null, {
+            commandId: pending.commandId, expectedRevision: pending.expectedRevision, fingerprint: pending.fingerprint,
+          });
+        }
+        if (this.disposed || this.options.busy()) return;
         submittedRequest = request;
         this.update({ status: 'saving', message: '正在同步共享工程', conflict: false });
         awaitingResponse = true;
@@ -151,6 +161,15 @@ export class DocumentSyncController {
           throw new Error('共享工程保存响应身份不匹配。');
         await this.options.journal?.respond(request, result);
         if (this.disposed) return;
+        if (pending.fromAnotherTab || result.currentRevision > result.document.revision) {
+          await this.options.journal?.complete(request);
+          this.pending = null;
+          // A receipt for this tab's own save advances its local baseline.
+          // A receipt recovered for another tab leaves this baseline intact.
+          if (!pending.fromAnotherTab) this.cache = { revision: result.document.revision, fingerprint: pending.fingerprint };
+          await this.reconcile();
+          return;
+        }
         await this.remember(result.document.revision, pending.fingerprint);
         await this.options.journal?.complete(request);
         this.pending = null;
@@ -190,7 +209,8 @@ export class DocumentSyncController {
         // Failed storage reads must restore the baseline and original request
         // before reconciliation can classify drafts or allocate another ID.
         await this.initialize();
-        if (wasInitialized && !this.pending) await this.reconcile();
+        if (wasInitialized && !await this.restorePendingRequest({ fromAnotherTab: true }) && !this.pending)
+          await this.reconcile();
       } finally { this.finishOperation(); }
       // Retry an uncertain submission with the exact command ID and content.
       await this.sync();

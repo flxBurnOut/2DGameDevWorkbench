@@ -12,9 +12,13 @@ export async function GET(
   if (denied) return denied;
   try {
     const { taskId } = await context.params;
-    const refresh = new URL(request.url).searchParams.get('refresh') === 'true';
+    const params = new URL(request.url).searchParams;
+    const query = new URLSearchParams({
+      refresh: String(params.get('refresh') === 'true'),
+      detail: String(params.get('detail') === 'true'),
+    });
     const response = await fetchWorkbenchRuntime(
-      `/v1/tasks/${encodeURIComponent(taskId)}?refresh=${refresh}`,
+      `/v1/tasks/${encodeURIComponent(taskId)}?${query}`,
     );
     return new Response(await response.text(), {
       status: response.status,

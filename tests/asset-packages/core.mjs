@@ -1,7 +1,8 @@
 import '../helpers/runtime-workspace.mjs';
 import './object-animation.mjs';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, readdir } from 'node:fs/promises';
+import fs, { mkdtemp, mkdir, readFile, writeFile, rm, readdir, utimes } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
@@ -144,8 +145,61 @@ try {
   assert.equal((await listImportedAssets(root, manifest)).length, before);
   assert.equal(await readAssetPackageCommit(root, manifest, 'tampered'), null);
   assert.equal((await readdir(path.join(directories.persistent, '.pending'))).length, 0);
-  await mkdir(path.join(directories.persistent, '.commit-lock'));
-  await writeFile(path.join(directories.persistent, '.commit-lock', 'owner.json'), JSON.stringify({ pid: 2147483647, token: 'dead' }));
-  assert.equal(await withAssetPackageCommitLock(root, manifest, async () => 'recovered'), 'recovered');
-  console.log('Package core passed: mixed/legacy archives, missing parameters/media, grouped objects, exact playback, source/Godot wrappers, hash/path/duplicate/link defenses, atomic/idempotent commit and dead-owner recovery.');
+  const lock = path.join(directories.persistent, '.commit-lock');
+  const legacyOwner = path.join(lock, 'owner.json');
+  const recover = () => withAssetPackageCommitLock(root, manifest, async () => 'recovered');
+  await mkdir(path.join(lock, 'recovery'), { recursive: true });
+  await writeFile(legacyOwner, JSON.stringify({ pid: 2147483647, token: 'dead' }));
+  assert.equal(await recover(), 'recovered', 'an abandoned legacy recovery election cannot block a dead owner');
+  await mkdir(lock);
+  await writeFile(legacyOwner, '{"pid":');
+  const stale = new Date(Date.now() - 20000);
+  await utimes(legacyOwner, stale, stale);
+  assert.equal(await recover(), 'recovered', 'a stale partial legacy owner can be reclaimed');
+
+  const realWriteFile = fs.writeFile;
+  fs.writeFile = async (file, value, options) => {
+    if (path.basename(path.dirname(file)).startsWith('.commit-lock-') || file === legacyOwner) {
+      await realWriteFile(file, '{"pid":', options);
+      throw Object.assign(new Error('partial owner write'), { code: 'EIO' });
+    }
+    return realWriteFile(file, value, options);
+  };
+  syncBuiltinESMExports();
+  try { await assert.rejects(recover(), { code: 'EIO' }); }
+  finally { fs.writeFile = realWriteFile; syncBuiltinESMExports(); }
+  assert.equal(await recover(), 'recovered', 'a partial owner write never publishes the lock');
+  assert.ok(!(await readdir(directories.persistent)).some(name => name.startsWith('.commit-lock')));
+
+  if (process.platform === 'win32') {
+    const retry = await inspect(frame2, 'sharing-retry.png');
+    const realRename = fs.rename;
+    let publications = 0;
+    fs.rename = async (source, destination) => {
+      if (path.basename(path.dirname(source)) === '.pending' && publications++ === 0)
+        throw Object.assign(new Error('temporary sharing violation'), { code: 'EPERM' });
+      return realRename(source, destination);
+    };
+    syncBuiltinESMExports();
+    try { assert.equal((await commit(retry, 'sharing-retry')).status, 'completed'); }
+    finally { fs.rename = realRename; syncBuiltinESMExports(); }
+    assert.equal(publications, 2);
+    assert.equal((await readAssetPackageCommit(root, manifest, 'sharing-retry')).commandId, 'sharing-retry');
+  }
+
+  let releaseHolder, enterHolder;
+  const entered = new Promise(resolve => { enterHolder = resolve; });
+  const held = new Promise(resolve => { releaseHolder = resolve; });
+  const holder = withAssetPackageCommitLock(root, manifest, async () => { enterHolder(); await held; });
+  await entered;
+  const events = [];
+  const ownerNames = await readdir(lock);
+  const waiter = withAssetPackageCommitLock(root, manifest, async () => { events.push('waiter acquired'); });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 70));
+    assert.deepEqual(await readdir(lock), ownerNames, 'a live owner keeps its lock while another writer waits');
+    assert.deepEqual(events, []);
+  } finally { releaseHolder(); await Promise.all([holder, waiter]); }
+  assert.deepEqual(events, ['waiter acquired']);
+  console.log('Package core passed: mixed/legacy archives, missing parameters/media, grouped objects, exact playback, source/Godot wrappers, hash/path/duplicate/link defenses, atomic/idempotent commit and interrupted lock recovery.');
 } finally { await rm(root, { recursive: true, force: true }); }

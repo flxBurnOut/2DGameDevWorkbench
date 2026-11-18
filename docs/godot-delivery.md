@@ -65,7 +65,7 @@ CLI 对应 `npm run workbench -- agent <共享操作> --input <输入文件> --j
 
 只读 `GET history` 接受 `pendingOnly`、`offset`、`limit` 和可选 `snapshot`，返回分页交付摘要；`GET record?deliveryId=...` 读取确切的保存记录及交接所需的类型信息。它们沿用同源与回环服务限制，不开放安装或完成接入的网页写接口。`workbench_list_game_exports` 同样可携带返回的 snapshot；不携带时兼容原列表行为。
 
-仓库本机索引目录来自 `workspace.gameExportDirectory`，默认 `work/game-exports/`；游戏中的原始交付、备份、安装索引在 `forge_imports/`。该目录带 `.gdignore`，不会重复注册运行时类。不要删除它来“清理导出”，否则会丢失接入记录和备份。测试目录与正式目录隔离。
+仓库本机索引目录来自 `workspace.gameExportDirectory`，默认 `work/game-exports/`；游戏中的原始交付、备份、安装索引在 `forge_imports/`。该目录带 `.gdignore`，不会重复注册运行时类。不要删除它来“清理导出”，否则会丢失接入记录和备份。首次替换保留 `backups/` 中的原文件；同一份交付再次替换不同的 Forge 管理版本时，按原文件的 SHA-256 另存备份。ZIP 与新增资源先完整写入临时文件，再用同目录硬链接一次发布。测试目录与正式目录隔离。
 
 ## 验收
 

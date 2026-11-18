@@ -9,8 +9,9 @@ from PIL import Image
 
 from ..errors import InvalidPlanningResponse, ValidationHarnessError
 from .model_config import ModelRegistry, ModelConfiguration
-from .contracts import ExpertTurn, CoordinatorTurn, ObservationTurn, StrategyTurn
+from .contracts import ExpertTurn, CoordinatorTurn, FinalCoordinatorTurn, ObservationTurn, StrategyTurn
 from .planning_observations import drawing_limits, reference_appearance
+from .planning_budget import FINAL_RESPONSE, final_response_only
 from . import structured_brief
 
 
@@ -233,6 +234,7 @@ class PlanningModel:
         role_specific = work.planning_format_version in (2, 3, 4)
         structured_drawing = work.generation_policy_version == 6
         structured_coordinator = structured_drawing and role == 'coordinator'
+        conclude = final_response_only(work, role)
         correction = None
         if current_format:
             call = work.planning_calls[-1] if work.planning_calls else {}
@@ -358,6 +360,8 @@ The two final calls inspect the WHOLE clip, including seams.
             instructions = instructions.replace(
                 'Review allowance = candidate_count * (2*stage_count + 2).\nThe two final calls inspect the WHOLE clip, including seams.',
                 'Review allowance = candidate_count * 5 * (stage_count + 1). Each segment and the final WHOLE clip reserve two baseline calls, two independent opinions and at most one dispute call.\nDo not remove a useful segment or weaken the motion merely to fit the review allowance; ask a critical budget question if the required checks do not fit.')
+        if conclude:
+            role_instructions += ' ' + FINAL_RESPONSE
         content = [{"type": "input_text", "text": instructions + "\nROLE: " + role_instructions + "\nTASK DATA:\n" + json.dumps(data, ensure_ascii=False)},
                    {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(reference).decode(), "detail": "high"}]
         if crop is not None:
@@ -381,8 +385,10 @@ The two final calls inspect the WHOLE clip, including seams.
             schema = CoordinatorTurn if role == "coordinator" else ObservationTurn if role in {'appearance','motion'} else ExpertTurn
             stage_type = 'PlanStage'
             if structured_coordinator:
-                schema = structured_brief.StructuredCoordinatorTurn
+                schema = structured_brief.FinalStructuredCoordinatorTurn if conclude else structured_brief.StructuredCoordinatorTurn
                 stage_type = 'DrawingStage'
+            elif conclude:
+                schema = FinalCoordinatorTurn
             if role=='strategy' and role_specific:schema=StrategyTurn
             if role=='strategy' and work.generation_policy_version in (4,5,6):
                 from .planning_draft import DraftStrategyTurn

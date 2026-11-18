@@ -97,29 +97,39 @@ class PlanGeneration:
             conditions = submission_conditions(job.request.open_plan,stage,prompt,hashlib.sha256(first).hexdigest(),
                                                hashlib.sha256(last).hexdigest() if last else None)
             self.s._check_submission_quota(job_id, index, provider, phase_frame_count=definition.frame_count)
-            folder = self.directory(job_id, index, stage); folder.mkdir(parents=True, exist_ok=True)
-            atomic_write_json(folder / "submit.intent.json", {"maximum_submission_attempts": 1,
-                              "plan_sha256": job.request.open_plan.plan_sha256, "stage": stage,
-                              "first_sha256": hashlib.sha256(first).hexdigest(),
-                              "last_sha256": hashlib.sha256(last).hexdigest() if last else None,
-                              "prompt": request.prompt, "frame_count": request.frame_count, "seed": request.seed,
-                               **({'drawing_conditions':conditions} if conditions else {}),
-                              **({'visual_structure_sha256':job.request.open_plan.visual_structure['sha256'],
-                                  'structure_usage':definition.structure_usage.model_dump(mode='json'),
-                                  'structure_drawing_hint':definition.motion.generation_hint}
-                                 if job.request.open_plan.visual_structure else {})})
+            folder = self.directory(job_id, index, stage)
+            intent_path = folder / 'submit.intent.json'
             with self.store.locked_job(job_id) as current:
                 c = self.candidate(current, index); r = self.validate(current, c)[stage]
                 if not current.plan_control.enabled:
                     return False
+                # The workspace revision is published before deactivating the old
+                # job. Fence new submissions even if that second write failed.
+                from .workspace import OpenMotionWorkspace
+                binding = current.request.open_plan
+                work = OpenMotionWorkspace(self.s).load(binding.work_id)
+                if work.revision != binding.revision or work.job_id != job_id:
+                    current.plan_control.enabled = False
+                    current.touch('open_plan_superseded')
+                    return False
                 if r.state != "created" or r.submission_attempts:
                     raise ConflictError("其他进程已提交此片段")
+                atomic_write_json(intent_path, {"maximum_submission_attempts": 1,
+                                  "plan_sha256": binding.plan_sha256, "stage": stage,
+                                  "first_sha256": hashlib.sha256(first).hexdigest(),
+                                  "last_sha256": hashlib.sha256(last).hexdigest() if last else None,
+                                  "prompt": request.prompt, "frame_count": request.frame_count, "seed": request.seed,
+                                  **({'drawing_conditions':conditions} if conditions else {}),
+                                  **({'visual_structure_sha256':binding.visual_structure['sha256'],
+                                      'structure_usage':definition.structure_usage.model_dump(mode='json'),
+                                      'structure_drawing_hint':definition.motion.generation_hint}
+                                     if binding.visual_structure else {})})
                 r.state = "submitting"; r.submission_attempts = 1
                 current.generation_account = current.generation_account or getattr(provider, 'account_fingerprint', None)
                 c.status = CandidateStatus.submitting; c.provider_job_id = None
                 c.submission_attempts = sum(v.submission_attempts+len(v.repairs) for v in c.plan_execution.stages)
                 c.submission_started_at = utc_now(); c.provider_name = provider.name
-                c.raw_request_path = (folder / "submit.intent.json").relative_to(self.store.job_dir(job_id)).as_posix()
+                c.raw_request_path = intent_path.relative_to(self.store.job_dir(job_id)).as_posix()
                 current.plan_control.message = f"正在提交：{definition.name}"
                 self.s._refresh_job_status(current); current.touch("plan_stage_submitting", candidate_index=index, stage=stage)
             try:

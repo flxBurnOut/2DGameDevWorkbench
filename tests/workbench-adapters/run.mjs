@@ -1,5 +1,6 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
 
@@ -79,7 +80,7 @@ const server = http.createServer(async (request, response) => {
   }
   if (
     request.method === 'GET' &&
-    request.url === '/v1/jobs/mock-job/candidates/1/frames/0/image'
+    new URL(request.url, baseUrl).pathname === '/v1/jobs/mock-job/candidates/1/frames/0/image'
   ) {
     response.setHeader('content-type', 'image/png');
     response.end(generatedFrame);
@@ -244,6 +245,7 @@ function spriteJob(status) {
           {
             index: 0,
             active_path: 'candidates/candidate_01/frames/frame_000.png',
+            sha256: createHash('sha256').update(generatedFrame).digest('hex'),
           },
         ],
       },

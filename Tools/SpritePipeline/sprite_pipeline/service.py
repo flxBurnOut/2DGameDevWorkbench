@@ -26,7 +26,7 @@ from .errors import (
     ProviderTemporaryError,
     ValidationHarnessError,
 )
-from .jsonio import atomic_write_json, read_json, relative_posix, sha256_file
+from .jsonio import atomic_write_json, read_json, relative_posix, replace_with_retry, sha256_file
 from .credential_store import CredentialStore
 from .migration import LegacyLayoutMigrator
 from .user_library_import import import_user_library
@@ -1684,7 +1684,7 @@ class SpritePipelineService:
                 else:
                     if output_dir.exists():
                         output_dir.rmdir()
-                    os.replace(staging_dir, output_dir)
+                    replace_with_retry(staging_dir, output_dir)
             except Exception as exc:
                 if staging_dir.exists():
                     recovery_root = (
@@ -1698,7 +1698,7 @@ class SpritePipelineService:
                             f"{candidate.candidate_id}_{utc_now().strftime('%Y%m%dT%H%M%S%fZ')}"
                             f"_{secrets.token_hex(4)}"
                         )
-                        os.replace(staging_dir, preserved)
+                        replace_with_retry(staging_dir, preserved)
                     except Exception:
                         # Leaving the hidden staging directory in place is safer
                         # than deleting paid bytes when even recovery storage is
@@ -3404,7 +3404,7 @@ class SpritePipelineService:
             if existing and not options.overwrite:
                 raise ConflictError("export files already exist", details={"paths": existing, "hint": "pass overwrite=true explicitly"})
 
-            staging = self.store.job_dir(job_id) / "export" / candidate.candidate_id
+            staging = self.store.job_dir(job_id) / "export" / candidate.candidate_id / f"v{job.revision + 1}"
             staging.mkdir(parents=True, exist_ok=True)
             staged_sheet = staging / destinations["sheet"].name
             staged_preview = staging / destinations["preview"].name
@@ -3529,6 +3529,11 @@ class SpritePipelineService:
                 qa_path=self.settings.record_path(destinations["qa"]),
                 godot_package_path=self.settings.record_path(destinations["godot"]),
                 godot_sha256=recipe["godot"]["package_sha256"],
+                preview_sha256=sha256_file(staged_preview),
+                immutable_artifacts={
+                    kind: relative_posix(staging / destination.name, self.store.job_dir(job_id))
+                    for kind, destination in destinations.items()
+                },
                 sha256=sha256_file(destinations["sheet"]),
             )
             job.status = JobStatus.exported

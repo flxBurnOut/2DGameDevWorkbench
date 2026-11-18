@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,7 +19,8 @@ from .errors import (
     ValidationHarnessError,
 )
 from .motion_constraints import Phase
-from .models import ExportOptions, FrameReviewRequest, GenerationRequest
+from .jsonio import read_json
+from .models import ExportOptions, FrameReviewRequest, GenerationRequest, JobRecord
 from .service import QA_ALGORITHM_VERSION, SpritePipelineService
 
 
@@ -102,9 +104,9 @@ def create_api(
     """Create the FastAPI app lazily so CLI/offline processing needs no FastAPI."""
 
     try:
-        from fastapi import FastAPI, Header, Request
+        from fastapi import FastAPI, Header, Query, Request
         from fastapi.exceptions import RequestValidationError
-        from fastapi.responses import FileResponse, JSONResponse
+        from fastapi.responses import FileResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
     except ImportError as exc:  # pragma: no cover - depends on optional install
         raise ProviderConfigurationError(
@@ -390,9 +392,34 @@ def create_api(
     def get_job(job_id: str) -> dict[str, Any]:
         return {"schema_version": 1, "ok": True, "data": {"job": _job(service.get_job(job_id))}}
 
+    def job_at_revision(job_id: str, revision: int | None) -> JobRecord:
+        current = service.get_job(job_id)
+        if revision is None or current.revision == revision:
+            return current
+        history = service.store.resolve_job_path(job_id, f"history/job_{revision:08d}.json")
+        if not history.is_file():
+            raise NotFoundError("requested job revision not found", details={"job_id": job_id, "revision": revision})
+        previous = JobRecord.model_validate(read_json(history))
+        if previous.job_id != job_id or previous.revision != revision:
+            raise ConflictError("job revision identity does not match its record")
+        return previous
+
+    def bound_artifact(artifact: Path, media_type: str, digest: str | None, expected: str | None):
+        if expected is not None and expected != digest:
+            raise ConflictError("artifact SHA-256 does not match the selected job revision")
+        try:
+            content = artifact.read_bytes()
+        except FileNotFoundError as exc:
+            raise NotFoundError("artifact for the selected job revision is unavailable") from exc
+        if digest is not None and hashlib.sha256(content).hexdigest() != digest:
+            raise ConflictError("artifact bytes differ from the selected job revision")
+        return Response(content, media_type=media_type, headers={"Cache-Control": "no-store"})
+
     @app.get("/v1/jobs/{job_id}/candidates/{candidate_index}/frames/{frame_index}/image", response_model=None)
-    def frame_image(job_id: str, candidate_index: int, frame_index: int) -> FileResponse:
-        job = service.get_job(job_id)
+    def frame_image(job_id: str, candidate_index: int, frame_index: int,
+                    revision: int | None = Query(None, ge=0),
+                    expected_sha256: str | None = Query(None, pattern=r"^[0-9a-f]{64}$")):
+        job = job_at_revision(job_id, revision)
         candidate = next(
             (item for item in job.candidates if item.candidate_index == candidate_index),
             None,
@@ -413,6 +440,8 @@ def create_api(
                 },
             )
         artifact = service.store.resolve_job_path(job_id, frame.active_path)
+        if revision is not None or expected_sha256 is not None:
+            return bound_artifact(artifact, "image/png", frame.sha256, expected_sha256)
         if not artifact.is_file():
             raise NotFoundError("frame artifact not found", details={"path": frame.active_path})
         return FileResponse(
@@ -423,8 +452,10 @@ def create_api(
         )
 
     @app.get("/v1/jobs/{job_id}/exports/{artifact_name}", response_model=None)
-    def export_artifact(job_id: str, artifact_name: str) -> FileResponse:
-        job = service.get_job(job_id)
+    def export_artifact(job_id: str, artifact_name: str,
+                        revision: int | None = Query(None, ge=0),
+                        expected_sha256: str | None = Query(None, pattern=r"^[0-9a-f]{64}$")):
+        job = job_at_revision(job_id, revision)
         if job.export is None:
             raise NotFoundError("job has not been exported", details={"job_id": job_id})
         fields = {
@@ -443,6 +474,16 @@ def create_api(
         recorded_path = getattr(job.export, field[0])
         if not recorded_path:
             raise NotFoundError("this historical export has no Godot package", details={"artifact": artifact_name})
+        if revision is not None or expected_sha256 is not None:
+            digest = {"sheet": job.export.sha256, "preview": job.export.preview_sha256,
+                      "godot": job.export.godot_sha256}.get(artifact_name)
+            immutable = job.export.immutable_artifacts.get(artifact_name)
+            if immutable:
+                return bound_artifact(service.store.resolve_job_path(job_id, immutable), field[1], digest, expected_sha256)
+            # Old export receipts used shared destination names and did not
+            # record a preview hash. Only the current export can serve such bytes.
+            if digest is None and service.get_job(job_id).export != job.export:
+                raise ConflictError("unhashed historical export artifact has been superseded")
         artifact = service.settings.resolve_record_path(recorded_path)
         exports_root = service.settings.exports_dir.resolve()
         try:
@@ -452,6 +493,8 @@ def create_api(
                 "export artifact escaped the configured exports directory",
                 details={"artifact": artifact_name},
             ) from exc
+        if revision is not None or expected_sha256 is not None:
+            return bound_artifact(artifact, field[1], digest, expected_sha256)
         if not artifact.is_file():
             raise NotFoundError(
                 "export artifact file not found",

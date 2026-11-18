@@ -48,7 +48,7 @@
 
 `workspace.packageImportDirectory` 默认 `work/asset-package-imports`，未提交检查保留 24 小时并在后续检查时清理。上传原件、每项原始文件和派生预览分开登记。提交重新验证原件和所有选中文件，构造完整暂存事务，再以目录重命名一次发布资产集合及命令回执。
 
-`workspace.importedAssetDirectory` 默认 `work/imported-assets`，持久布局为 `batches/<command-sha256>/commit.json`、`assets/<id>/record.json`、`assets/<id>/files/…` 和 `uploads/<upload-sha256>.bin`。扫描器只读取已发布批次。跨进程提交锁记录 PID 和随机所有权标记；确认进程已退出后可回收遗留锁。
+`workspace.importedAssetDirectory` 默认 `work/imported-assets`，持久布局为 `batches/<command-sha256>/commit.json`、`assets/<id>/record.json`、`assets/<id>/files/…` 和 `uploads/<upload-sha256>.bin`。扫描器只读取已发布批次。跨进程提交锁通过目录重命名一次发布 PID 和随机所有权标记。确认进程已退出后可回收遗留锁，包括旧版留下空恢复目录的锁。
 
 导入资产使用 `imported:<32hex>` 身份。原来源身份不成为本机可写工程身份。打开编辑副本时由内部选用合同分配新工程身份，保留包内引用和原件；原 Godot 附件不会成为编辑后版本的新导出。`WORKBENCH_TEST_RUN` 始终把暂存和持久目录放到对应的隔离测试命名空间。
 

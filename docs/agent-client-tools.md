@@ -58,6 +58,8 @@ Server 还提供只读资源 `workbench://manifest`。工具数量和版本以�
 
 首次使用不熟悉的操作时 list/describe，之后可复用已确认的 schema。用户已经要求执行且输入充分时直接 run；需要校验并保存准备记录时可 prepare。讨论、浏览和等待执行授权时无需建立任务。跨能力工作使用各自实际 operation 和任务身份。
 
+付费或异步操作可在发送前保存 `commandId`。用同一标识和输入 prepare、run 会推进同一任务。提交应答丢失时，用 `workbench_get_task({commandId})` 查原任务。开放动作首次规划沿用工作台默认的原生请求键时，可继续查询原生回执。任务查询和列表默认只返回精简输入，需要原始入参时在 `workbench_get_task` 传 `detail: true`。协议见[公共任务模型](connector-contract.md#2-公共任务模型)。
+
 共享文档、图片会话和版本化修改经 canonical Bridge 完成，沿用其 revision/hash 与 commandId 契约；详细字段分别见[交互物](interactable-editor.md)和[图片编辑](image-editing.md)。
 
 ## 状态与异步任务

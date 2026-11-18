@@ -18,8 +18,12 @@ import {
   agentRequest,
   findAgentCapability,
   agentCapabilities,
+  commandIdPattern,
+  commandTaskId,
+  currentTaskPresentation,
   loadManifest,
-  prepareTask,
+  prepareAgentTask,
+  publicTaskRecord,
   publicCapability,
   refreshTask,
   runConnector,
@@ -99,6 +103,7 @@ function failure(error) {
         ...(error.code ? { code: error.code } : {}),
         ...(error.status ? { status: error.status } : {}),
         ...(error.currentRevision !== undefined ? { currentRevision: error.currentRevision } : {}),
+        ...(error.taskId ? { taskId: error.taskId } : {}),
         ...(message.match(/^Task ([a-z0-9_-]+) failed:/i)
           ? {
               taskId: message.match(/^Task ([a-z0-9_-]+) failed:/i)[1],
@@ -247,6 +252,7 @@ const taskInputSchema = {
   input: z
     .record(z.string(), z.unknown())
     .describe('Input object matching the capability input schema.'),
+  commandId: z.string().regex(commandIdPattern).optional().describe('Stable caller command ID for finding or resuming the same request. Reuse with identical capability and input.'),
 };
 
 registerTool(
@@ -263,15 +269,13 @@ registerTool(
       openWorldHint: false,
     },
   },
-  async ({ capabilityId, input }) => {
+  async ({ capabilityId, input, commandId }) => {
     const manifest = await loadManifest();
     const capability = findAgentCapability(manifest, capabilityId);
-    const execution = await prepareTask(manifest, capability, input);
+    const execution = await prepareAgentTask(manifest, capability, input, { commandId });
     return {
       ...summarizeTask(execution),
-      presentation: (
-        await agentRequest(manifest, 'result', { taskId: execution.task.id })
-      ).presentation,
+      presentation: currentTaskPresentation(manifest, execution.task),
     };
   },
 );
@@ -290,15 +294,13 @@ registerTool(
       openWorldHint: true,
     },
   },
-  async ({ capabilityId, input }) => {
+  async ({ capabilityId, input, commandId }) => {
     const manifest = await loadManifest();
     const capability = findAgentCapability(manifest, capabilityId);
-    const execution = await runConnector(manifest, capability, input);
+    const execution = await runConnector(manifest, capability, input, { commandId });
     return {
       ...summarizeTask(execution),
-      presentation: (
-        await agentRequest(manifest, 'result', { taskId: execution.task.id })
-      ).presentation,
+      presentation: currentTaskPresentation(manifest, execution.task),
     };
   },
 );
@@ -308,9 +310,11 @@ registerTool(
   {
     title: 'Get a 2D workbench task',
     description:
-      'Poll the existing task without starting generation. An open-motion task can be polled across checkpoint decisions. presentation.reviewProgress shows the current visual check, recorded call count and decision readiness. Follow workbench_get_result for the exact next action and tokens.',
+      'Poll the existing task by taskId or commandId. Default reads return a compact record and saved progress. Use detail:true to include the original input. Follow workbench_get_result for evidence and exact next actions.',
     inputSchema: {
-      taskId: z.string().min(1).describe('Task ID returned by this server.'),
+      taskId: z.string().min(1).optional().describe('Task ID returned by this server.'),
+      commandId: z.string().regex(commandIdPattern).optional().describe('Caller command ID from the original prepare or run.'),
+      detail: z.boolean().optional(),
     },
     annotations: {
       readOnlyHint: false,
@@ -319,13 +323,13 @@ registerTool(
       openWorldHint: true,
     },
   },
-  async ({ taskId }) => {
+  async ({ taskId, commandId, detail }) => {
+    if (Boolean(taskId) === Boolean(commandId)) throw new Error('Provide exactly one of taskId or commandId.');
     const manifest = await loadManifest();
-    const refreshed = await refreshTask(manifest, taskId);
+    const refreshed = await refreshTask(manifest, taskId || commandTaskId(commandId));
     return {
-      presentation: (await agentRequest(manifest, 'result', { taskId }))
-        .presentation,
-      task: refreshed.task,
+      presentation: currentTaskPresentation(manifest, refreshed.task),
+      task: publicTaskRecord(refreshed.task, detail),
       ...(refreshed.refreshError
         ? { refreshError: refreshed.refreshError }
         : {}),
@@ -378,6 +382,7 @@ const discoveryTools = [
       limit: z.number().int().min(1).max(200).optional(),
       offset: z.number().int().min(0).optional(),
       snapshot: z.string().max(2000).optional(),
+      detail: z.boolean().optional().describe('Include full saved task input for each row.'),
     },
   ],
   [

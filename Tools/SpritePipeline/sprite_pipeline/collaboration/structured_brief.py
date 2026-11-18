@@ -1,6 +1,8 @@
 """Assemble the approved drawing brief from the coordinator's plan fields."""
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, ValidationError, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
@@ -36,6 +38,11 @@ class DrawingPlan(PlanProposal):
 
 class StructuredCoordinatorTurn(CoordinatorTurn):
     plan: DrawingPlan | None = None
+
+
+class FinalStructuredCoordinatorTurn(StructuredCoordinatorTurn):
+    action: Literal['finalize']
+    plan: DrawingPlan
 
 
 BOUNDARY = {'pass_through': 'Continue. ', 'settle': 'Settle. ', 'intentional_hold': 'Hold. '}

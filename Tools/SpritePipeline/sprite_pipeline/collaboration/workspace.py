@@ -4,14 +4,15 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from pydantic import ValidationError
 
-from ..errors import ConflictError, InvalidPlanningResponse, NotFoundError, ValidationHarnessError
-from ..jsonio import atomic_write_json, read_json
+from ..errors import ConflictError, HarnessError, InvalidPlanningResponse, NotFoundError, ValidationHarnessError
+from ..jsonio import atomic_write_json, read_json, replace_with_retry
 from ..vision_review import planning_validation_fields
-from .contracts import ExpertTurn, OpenWork, PlanBinding, TaskSpec, digest, bind_original_requirements, default_new_review, review_calls_per_check
+from .contracts import ExpertTurn, OpenWork, PlanBinding, TaskSpec, digest, bind_original_requirements, default_new_review
 from .model_config import ModelConfiguration, ModelRegistry
 from .planning import PLANNING_FORMAT_VERSION, PlanningModel
 from .planning_observations import REFERENCE_CROP_FOLLOWUP, reusable_observations
@@ -72,6 +73,21 @@ class OpenMotionWorkspace:
             return self.model.registry.configured_for(snapshot)
         return self.model.configured
 
+    def request_path(self, request_key):
+        if not re.fullmatch(r'[A-Za-z0-9._:-]{8,128}', request_key):
+            raise ValidationHarnessError('请求标识无效')
+        return self.root / 'requests' / (hashlib.sha256(request_key.encode()).hexdigest() + '.json')
+
+    def original_request(self, request_key):
+        path = self.request_path(request_key)
+        if not path.is_file():
+            raise NotFoundError('未找到此规划请求')
+        receipt = read_json(path)
+        work = self.load(receipt['id'], 1)
+        if work.request_key != request_key or work.request_sha256 != receipt['fingerprint']:
+            raise ConflictError('原始规划作品与请求回执不一致')
+        return work
+
     def listing(self):
         rows = []
         jobs = {j['job_id']: j for j in self.store.list_jobs()}
@@ -92,24 +108,32 @@ class OpenMotionWorkspace:
         spec = TaskSpec.model_validate(spec)
         if not planning_authorized:
             raise ValidationHarnessError("制定方案会调用模型，请先授权本次规划额度")
-        if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", request_key):
-            raise ValidationHarnessError("请求标识无效")
+        request_path = self.request_path(request_key)
+        prepared = request_path.parent / 'pending' / request_path.name
         requested = {"spec": spec.model_dump(mode="json"), "auto_execute": auto_execute}
         if planning_models:
             requested['planning_models'] = {role: profile.model_dump(mode='json', exclude_unset=True, exclude_none=True)
                                             for role, profile in planning_models.items()}
         fingerprint = digest(requested)
-        request_path = self.root / "requests" / (hashlib.sha256(request_key.encode()).hexdigest() + ".json")
         with self.store.global_lock("open-work-creation"):
             if request_path.exists():
                 receipt = read_json(request_path)
                 if receipt["fingerprint"] != fingerprint:
                     raise ConflictError("同一请求标识已用于其他需求")
-                return self.load(receipt["id"])
+                try:
+                    return self.original_request(request_key)
+                except NotFoundError:
+                    return self._publish_creation(prepared, request_key, receipt)
+            if prepared.is_file():
+                pending = OpenWork.model_validate(read_json(prepared))
+                if pending.request_key != request_key or pending.request_sha256 != fingerprint:
+                    raise ConflictError('同一请求标识已用于其他需求')
+                receipt = {'id': pending.id, 'fingerprint': fingerprint}
+                atomic_write_json(request_path, receipt)
+                return self._publish_creation(prepared, request_key, receipt)
             spec = default_new_review(spec)
-            minimum = 2 * review_calls_per_check(spec) * spec.candidate_count
-            if spec.provider != 'fixture' and spec.budget.max_review_calls < minimum:
-                raise ValidationHarnessError(f'所选复核协议至少需要 {minimum} 次视觉额度（每候选一个片段检查和整段复核）；尚未调用规划模型，请先调整预算')
+            from .frame_budget import require_minimum_budget
+            require_minimum_budget(spec)
             planning_config = self.model.configuration
             if planning_models:
                 config = ModelConfiguration.model_validate(planning_config) if 'default' in planning_config else ModelRegistry(self.service.settings).load()
@@ -131,11 +155,29 @@ class OpenMotionWorkspace:
                             planning_config=planning_config,planning_format_version=PLANNING_FORMAT_VERSION,visual_structure=structure,
                             generation_policy_version=DEFAULT_GENERATION_POLICY if spec.provider != 'fixture' else None,
                             visibility_review_version=DEFAULT_VISIBILITY_REVIEW if spec.provider != 'fixture' and spec.review_protocol=='experts_v1' else None)
-            directory = self.directory(work.id); directory.mkdir(parents=True)
+            directory = self.directory(work.id)
+            directory.mkdir(parents=True)
             self.service._atomic_write_bytes(directory / "reference-1.png", data)
-            self.save(work)
-            atomic_write_json(request_path, {"id": work.id, "fingerprint": fingerprint})
-            return work
+            # A prepared snapshot is invisible to the planner. Reserve its identity
+            # before publishing work.json, then resume that exact snapshot on retry.
+            atomic_write_json(prepared, work.model_dump(mode='json'))
+            receipt = {'id': work.id, 'fingerprint': fingerprint}
+            atomic_write_json(request_path, receipt)
+            return self._publish_creation(prepared, request_key, receipt)
+
+    def _publish_creation(self, prepared, request_key, receipt):
+        target = self.directory(receipt['id']) / 'work.json'
+        if target.is_file():
+            return self.original_request(request_key)
+        if not prepared.is_file():
+            raise NotFoundError('未找到此作品的原始请求快照')
+        work = OpenWork.model_validate(read_json(prepared))
+        if (work.id != receipt['id'] or work.revision != 1 or work.request_key != request_key
+                or work.request_sha256 != receipt['fingerprint']):
+            raise ConflictError('原始请求快照与回执不一致')
+        self.reference(work)
+        replace_with_retry(prepared, target)
+        return work
 
     def revise(self, work_id, expected_revision, spec, request_key, *, planning_authorized=False):
         spec = TaskSpec.model_validate(spec)
@@ -155,11 +197,12 @@ class OpenMotionWorkspace:
                 spec = spec.model_copy(update={'review_protocol': work.spec.review_protocol or 'baseline'})
             if work.revision != expected_revision:
                 raise ConflictError("需求版本已改变，请刷新后继续")
-            minimum = 2 * review_calls_per_check(spec) * spec.candidate_count
-            if spec.provider != 'fixture' and spec.budget.max_review_calls < minimum:
-                raise ValidationHarnessError(f'所选复核协议至少需要 {minimum} 次视觉额度；未创建新版本或调用规划模型')
             if work.status == "planning":
                 raise ConflictError("规划尚在执行，请等待结果后修改")
+            if len(work.history) >= 50:
+                raise ValidationHarnessError("当前作品版本过多，请另建作品；历史版本保留")
+            from .frame_budget import require_minimum_budget
+            require_minimum_budget(spec)
             planning_config = work.planning_config
             if not planning_config or (isinstance(self.model, PlanningModel) and 'default' not in planning_config):
                 planning_config = self.model.configuration
@@ -171,16 +214,7 @@ class OpenMotionWorkspace:
             data = source.read_bytes()
             from .structure_control import freeze_structure
             structure=freeze_structure(self.service,spec.visual_structure,hashlib.sha256(data).hexdigest(), object_type=spec.object_type)
-            if work.job_id:
-                job = self.store.load(work.job_id)
-                if any(c.status.value in {"submitting", "submission_unknown", "provider_pending", "saving"} for c in job.candidates):
-                    raise ConflictError("已有请求尚未结束，请先核对结果；不会覆盖原任务")
-                if job.plan_control and job.plan_control.enabled:
-                    with self.store.locked_job(job.job_id) as current:
-                        current.plan_control.enabled = False
-                        current.touch("open_plan_superseded")
-            if len(work.history) >= 50:
-                raise ValidationHarnessError("当前作品版本过多，请另建作品；历史版本保留")
+            previous_job_id = work.job_id
             snapshot = work.model_dump(mode="json"); snapshot.pop("history")
             atomic_write_json(self.directory(work.id) / f"version-{work.revision}.json", snapshot)
             work.history.append({"revision": work.revision, "title": work.plan.title if work.plan else work.spec.description[:60], "job_id": work.job_id})
@@ -198,7 +232,14 @@ class OpenMotionWorkspace:
             work.visibility_review_version = DEFAULT_VISIBILITY_REVIEW if spec.provider != 'fixture' and spec.review_protocol=='experts_v1' else None
             work.visual_structure=structure
             self.service._atomic_write_bytes(self.directory(work.id) / f"reference-{work.revision}.png", data)
-            self.save(work)
+            with self.store.locked_job(previous_job_id) if previous_job_id else nullcontext() as previous_job:
+                if previous_job and any(c.status.value in {'submitting', 'submission_unknown', 'provider_pending', 'saving'}
+                                        for c in previous_job.candidates):
+                    raise ConflictError('已有请求尚未结束，请先核对结果；不会覆盖原任务')
+                self.save(work)
+                if previous_job and previous_job.plan_control and previous_job.plan_control.enabled:
+                    previous_job.plan_control.enabled = False
+                    previous_job.touch('open_plan_superseded')
             return work
 
     @staticmethod
@@ -233,12 +274,12 @@ class OpenMotionWorkspace:
             correction_of = None
             correction_draft = None
             try:
-                from .frame_budget import planning_limits, plan_cost
+                from .frame_budget import minimum_drawing_problem, planning_limits, plan_cost
                 work.frame_budget = planning_limits(self.service, work)
-                if (work.frame_budget['max_frames_per_request'] < 4 or
-                        work.frame_budget['max_total_frames'] < 4 * work.spec.candidate_count):
+                minimum_problem = minimum_drawing_problem(work)
+                if minimum_problem:
                     work.status = 'budget_exhausted'
-                    work.message = '绘图额度或帧数上限不足以为每个候选生成最少 4 帧；尚未调用规划模型'
+                    work.message = minimum_problem
                     self.save(work)
                     return work
                 reference = self.reference(work)
@@ -305,7 +346,10 @@ class OpenMotionWorkspace:
                     if work.generation_policy_version in (5,6):
                         from .planning_budget import defer
                         if defer(work,role,turn,queue):
-                            if turn.findings or turn.proposal:contributed.add(role)
+                            if turn.findings or turn.proposal:
+                                contributed.add(role)
+                            elif role != 'coordinator' and role not in contributed and not any(r == role for r, _, _ in queue):
+                                raise ValidationHarnessError('规划额度不足以执行此专家的观察请求，且尚无可用意见；已保留原请求。')
                             self.save(work)
                             continue
                     if turn.action == "inspect_reference":
@@ -405,6 +449,8 @@ class OpenMotionWorkspace:
                 return work
 
     def recover_planning(self, *, stopping=lambda: False):
+        if not stopping():
+            self._recover_creations(stopping)
         for row in self.listing():
             if stopping():
                 break
@@ -413,6 +459,29 @@ class OpenMotionWorkspace:
                     self.plan(row["id"], stopping=stopping)
                 except ConflictError:
                     pass  # Another process owns this planning request.
+
+    def _recover_creations(self, stopping):
+        requests = self.root / 'requests'
+        prepared_paths = list((requests / 'pending').glob('*.json'))
+        if not prepared_paths:
+            return
+        try:
+            with self.store.global_lock('open-work-creation', timeout_seconds=0.1):
+                for prepared in prepared_paths:
+                    if stopping():
+                        return
+                    receipt = requests / prepared.name
+                    if not prepared.is_file() or not receipt.is_file():
+                        continue
+                    try:
+                        key = read_json(prepared)['request_key']
+                        if isinstance(key, str) and self.request_path(key) == receipt:
+                            self._publish_creation(prepared, key, read_json(receipt))
+                    except (HarnessError, OSError, ValueError, KeyError):
+                        # Other work remains dispatchable. Direct lookup/retry reports this record's error.
+                        continue
+        except ConflictError:
+            pass  # A foreground create owns the publication lock.
 
     def start(self, work_id, expected_revision, plan_sha256, *, allow_unsupported_motion=False, expected_targets=None):
         from ..models import GenerationRequest, utc_now

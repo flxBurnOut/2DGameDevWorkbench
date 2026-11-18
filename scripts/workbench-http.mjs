@@ -20,9 +20,12 @@ import {
 import {
   agentRequest,
   archiveTaskHistory,
+  commandTaskId,
   findCapability,
   listTaskPage,
   loadManifest,
+  prepareAgentTask,
+  publicTaskRecord,
   repositoryRoot,
   runConnector,
   refreshTask,
@@ -373,15 +376,17 @@ const server = http.createServer(async (request, response) => {
       }
       return;
     }
-    if (request.method === 'GET' && url.pathname.startsWith('/v1/tasks/')) {
+    if (request.method === 'GET' && (url.pathname.startsWith('/v1/tasks/') ||
+        (url.pathname === '/v1/tasks' && url.searchParams.has('commandId')))) {
       const manifest = await loadManifest();
-      const id = decodeURIComponent(url.pathname.slice('/v1/tasks/'.length));
+      const id = url.pathname === '/v1/tasks' ? commandTaskId(url.searchParams.get('commandId')) :
+        decodeURIComponent(url.pathname.slice('/v1/tasks/'.length));
       const result =
         url.searchParams.get('refresh') === 'true'
           ? await refreshTask(manifest, id)
           : { task: await readTask(manifest, id) };
       sendJson(response, 200, {
-        task: result.task,
+        task: publicTaskRecord(result.task, url.searchParams.get('detail') === 'true'),
         ...(result.refreshError ? { refreshError: result.refreshError } : {}),
       });
       return;
@@ -396,7 +401,7 @@ const server = http.createServer(async (request, response) => {
       const manifest = await loadManifest();
       const limit = Number(url.searchParams.get('limit') ?? 30);
       const refresh = url.searchParams.get('refresh') === 'true';
-      sendJson(response, 200, await listTaskPage(manifest, {
+      const page = await listTaskPage(manifest, {
         limit,
         offset: Number(url.searchParams.get('offset') ?? 0),
         query: url.searchParams.get('query') ?? '',
@@ -405,10 +410,12 @@ const server = http.createServer(async (request, response) => {
         snapshot: url.searchParams.get('snapshot') || undefined,
         since: url.searchParams.get('since') || undefined,
         refresh,
-      }));
+      });
+      const detail = url.searchParams.get('detail') === 'true';
+      sendJson(response, 200, { ...page, tasks: page.tasks.map(task => publicTaskRecord(task, detail)) });
       return;
     }
-    if (request.method === 'POST' && url.pathname === '/v1/tasks') {
+    if (request.method === 'POST' && ['/v1/tasks', '/v1/tasks/prepare'].includes(url.pathname)) {
       // Image task inputs permit 80 MiB of raw reference media; JSON base64
       // overhead fits within 120 MiB. Each adapter retains its narrower limits.
       const body = await readJsonBody(request, 120 * 1024 * 1024);
@@ -428,9 +435,9 @@ const server = http.createServer(async (request, response) => {
       }
       const manifest = await loadManifest();
       const capability = findCapability(manifest, body.capabilityId);
-      const result = summarizeTask(
-        await runConnector(manifest, capability, body.input),
-      );
+      const options = { commandId: body.commandId };
+      const execute = url.pathname.endsWith('/prepare') ? prepareAgentTask : runConnector;
+      const result = summarizeTask(await execute(manifest, capability, body.input, options));
       const status =
         result.status === 'running' ||
         result.status === 'awaiting_configuration'
@@ -452,6 +459,8 @@ const server = http.createServer(async (request, response) => {
     sendJson(response, error.status || (validation ? 400 : 500), {
       status: 'failed',
       error: message,
+      ...(error.status && error.code ? { code: error.code } : {}),
+      ...(error.taskId ? { taskId: error.taskId } : {}),
     });
   }
 });

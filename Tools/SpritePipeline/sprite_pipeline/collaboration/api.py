@@ -307,7 +307,12 @@ def create_router(service):
     def create(body: Create):
         work = workspace.create(body.spec, body.request_key, planning_authorized=body.planning_authorized,
                                 auto_execute=body.auto_execute, planning_models=body.planning_models)
-        return view(work.id)
+        return view(work.id, work.revision)
+
+    @router.get('/requests/{request_key}')
+    def get_request(request_key: str):
+        work = workspace.original_request(request_key)
+        return view(work.id, work.revision)
 
     @router.get("/{work_id}")
     def get(work_id: str, revision: int | None = None):

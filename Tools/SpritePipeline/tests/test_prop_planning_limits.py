@@ -8,7 +8,7 @@ from test_interactable_motion import ARCHIVE, PropPlanner, checked_fixture_struc
 from sprite_pipeline.collaboration.contracts import PlanProposal, TaskSpec, digest
 from sprite_pipeline.collaboration.frame_budget import planning_limits, plan_cost
 from sprite_pipeline.collaboration.prop_measurements import guard_measurements
-from sprite_pipeline.errors import ConflictError, ProviderTemporaryError
+from sprite_pipeline.errors import ConflictError, ProviderTemporaryError, ValidationHarnessError
 
 
 def modified_planner(ws, item, change):
@@ -107,6 +107,37 @@ def test_insufficient_before_first_model_and_unknown_quota(tmp_path, monkeypatch
     monkeypatch.setattr(service,'refresh_pixellab_balance',lambda:{'balance':{'subscription':{'generations':0},'credits':{'usd':1.25}}})
     limits=planning_limits(service,work)
     assert limits['remaining_units'] is None and limits['max_frames_per_request']==6 and limits['max_total_frames']==10
+
+
+SKELETON = {'states': [{'name': name, 'appearance': name} for name in ('Off', 'Partly lit', 'On')]}
+
+
+@pytest.mark.parametrize('budget,message', [({'max_total_frames': 4}, '至少需要 8 帧'),
+    ({'max_generation_calls': 1}, '至少需要 2 次生成'), ({'max_review_calls': 10}, '至少需要 15 次视觉额度')])
+def test_known_skeleton_fails_before_any_model_or_new_revision(tmp_path, budget, message):
+    _, ws = workspace_for(tmp_path, 'lamp')
+    with pytest.raises(ValidationHarnessError, match=message):
+        create(ws, 'lamp', provider='pixellab', budget=budget, interactable_skeleton=SKELETON)
+    assert not ws.listing() and not ws.model.calls
+
+    original = ws.plan(create(ws, 'lamp').id)
+    next_spec = TaskSpec(object_type='interactable', object_id='lamp', provider='pixellab',
+                         description='Go through both lighting states', review_protocol='experts_v1',
+                         budget=budget, interactable_skeleton=SKELETON)
+    original_calls = len(ws.model.calls)
+    with pytest.raises(ValidationHarnessError, match=message):
+        ws.revise(original.id, original.revision, next_spec, 'revision-budget', planning_authorized=True)
+    assert ws.load(original.id).revision == original.revision and len(ws.model.calls) == original_calls
+
+
+def test_account_balance_must_cover_all_known_stages(tmp_path, monkeypatch):
+    service, ws = workspace_for(tmp_path, 'lamp')
+    work = create(ws, 'lamp', provider='pixellab', interactable_skeleton=SKELETON)
+    enough_for_one_stage = service._pixellab_generation_units(128, 128, 4)
+    monkeypatch.setattr(service, 'refresh_pixellab_balance',
+                        lambda: {'balance': {'subscription': {'generations': enough_for_one_stage}}})
+    result = ws.plan(work.id)
+    assert result.status == 'budget_exhausted' and not result.planning_calls and not ws.model.calls
 
 
 def test_total_frames_and_per_call_rounding(tmp_path):

@@ -14,7 +14,7 @@ import {
 } from '../../lib/workbench/game-export.mjs';
 
 async function childInstall(options) {
-  const { root, manifest, input, mode, oldToken } = options;
+  const { root, manifest, input, mode, oldToken, projectPath, packagePath } = options;
   const pause = (type, value = {}) => new Promise((resolve) => {
     process.once('message', resolve);
     process.send({ type, ...value });
@@ -24,14 +24,24 @@ async function childInstall(options) {
     const name = typeof file === 'string' ? file : '';
     const owner = name.includes(`${path.sep}install.lock${path.sep}`) && name.endsWith('.json');
     if (owner && mode === 'fail-owner') throw Object.assign(new Error('owner write failed'), { code: 'EIO' });
+    if ((mode === 'partial-zip' && /package\.zip(?:\.forge-.*\.tmp)?$/.test(name)) ||
+        (mode === 'partial-scene' && /object\.tscn(?:\.forge-.*\.tmp)?$/.test(name))) {
+      await writeFile(file, args[0].subarray(0, 31), args[1]);
+      await new Promise((resolve) => process.send({ type: 'partial-written', file: name }, resolve));
+      process.exit(77);
+    }
     const result = await writeFile(file, ...args);
     if (owner && mode === 'crash-owner') process.exit(75);
     if (owner && mode === 'hold-owner') await pause('owner-written', { owner: JSON.parse(args[0]) });
-    if (mode === 'crash-resource' && name.includes(`${path.sep}addons${path.sep}workbench_interaction${path.sep}`)) {
-      await new Promise((resolve) => process.send({ type: 'resource-written', file: name }, resolve));
+    return result;
+  };
+  const link = fs.link;
+  fs.link = async (file, destination) => {
+    await link(file, destination);
+    if (mode === 'crash-resource' && destination.includes(`${path.sep}addons${path.sep}workbench_interaction${path.sep}`)) {
+      await new Promise(resolve => process.send({ type: 'resource-written', file: destination }, resolve));
       process.exit(76);
     }
-    return result;
   };
   const unlink = fs.unlink;
   fs.unlink = async (file) => {
@@ -42,7 +52,9 @@ async function childInstall(options) {
   if (mode === 'unknown-process') process.kill = () => { throw Object.assign(new Error('permission denied'), { code: 'EPERM' }); };
   syncBuiltinESMExports();
   try {
-    const result = await installGameExport(root, manifest, input);
+    const result = mode === 'partial-zip'
+      ? await deliverGodotPackage(root, manifest, { bytes: await fs.readFile(packagePath), projectPath })
+      : await installGameExport(root, manifest, input);
     process.send({ type: 'result', result }, () => process.disconnect());
   } catch (error) {
     process.send({ type: 'result', error: error.message, code: error.code }, () => process.disconnect());
@@ -60,10 +72,14 @@ if (process.argv[2] === '--child') {
   const packageBytes = (await buildGodotPackage({ project }, { repositoryRoot: process.cwd(), exportId: 'lock-tests' })).bytes;
   const scene = 'addons/workbench_interaction/objects/lock-fixture/object.tscn';
   const busy = /正在接入另一份资源/;
-  async function fixture(name) {
+  async function bareProject(name) {
     const root = path.join(sandbox, name), game = path.join(root, 'game');
     await fs.mkdir(game, { recursive: true });
     await fs.writeFile(path.join(game, 'project.godot'), '[application]\nconfig/name="Lock test"\n');
+    return { root, game };
+  }
+  async function fixture(name) {
+    const { root, game } = await bareProject(name);
     const delivery = await deliverGodotPackage(root, manifest, { bytes: packageBytes, projectPath: game });
     const detail = await getGameExport(root, manifest, delivery);
     return { root, game, manifest, delivery, input: { ...delivery, projectRevision: detail.inspection.projectRevision }, lock: path.join(game, 'forge_imports/install.lock') };
@@ -132,7 +148,7 @@ if (process.argv[2] === '--child') {
     await absent(f.lock);
     assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
   });
-  test('a real exited holder is recovered and partial files are reused', async () => {
+  test('a real exited holder is recovered and already published files are reused', async () => {
     const f = await fixture('crash-recovery');
     await deadLock(f);
     assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
@@ -146,6 +162,27 @@ if (process.argv[2] === '--child') {
     assert.ok(!result.changedFiles.includes(path.relative(partial.game, file).split(path.sep).join('/')));
     assert.deepEqual(await fs.readFile(file), before);
     await absent(partial.lock);
+  });
+  test('interruptions during ZIP and scene writes leave their destinations unpublished', async () => {
+    const f = await bareProject('partial-zip');
+    const packagePath = path.join(f.root, 'fixture.zip');
+    await fs.writeFile(packagePath, packageBytes);
+    const exporter = launch(f, 'partial-zip', { projectPath: f.game, packagePath });
+    const { file } = await exporter.message('partial-written');
+    assert.equal((await exporter.exited).code, 77);
+    await absent(path.join(path.dirname(file), 'package.zip'));
+    const delivery = await deliverGodotPackage(f.root, manifest, { bytes: packageBytes, projectPath: f.game });
+    assert.equal((await getGameExport(f.root, manifest, delivery)).packageSha256, delivery.packageSha256);
+
+    const prepared = await fixture('partial-scene');
+    const installer = launch(prepared, 'partial-scene');
+    await installer.message('partial-written');
+    assert.equal((await installer.exited).code, 77);
+    await absent(path.join(prepared.game, scene));
+    const result = await installGameExport(prepared.root, manifest, prepared.input);
+    assert.equal(result.installed, true);
+    assert.ok(result.changedFiles.includes(scene));
+    assert.deepEqual((await installGameExport(prepared.root, manifest, prepared.input)).changedFiles, []);
   });
   test('live holders reject concurrent installs without repeating writes', async () => {
     const f = await fixture('live-holder'), child = launch(f, 'hold-owner');
@@ -225,6 +262,18 @@ if (process.argv[2] === '--child') {
     await deadLock(update);
     assert.equal((await installGameExport(update.root, manifest, update.input)).installed, true);
     assert.deepEqual(await fs.readFile(path.join(delivery.inboxPath, 'backups', scene)), before);
+
+    const returnTo = update.input;
+    const nextBytes = Buffer.from(before.toString() + '\n; another managed update\n');
+    zip.file(scene, nextBytes);
+    const next = await deliverGodotPackage(update.root, manifest, { bytes: await zip.generateAsync({ type: 'nodebuffer' }), projectPath: update.game });
+    const nextInput = { ...next, projectRevision: returnTo.projectRevision };
+    assert.equal((await installGameExport(update.root, manifest, nextInput)).installed, true);
+    assert.equal((await installGameExport(update.root, manifest, returnTo)).installed, true);
+    assert.deepEqual(await fs.readFile(path.join(delivery.inboxPath, 'backups', scene)), before);
+    const backups = path.join(delivery.inboxPath, 'backups-by-sha256');
+    const [digest] = await fs.readdir(backups);
+    assert.deepEqual(await fs.readFile(path.join(backups, digest, scene)), nextBytes);
   });
   try {
     for (const [name, run] of tests) { await run(); console.log(`PASS ${name}`); }

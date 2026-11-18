@@ -310,6 +310,12 @@ export function motionUrl(
 ) {
   return `/api/workbench/open-motion?${new URLSearchParams({ path, ...query })}`;
 }
+export class MotionRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 export async function motionRequest<T>(
   path: string,
   body?: unknown,
@@ -332,12 +338,13 @@ export async function motionRequest<T>(
     detail?: { msg?: string }[];
   };
   if (!response.ok)
-    throw new Error(
+    throw new MotionRequestError(
       typeof payload.error === 'string'
         ? payload.error
         : payload.error?.message ||
             payload.detail?.[0]?.msg ||
             '操作未完成，请查看当前状态后重试。',
+      response.status,
     );
   return payload as T;
 }

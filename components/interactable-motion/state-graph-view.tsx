@@ -1,21 +1,19 @@
 'use client';
 /* oxlint-disable next/no-img-element -- exact pixel state images */
 import { ArrowDown } from 'lucide-react';
-import { motionUrl } from '../sprite-generator/open-motion-model';
-import { edgeStatusLabels, nodeSourceLabels, type GraphEdge, type GraphNode, type Selection } from './motion-graph';
+import type { MotionWork } from '../sprite-generator/open-motion-model';
+import { edgeStatusLabels, nodeImageUrl, nodeSourceLabels, type GraphEdge, type GraphNode, type Selection } from './motion-graph';
 
 /** Read-only overview: states and the transitions between them. Editing happens in the centre view. */
-export function StateGraphView({ workId, nodes, edges, selection, onSelect, referenceUrl }: {
-  workId: string | null; nodes: GraphNode[]; edges: GraphEdge[]; selection: Selection | null;
+export function StateGraphView({ work, nodes, edges, selection, onSelect, referenceUrl }: {
+  work: Pick<MotionWork, 'id' | 'revision'> | null; nodes: GraphNode[]; edges: GraphEdge[]; selection: Selection | null;
   onSelect: (value: Selection) => void; referenceUrl: string;
 }) {
-  const image = (node: GraphNode) => node.index === 0 && referenceUrl ? referenceUrl
-    : node.image && workId ? motionUrl(`open-motion/${workId}/${node.image.path}`, { v: node.image.v }) : '';
   return <nav className="im-graph" aria-label="状态图">
     <ol>
       {nodes.map((node, i) => {
         const edge = edges.find(e => e.from === node.index);
-        const src = image(node);
+        const src = nodeImageUrl(node, work, referenceUrl);
         return <li key={node.index}>
           <button className="im-node" aria-pressed={selection?.kind === 'node' && selection.index === node.index}
             onClick={() => onSelect({ kind: 'node', index: node.index })} data-source={node.source}>

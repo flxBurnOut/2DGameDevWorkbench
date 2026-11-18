@@ -1,7 +1,7 @@
 'use client';
 /* oxlint-disable next/no-img-element -- exact pixel target previews */
 import { Plus, Trash2 } from 'lucide-react';
-import { draftLimits, draftProblems, type InteractableDraft } from './motion-graph';
+import { draftLimits, draftProblems, draftTransitionCount, type InteractableDraft } from './motion-graph';
 
 /**
  * Centre view while defining states: one card per state in reading order,
@@ -14,7 +14,7 @@ export function StateEditor({ draft, onDraft, referenceUrl, disabled }: {
   const update = (index: number, change: Partial<InteractableDraft['states'][number]>) =>
     onDraft({ ...draft, states: states.map((s, i) => (i === index ? { ...s, ...change } : s)) });
   const problems = draftProblems(draft);
-  const transitions = states.length - 1 + (draft.returnToStart ? 1 : 0);
+  const transitions = draftTransitionCount(draft);
   return <section className="im-editor" aria-label="定义状态">
     <p className="motion-muted">按播放顺序列出状态。第一个状态就是对象原图；之后每个状态写清与上一个状态的差别，规划会为每对相邻状态安排一段过渡（当前 {transitions} 段）。</p>
     <ol className="im-state-cards">

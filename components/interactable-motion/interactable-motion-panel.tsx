@@ -12,7 +12,7 @@ import type { ImageTargetRef } from '@/features/image-edit/client';
 import type { Box, Point } from '@/features/interactable-motion/frame-tools';
 import { ImageEditWorkspace } from '../image-edit/lazy-image-edit-workspace';
 import {
-  blankSpec, motionPlanningRequestKey, motionReferenceObjects, motionRequest, motionUrl,
+  blankSpec, MotionRequestError, motionObjectId, motionPlanningRequestKey, motionReferenceObjects, motionRequest, motionUrl,
   type MotionReferenceObject, type MotionReview, type MotionSpec, type MotionWork,
 } from '../sprite-generator/open-motion-model';
 import type { MotionConfiguration } from '../sprite-generator/motion-model-settings';
@@ -26,7 +26,8 @@ import { motionPlanningProgress } from '../sprite-generator/open-motion-model';
 import '../sprite-generator/open-motion.css';
 import './interactable-motion.css';
 import {
-  defaultDraft, panelHref, draftDescription, draftProblems, draftSkeleton, edgeStatusLabels, nodeSourceLabels, panelStatus, workGraph,
+  defaultDraft, panelHref, draftDescription, draftFromWork, draftProblems, draftSkeleton, draftTransitionCount, edgeStatusLabels,
+  nodeImageUrl, nodeSourceLabels, panelStatus, pendingDraftTargets, workGraph,
   panelPhase, panelPhases, type InteractableDraft, type Selection,
 } from './motion-graph';
 import { StateEditor } from './state-editor';
@@ -45,15 +46,38 @@ type Tab = 'requirements' | 'check' | 'tools' | 'writeback';
 const tabs: [Tab, string][] = [['requirements', '要求'], ['check', '检查'], ['tools', '工具'], ['writeback', '写回']];
 type StageEvidence = { token: string; review: MotionReview & { motion_evidence?: { tracked_parts?: { pivot_xy?: [number, number] | null } } } };
 type Recent = { id: string; title: string; updated_at: string; diagnostic_only: boolean; object_type?: string };
+type PlanningAttempt = { requestKey: string; spec: MotionSpec; expectedRevision?: number };
+type DraftSession = {
+  draft: InteractableDraft;
+  objectId: string;
+  structure?: MotionSpec['visual_structure'];
+  revision?: number;
+  planned?: InteractableDraft;
+  pending?: PlanningAttempt;
+  requestKey?: string;
+};
+const browserDraftKey = (scope: string) => `forge.interactable-motion.draft.${scope}`;
+
+function saveBrowserDraft(key: string, value: DraftSession) {
+  try { localStorage.setItem(key, JSON.stringify(value)); }
+  catch { throw new Error('浏览器草稿未能保存。请检查浏览器存储后再试。'); }
+}
+
+function committedDraft(value: DraftSession, work: MotionWork): DraftSession {
+  return { draft: value.draft, planned: value.draft, objectId: motionObjectId(work.spec),
+    structure: work.spec.visual_structure ?? null, revision: work.revision };
+}
 
 export function InteractableMotionEntry() {
   const search = useSyncExternalStore(subscribe, () => location.search, () => '');
   const params = new URLSearchParams(search);
   const work = params.get('work') || '';
   const version = Number(params.get('version')) || undefined;
-  return <InteractableMotionPanel key={`${work || 'new'}:${version || ''}`} workId={work} version={version}
-    objectId={params.get('object') || ''} initialCandidate={Number(params.get('candidate')) || 1}
-    documentId={params.get('document') || ''} definitionId={params.get('definition') || ''} />;
+  const object = params.get('object') || '';
+  const documentId = params.get('document') || '';
+  const definitionId = params.get('definition') || '';
+  return <InteractableMotionPanel key={JSON.stringify([work, version, object, documentId, definitionId])} workId={work} version={version}
+    objectId={object} initialCandidate={Number(params.get('candidate')) || 1} documentId={documentId} definitionId={definitionId} />;
 }
 
 function InteractableMotionPanel({ workId, version, objectId: initialObject, initialCandidate, documentId, definitionId }: {
@@ -65,11 +89,9 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
   const [objects, setObjects] = useState<MotionReferenceObject[]>([]);
   const [recent, setRecent] = useState<Recent[]>([]);
   const [configuration, setConfiguration] = useState<MotionConfiguration | null>(null);
-  const [objectId, setObjectId] = useState(initialObject);
   const [project, setProject] = useState<InteractableProject | null>(null);
-  const draftKey = `forge.interactable-motion.draft.${workId || initialObject || 'new'}`;
-  const [draft, setDraft] = useState<InteractableDraft>(() => defaultDraft());
-  const [draftReady, setDraftReady] = useState(false);
+  const draftKey = browserDraftKey(workId || (documentId ? JSON.stringify([documentId, definitionId, initialObject]) : initialObject || 'new'));
+  const [draftSession, setDraftSession] = useState<DraftSession | null>(null);
   const [editing, setEditing] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [tab, setTab] = useState<Tab>('requirements');
@@ -86,12 +108,10 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
   const [evidence, setEvidence] = useState<StageEvidence | null>(null);
   const [settingsShown, setSettingsShown] = useState(false);
   // Hinge and deformation plans need a checked structure, chosen explicitly like on the character page.
-  const [structure, setStructure] = useState<MotionSpec['visual_structure']>(null);
   const structureSaver = useRef<(() => void) | null>(null);
   const registerStructureSaver = useCallback((save: (() => void) | null) => { structureSaver.current = save; }, []);
   const settingsRef = useRef<HTMLDetailsElement>(null);
-  const requestKey = useRef('');
-  const submitted = useRef(false);
+  const transferred = useRef(false);
 
   // References, settings and recent interactable works; GET only.
   const refreshLists = useCallback(async () => {
@@ -114,28 +134,57 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     return () => { live = false; };
   }, [documentId, setError]);
   const object = project?.objects.find(o => o.definitionId === definitionId);
-  // Restore the browser draft, or seed it from the bound toggle/sequence object.
+  const initialDraft = useMemo(() => {
+    const behavior = object?.behavior;
+    if (behavior?.kind === 'toggle') return defaultDraft('toggle', behavior.states.map(s => s.name), behavior.initialToggle);
+    if (behavior?.kind === 'sequence') return defaultDraft('sequence', behavior.entries.map(e => e.name));
+    return defaultDraft();
+  }, [object]);
+  const frozenDraft = useMemo(() => work && draftFromWork(work), [work]);
+  const draftReady = draftSession !== null && draftSession.revision === work?.revision;
+  const activeDraft = draftReady ? draftSession : null;
+  const draft = activeDraft?.draft ?? frozenDraft ?? initialDraft;
+  const plannedDraft = activeDraft?.planned ?? frozenDraft ?? draft;
+  const pendingPlan = activeDraft?.pending;
+  const objectId = work ? motionObjectId(work.spec) : activeDraft?.objectId ?? initialObject;
+  const structure = activeDraft?.structure ?? null;
+  const setDraft = (value: InteractableDraft) => setDraftSession(current => current && { ...current, draft: value });
+  const setObjectId = (value: string) => setDraftSession(current => current && { ...current, objectId: value, structure: null });
+  const setStructure = (value: MotionSpec['visual_structure']) => setDraftSession(current => current && { ...current, structure: value });
+
+  // Match local edits and target PNGs to their own work revision.
   useEffect(() => {
-    if (draftReady || (documentId && !project)) return;
+    if (draftReady || !loaded || (workId && !work)) return;
     queueMicrotask(() => {
+      let saved: DraftSession | null = null;
       try {
-        const saved = localStorage.getItem(draftKey);
-        if (saved) { const value = JSON.parse(saved) as { draft: InteractableDraft; requestKey?: string; objectId?: string };
-          setDraft(value.draft); requestKey.current = value.requestKey || ''; if (!initialObject && value.objectId) setObjectId(value.objectId); }
-        else if (object && (object.behavior.kind === 'toggle' || object.behavior.kind === 'sequence'))
-          setDraft(defaultDraft(object.behavior.kind, (object.behavior.kind === 'toggle' ? object.behavior.states : object.behavior.entries).map(e => e.name)));
+        if (!readOnly) saved = JSON.parse(localStorage.getItem(draftKey) || 'null') as DraftSession | null;
       } catch { setError('浏览器草稿未能读取；服务器中的作品不受影响。'); }
-      setDraftReady(true);
+      if (!saved && documentId && !project && !work) return;
+      if (saved?.pending && work && saved.pending.requestKey === work.request_key) {
+        setDraftSession(committedDraft(saved, work));
+        setEditing(false);
+        setSelection(null);
+      } else if (saved && saved.revision === work?.revision) {
+        setDraftSession({ ...saved, objectId: saved.objectId ?? initialObject });
+      } else {
+        const legacyDraft = saved?.revision === undefined ? saved?.draft : undefined;
+        const restored = legacyDraft && frozenDraft &&
+          JSON.stringify(draftSkeleton(legacyDraft)) === JSON.stringify(draftSkeleton(frozenDraft)) ? legacyDraft : null;
+        setDraftSession({
+          draft: restored ?? frozenDraft ?? initialDraft,
+          ...(restored ? { planned: restored } : {}),
+          objectId: work ? motionObjectId(work.spec) : initialObject,
+          structure: work?.spec.visual_structure ?? null,
+          revision: work?.revision,
+        });
+      }
     });
-  }, [draftReady, documentId, project, object, draftKey, initialObject, setError]);
+  }, [draftReady, loaded, workId, work, documentId, project, draftKey, readOnly, frozenDraft, initialDraft, initialObject, setError]);
   useEffect(() => {
-    if (!draftReady) return;
-    try {
-      if (submitted.current) localStorage.removeItem(draftKey);
-      else localStorage.setItem(draftKey, JSON.stringify({ draft, requestKey: requestKey.current, objectId }));
-    } catch { /* The work itself is saved by the local service. */ }
-  }, [draft, draftReady, draftKey, objectId]);
-  useEffect(() => { if (work) queueMicrotask(() => { setObjectId(work.spec.object_id || ''); setStructure(s => s ?? work.spec.visual_structure ?? null); }); }, [work]);
+    if (!activeDraft || transferred.current || readOnly) return;
+    try { saveBrowserDraft(draftKey, activeDraft); } catch { /* The footer verifies saving before a planning POST. */ }
+  }, [activeDraft, draftKey, readOnly]);
   const { setPageTitle } = wb;
   useEffect(() => { setPageTitle(work?.plan?.title || '交互物动画'); return () => setPageTitle(''); }, [work?.plan?.title, setPageTitle]);
 
@@ -146,6 +195,7 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     : objectId ? motionUrl(`open-motion/references/${objectId}`) : '';
   const edge = selection?.kind === 'edge' ? graph.edges.find(e => e.stage === selection.stage) : undefined;
   const node = selection?.kind === 'node' ? graph.nodes.find(n => n.index === selection.index) : undefined;
+  const stateImageUrl = node ? nodeImageUrl(node, work, referenceUrl) : '';
   const awaiting = candidate?.plan_execution.stages.findIndex(s => s.state === 'awaiting_review') ?? -1;
   // Select the transition that needs attention, otherwise the first one.
   useEffect(() => {
@@ -202,28 +252,59 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
           : candidate?.status === 'approved' ? 'completed' : 'attention',
         href: panelHref({ work: work.id }, context), updatedAt: work.job?.updated_at || work.updated_at, stage: 1 }] : [],
       save: async () => {
-        try { if (!submitted.current) localStorage.setItem(draftKey, JSON.stringify({ draft, requestKey: requestKey.current, objectId })); } catch { /* best effort */ }
+        if (activeDraft && !transferred.current && !readOnly) saveBrowserDraft(draftKey, activeDraft);
         structureSaver.current?.();
         markEditorSaved('interactable-motion');
       },
     });
     return () => removeEditorSession('interactable-motion');
-  }, [work, busy, candidate?.status, context, draft, draftKey, objectId]);
+  }, [work, busy, candidate?.status, context, activeDraft, draftKey, readOnly]);
 
   const plan = () => run(async () => {
-    if (!work && !configuration?.planning_configured) { settingsRef.current?.setAttribute('open', ''); throw new Error('先配置规划模型，再制定方案。'); }
-    const problems = draftProblems(draft);
-    if (!objectId || problems.length) throw new Error(problems[0] || '请选择交互物对象');
-    const { description, ending } = draftDescription(draft);
-    const spec: MotionSpec = { ...blankSpec, object_id: objectId, object_type: 'interactable', description, ending,
-      loop: draft.loop, return_to_reference: draft.returnToStart, interactable_skeleton: draftSkeleton(draft),
-      ...(structure ? { visual_structure: structure } : {}) };
-    requestKey.current = motionPlanningRequestKey(work, requestKey.current);
-    const value = await motionRequest<MotionWork>(work ? `open-motion/${work.id}/revise` : 'open-motion', {
-      spec, request_key: requestKey.current, planning_authorized: true, ...(work ? { expected_revision: work.revision } : {}),
-    });
-    if (work) { apply(value); setEditing(false); setSelection(null); }
-    else { submitted.current = true; localStorage.removeItem(draftKey); await wb.navigate(panelHref({ work: value.id }, context)); }
+    if (!activeDraft || readOnly) return;
+    let attempt = pendingPlan;
+    if (!attempt) {
+      if (!work && !configuration?.planning_configured) { settingsRef.current?.setAttribute('open', ''); throw new Error('先配置规划模型，再制定方案。'); }
+      const problems = draftProblems(draft);
+      if (!objectId || problems.length) throw new Error(problems[0] || '请选择交互物对象');
+      const { description, ending } = draftDescription(draft);
+      const spec: MotionSpec = { ...(work?.spec ?? blankSpec), object_id: objectId, object_type: 'interactable', description, ending,
+        loop: draft.loop, return_to_reference: draft.returnToStart, interactable_skeleton: draftSkeleton(draft), visual_structure: structure };
+      attempt = { spec, requestKey: motionPlanningRequestKey(work, activeDraft.requestKey || ''), expectedRevision: work?.revision };
+    }
+    const pending = { ...activeDraft, pending: attempt };
+    // The POST may succeed even when the response never reaches the browser.
+    saveBrowserDraft(draftKey, pending);
+    setDraftSession(pending);
+    let value: MotionWork;
+    try {
+      value = await motionRequest<MotionWork>(work ? `open-motion/${work.id}/revise` : 'open-motion', {
+        spec: attempt.spec, request_key: attempt.requestKey, planning_authorized: true,
+        ...(attempt.expectedRevision === undefined ? {} : { expected_revision: attempt.expectedRevision }),
+      });
+    } catch (e) {
+      // These responses reject the submitted values before starting a plan.
+      if (e instanceof MotionRequestError && [400, 409, 413, 422].includes(e.status)) {
+        const editable = { ...activeDraft, pending: undefined, requestKey: undefined };
+        saveBrowserDraft(draftKey, editable);
+        setDraftSession(editable);
+      }
+      throw e;
+    }
+    if (value.request_key === attempt.requestKey) {
+      const committed = committedDraft(pending, value);
+      saveBrowserDraft(browserDraftKey(value.id), committed);
+      if (work) setDraftSession(committed);
+    }
+    if (work) {
+      apply(value);
+      setEditing(false);
+      setSelection(null);
+    } else {
+      transferred.current = true;
+      localStorage.removeItem(draftKey);
+      await wb.navigate(panelHref({ work: value.id }, context));
+    }
   });
   const generate = () => run(async () => {
     if (!configuration?.pixellab_configured && work?.spec.provider !== 'fixture') { settingsRef.current?.setAttribute('open', ''); throw new Error('请先配置 PixelLab API Key'); }
@@ -248,9 +329,9 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     if (value.revision !== work?.revision) void wb.navigate(panelHref({ work: value.id, version: value.revision, candidate: 1 }, context));
   };
   type Primary = { kind: 'plan' | 'generate' | 'pause' | 'resume' | 'review-stage' | 'approve' | 'writeback'; label: string; disabled: boolean; icon?: ReactNode };
-  const primary: Primary | null = editing || status.action === 'plan' || status.action === 'replan'
-    ? { kind: 'plan', label: work ? '按状态图重新制定方案' : '制定方案', icon: <Sparkles size={16} />,
-      disabled: busy || readOnly || work?.status === 'planning' || !objectId || draftProblems(draft).length > 0 }
+  const primary: Primary | null = pendingPlan || editing || status.action === 'plan' || status.action === 'replan'
+    ? { kind: 'plan', label: pendingPlan ? '重试原规划请求' : work ? '按状态图重新制定方案' : '制定方案', icon: <Sparkles size={16} />,
+      disabled: busy || readOnly || !draftReady || (!pendingPlan && (work?.status === 'planning' || !objectId || draftProblems(draft).length > 0)) }
     : status.action === 'generate' ? { kind: 'generate', label: work?.plan?.quality?.interactable?.motion_type === 'occluded_rigid_translation'
       ? '已知遮挡平移不受支持，仍尝试制作' : '确认方案，开始制作', disabled: busy || readOnly || work?.status !== 'ready' }
     : status.action === 'wait' && work?.job ? { kind: 'pause', label: '暂停后续制作', disabled: busy || readOnly }
@@ -275,12 +356,14 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     else setTab('writeback');
   };
   const footerMessage = busy ? '正在保存操作…'
+    : pendingPlan ? '规划请求尚未确认。重试会沿用原请求编号和状态图。'
     : status.action === 'review-candidate' && reviewBlocker ? reviewBlocker
     : editing ? (draftProblems(draft)[0] || '重新制定方案会保存新版本；旧版本和调用记录保留。') : status.message;
-  const missing = editing ? draftProblems(draft) : status.missing;
+  const missing = pendingPlan ? [] : editing ? draftProblems(draft) : status.missing;
   const pivotRadius = radius && Number.isFinite(radius) ? radius : null;
   const phase = panelPhase(work, editing);
   const jobReady = Boolean(work?.job && candidate);
+  const draftDisabled = !draftReady || busy || readOnly || Boolean(pendingPlan);
 
   return <div className="motion-studio im-panel" data-sprite-editor>
     <header className="motion-header">
@@ -310,7 +393,7 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     <div className="im-object-bar" aria-label="对象">
       {referenceUrl ? <img src={referenceUrl} alt="" width={40} height={40} /> : <span className="im-object-empty" aria-hidden="true" />}
       {work ? <span><b>{work.character.display_name}</b> · 交互物 · {work.character.cell_width}px · {propProvenanceLabel(work.character.provenance?.type)}</span>
-        : <div className="im-object-select"><span id="im-object-label">交互物对象</span><NativeSelect aria-labelledby="im-object-label" aria-label="交互物对象" value={objectId} disabled={busy}
+        : <div className="im-object-select"><span id="im-object-label">交互物对象</span><NativeSelect aria-labelledby="im-object-label" aria-label="交互物对象" value={objectId} disabled={draftDisabled}
           onChange={e => setObjectId(e.target.value)}>
           <NativeSelectOption value="">{objects.length ? '请选择交互物' : '还没有交互物对象'}</NativeSelectOption>
           {objects.map(o => <NativeSelectOption key={o.id} value={o.id}>{o.name} · {o.width}px · {propProvenanceLabel(o.provenance?.type)}</NativeSelectOption>)}
@@ -331,20 +414,21 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
       {!loaded ? <div className="motion-loading"><LoaderCircle className="animate-spin" />正在读取作品…</div> : <>
         <aside className="motion-card im-left">
           <div className="motion-card-title"><h2>状态图</h2>
-            {work?.plan && !readOnly && !work.job && !editing && <button className="motion-secondary" onClick={() => setEditing(true)}><Pencil size={14} />修改</button>}
+            {work && work.status !== 'planning' && !readOnly && !work.job && !editing &&
+              <button className="motion-secondary" disabled={draftDisabled} onClick={() => setEditing(true)}><Pencil size={14} />修改</button>}
           </div>
-          <StateGraphView workId={editing ? null : work?.id || null} nodes={graph.nodes} edges={graph.edges} selection={phase === 0 ? null : selection}
+          <StateGraphView work={editing ? null : work} nodes={graph.nodes} edges={graph.edges} selection={phase === 0 ? null : selection}
             onSelect={value => { if (phase === 0) return; setSelection(value); setFrame(0); }} referenceUrl={referenceUrl} />
           {phase === 0 && <p className="motion-muted im-graph-hint">在右侧编辑状态；制定方案后可以逐段查看。</p>}
         </aside>
         <section className="motion-card im-center" aria-label={phase === 0 ? '定义状态' : '过渡画布'}>
           {phase === 0 ? <>
             <div className="motion-card-title"><h2>{editing ? '修改状态与过渡' : '定义状态与过渡'}</h2>
-              {editing && <button className="motion-secondary" onClick={() => setEditing(false)}>取消修改</button>}</div>
-            {!objectId && !work && <PropReferenceGenerator objectName={object?.displayName || ''} onTransferred={async id => { await refreshLists(); setObjectId(id); }} />}
-            <StateEditor draft={draft} onDraft={setDraft} referenceUrl={referenceUrl} disabled={busy || readOnly} />
+              {editing && <button className="motion-secondary" disabled={busy || Boolean(pendingPlan)} onClick={() => setEditing(false)}>取消修改</button>}</div>
+            {!objectId && !work && draftReady && <PropReferenceGenerator objectName={object?.displayName || ''} onTransferred={async id => { await refreshLists(); setObjectId(id); }} />}
+            <StateEditor draft={draft} onDraft={setDraft} referenceUrl={referenceUrl} disabled={draftDisabled} />
             {objectId && <details className="im-structure"><summary>部件结构（铰接转动、形变需要）{structure ? ' · 已选择' : ''}</summary>
-              <MotionStructure key={objectId} characterId={objectId} disabled={busy || readOnly} registerDraftSaver={registerStructureSaver}
+              <MotionStructure key={objectId} characterId={objectId} disabled={draftDisabled} registerDraftSaver={registerStructureSaver}
                 modelConfiguration={JSON.stringify(configuration?.configuration || null)} generationStructure={structure} onGenerationStructure={setStructure} />
             </details>}
           </> : work && (!work.plan || work.status === 'planning') ? <>
@@ -372,8 +456,7 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
               onAdopt={async () => { setPixelTarget(null); setAdjustmentVersion(v => v + 1); await refresh(); }} />}
           </> : node ? <div className="im-node-detail">
             <div className="motion-card-title im-center-title"><h2>状态 {String.fromCharCode(65 + node.index)}：{node.name}</h2><span className="im-pill">{nodeSourceLabels[node.source]}</span></div>
-            <div className="motion-canvas motion-large">{node.index === 0 && referenceUrl ? <img src={referenceUrl} alt={node.name} />
-              : node.image && work ? <img src={motionUrl(`open-motion/${work.id}/${node.image.path}`, { v: node.image.v })} alt={node.name} />
+            <div className="motion-canvas motion-large">{stateImageUrl ? <img src={stateImageUrl} alt={node.name} />
               : <p>尚无真实状态图；确认通往这个状态的过渡后显示。</p>}</div>
             <p className="motion-muted">{node.source === 'confirmed' ? '真实生成帧，经人工确认后锁定。' : node.source === 'target' ? '绑定的段末目标图，约束生成但不是生成结果。'
               : node.source === 'reference' ? '对象原图就是初始状态。' : '只有文字描述。'}</p>
@@ -387,7 +470,8 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
               title={unavailable ? '开始制作后可用' : undefined} onClick={() => setTab(id)}>{label}</button>;
           })}</div>
           <div className="im-tab-body" role="tabpanel">
-            {(tab === 'requirements' || ((tab === 'tools' || tab === 'check') && !jobReady)) && <Requirements work={editing ? null : work} draft={draft} onSaved={apply} readOnly={readOnly} />}
+            {(tab === 'requirements' || ((tab === 'tools' || tab === 'check') && !jobReady)) &&
+              <Requirements work={editing ? null : work} draft={editing ? draft : plannedDraft} onSaved={apply} readOnly={readOnly} />}
             {tab === 'check' && jobReady && <section className="im-check">
               <fieldset className="im-overlays"><legend>叠加检查层</legend>
                 {([['fixed', '固定区域'], ['heat', '固定区变化热区'], ['onion', '上一帧洋葱皮'], ['pivot', '枢轴与铰接半径'], ['seam', '首帧叠末帧（循环接缝）']] as [keyof Overlays, string][])
@@ -442,17 +526,20 @@ function Requirements({ work, draft, onSaved, readOnly }: { work: MotionWork | n
       {work?.status === 'planning' && <p>正在形成制作方案…</p>}
       {work && !work.plan && work.status !== 'planning' && <p className="motion-notice">{work.message}</p>}</section>;
   }
-  const pending = draft.states.map((state, i) => ({ state, i })).filter(({ state, i }) => i > 0 && state.targetPng && !work.end_targets?.some(t => t.stage === i - 1));
-  const canBind = !work.job && work.status === 'ready' && !readOnly && work.plan.stages.length === draft.states.length - 1 && pending.length > 0;
+  const pending = pendingDraftTargets(work, draft);
+  const matchingStages = work.plan.stages.length === draftTransitionCount(draft);
+  const canBind = !work.job && work.status === 'ready' && !readOnly && matchingStages && pending.length > 0;
   const bind = async () => {
     setBusy(true); setError('');
     try {
       let current = work;
-      for (const { state, i } of pending) current = await motionRequest<MotionWork>(`open-motion/${work.id}/target`, {
-        expected_revision: current.revision, stage_index: i - 1, expected_targets: current.target_set_sha256, png_base64: state.targetPng,
-        note: `状态图「${state.name}」的目标图，由交互物动画面板按状态顺序绑定`,
-      });
-      onSaved(current);
+      for (const { name, png, stage } of pending) {
+        current = await motionRequest<MotionWork>(`open-motion/${work.id}/target`, {
+          expected_revision: current.revision, stage_index: stage, expected_targets: current.target_set_sha256, png_base64: png,
+          note: `状态图「${name}」的目标图，由交互物动画面板按状态顺序绑定`,
+        });
+        onSaved(current);
+      }
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
   const checks = { satisfied: '符合', mismatch: '不符', ambiguous: '待澄清' } as Record<string, string>;
@@ -474,7 +561,7 @@ function Requirements({ work, draft, onSaved, readOnly }: { work: MotionWork | n
     {!!work.plan.questions.length && <div className="motion-notice"><h3>需要你补充</h3>{work.plan.questions.map(q => <p key={q}>{q}</p>)}</div>}
     {canBind && <div className="motion-notice"><p>状态图中有 {pending.length} 张目标图尚未绑定为段末目标。</p>
       <button disabled={busy} onClick={() => void bind()}>按状态顺序绑定目标图</button></div>}
-    {!work.job && work.status === 'ready' && work.plan.stages.length !== draft.states.length - 1 && draft.states.some(st => st.targetPng) &&
+    {!work.job && work.status === 'ready' && !readOnly && !matchingStages && pending.length > 0 &&
       <p className="motion-muted">方案分段数与状态图不一致，请在下方逐段选择目标图。</p>}
     <MotionTargets key={`${work.id}:${work.revision}`} work={work} onSaved={onSaved} />
     {error && <p className="motion-danger">{error}</p>}

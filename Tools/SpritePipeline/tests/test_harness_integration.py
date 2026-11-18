@@ -654,6 +654,28 @@ class SpritePipelineIntegrationTests(unittest.TestCase):
             self.assertEqual(preview_artifact.status_code, 200, preview_artifact.text)
             self.assertEqual(preview_artifact.headers["content-type"], "image/gif")
             self.assertTrue(preview_artifact.content.startswith((b"GIF87a", b"GIF89a")))
+            for name, sha in (
+                ("sheet", exported.export.sha256),
+                ("preview", exported.export.preview_sha256),
+                ("godot", exported.export.godot_sha256),
+            ):
+                with self.subTest(artifact=name):
+                    self.assertIsNotNone(sha)
+                    route = f"/v1/jobs/{created.job_id}/exports/{name}"
+                    verified = client.get(route, params={"revision": exported.revision, "expected_sha256": sha})
+                    self.assertEqual(verified.status_code, 200, verified.text if not verified.is_success else "")
+                    refused = client.get(route, params={"revision": exported.revision, "expected_sha256": "0" * 64})
+                    self.assertEqual(refused.status_code, 409)
+            original_preview = preview_path.read_bytes()
+            try:
+                preview_path.write_bytes(b"replaced live export")
+                verified_preview = client.get(f"/v1/jobs/{created.job_id}/exports/preview", params={
+                    "revision": exported.revision, "expected_sha256": exported.export.preview_sha256,
+                })
+                self.assertEqual(verified_preview.status_code, 200)
+                self.assertEqual(verified_preview.content, original_preview)
+            finally:
+                preview_path.write_bytes(original_preview)
 
     def test_cli_export_accepts_an_explicit_project_filename(self) -> None:
         created = self.service.create_job(self.harness.create_request("fixture"))
@@ -2548,6 +2570,13 @@ class SpritePipelineIntegrationTests(unittest.TestCase):
                 reloaded_pixels[opaque_offset : opaque_offset + 4],
                 bytes((0, 0, 0, 0)),
             )
+            bound_route = f"/v1/jobs/{checked.job_id}/candidates/1/frames/0/image"
+            original = client.get(bound_route, params={
+                "revision": checked.revision, "expected_sha256": self._candidate(checked).frames[0].sha256,
+            })
+            self.assertEqual(original.status_code, 200, original.text if not original.is_success else "")
+            self.assertEqual(original.content, frame_artifact.content)
+            self.assertNotEqual(client.get(bound_route).content, original.content)
 
     def test_codex_cli_can_commit_a_manual_pixel_edit_version(self) -> None:
         checked = self._ingest_clean_candidate()

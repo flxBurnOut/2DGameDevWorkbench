@@ -34,7 +34,7 @@
     "ui-manifest:check": "node scripts/sync-ui-manifest.mjs --check",
     "typecheck": "tsc --noEmit --incremental false",
     "test:task-isolation": "node tests/task-isolation/run.mjs",
-    "test:adapters": "node tests/workbench-adapters/run.mjs",
+    "test:adapters": "node tests/workbench-adapters/run.mjs && node tests/workbench-adapters/native-recovery.mjs",
     "test:http": "node tests/workbench-http/run.mjs && node tests/workbench-http/security.mjs",
     "test:theme": "node tests/workbench-shell/theme.mjs",
     "test:engineering": "node tests/game-engineering/run.mjs",

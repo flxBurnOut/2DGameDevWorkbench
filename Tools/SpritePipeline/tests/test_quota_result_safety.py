@@ -333,6 +333,31 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         self.assertEqual(len(recovered.candidates[0].frames), 4)
         self.assertTrue(restarted.candidate_safety(job.job_id, 1)["result_integrity"])
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows sharing errors')
+    def test_raw_result_directory_retries_only_the_same_publication(self) -> None:
+        job = self.service.create_job(self.harness.create_request('pixellab'))
+        provider = SequencedProvider(self._frame_bytes())
+        replace = os.replace
+        moves = []
+
+        def temporarily_locked(source, target):
+            if Path(target).name == 'candidate_01' and Path(source).name.startswith('.candidate_01.'):
+                moves.append((source, target))
+                if len(moves) == 1:
+                    raise PermissionError(13, 'temporary sharing violation', str(target), 5)
+            return replace(source, target)
+
+        with patch('sprite_pipeline.providers.get_provider', return_value=provider), patch('os.replace', temporarily_locked):
+            for _ in range(3):
+                result = self.service.generate_job(job.job_id, wait=False)
+                if result.candidates[0].frames:
+                    break
+
+        self.assertEqual(provider.submit_count, 1)
+        self.assertEqual(len(moves), 2)
+        self.assertEqual(moves[0], moves[1])
+        self.assertTrue(result.candidates[0].frames)
+
     def test_poll_audit_write_failure_does_not_discard_completed_images(self) -> None:
         self.service.configure_pixellab_api_key("unit_test_key_123456")
         job = self.service.create_job(
@@ -731,6 +756,62 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         ):
             second = self.service.list_jobs()
         self.assertEqual(second, first)
+
+    def test_job_catalog_repairs_a_stale_summary_after_interrupted_save(self) -> None:
+        for interruption in ("job.json", "summary.json"):
+            with self.subTest(interruption=interruption):
+                job = self.service.create_job(self.harness.create_request("pixellab"))
+                store = self.service.store
+
+                def fail_selected_write(path, value):
+                    if path.name == interruption:
+                        raise OSError("interrupted job publication")
+                    atomic_write_json(path, value)
+
+                def submit():
+                    with store.locked_job(job.job_id) as submitted:
+                        submitted.generation_requested_at = submitted.updated_at
+                        submitted.candidates[0].status = CandidateStatus.provider_pending
+                        submitted.candidates[0].provider_job_id = "durable-provider-id"
+
+                with patch("sprite_pipeline.store.atomic_write_json", side_effect=fail_selected_write):
+                    if interruption == "job.json":
+                        with self.assertRaisesRegex(OSError, "interrupted job publication"):
+                            submit()
+                    else:
+                        submit()
+
+                reader = type(store)(self.service.settings)
+                summary = next(row for row in reader.list_jobs() if row["job_id"] == job.job_id)
+                self.assertEqual(summary["job_revision"], job.revision + 1)
+                self.assertEqual(summary["candidate_status_counts"], {"provider_pending": 1})
+                self.assertTrue(summary["needs_recovery"])
+                with patch.object(reader, "load", side_effect=AssertionError("repaired summary must stay lightweight")):
+                    self.assertEqual(next(row for row in reader.list_jobs() if row["job_id"] == job.job_id), summary)
+
+    def test_older_job_read_cannot_replace_newer_summary(self) -> None:
+        job = self.service.create_job(self.harness.create_request("import"))
+        writer = self.service.store
+        reader = type(writer)(self.service.settings)
+        history = writer.job_dir(job.job_id) / "history" / f"job_{job.revision:08d}.json"
+        from sprite_pipeline.jsonio import read_json
+
+        writing = False
+
+        def interleave_write(path):
+            nonlocal writing
+            value = read_json(path)
+            if path == history and not writing:
+                writing = True
+                with writer.locked_job(job.job_id) as next_job:
+                    next_job.candidates[0].status = CandidateStatus.failed
+            return value
+
+        with patch("sprite_pipeline.store.read_json", side_effect=interleave_write):
+            self.assertEqual(reader.load(job.job_id).revision, job.revision)
+        summary = read_json(writer.job_dir(job.job_id) / "summary.json")
+        self.assertEqual(summary["job_revision"], job.revision + 1)
+        self.assertEqual(summary["candidate_status_counts"], {"failed": 1})
 
     def test_multiple_candidates_share_one_task_folder(self) -> None:
         request = self.harness.create_request("fixture")

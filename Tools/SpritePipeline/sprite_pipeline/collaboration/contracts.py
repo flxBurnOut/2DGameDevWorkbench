@@ -406,6 +406,11 @@ class CoordinatorTurn(Contract):
         return self
 
 
+class FinalCoordinatorTurn(CoordinatorTurn):
+    action: Literal['finalize']
+    plan: PlanProposal
+
+
 def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                      separators=(",", ":")).encode()).hexdigest()

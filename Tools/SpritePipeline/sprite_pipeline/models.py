@@ -384,6 +384,8 @@ class ExportRecord(StrictModel):
     qa_path: str
     godot_package_path: str | None = None
     godot_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    preview_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    immutable_artifacts: dict[str, str] = Field(default_factory=dict)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 

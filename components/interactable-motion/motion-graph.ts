@@ -1,4 +1,4 @@
-import type { MotionCandidate, MotionWork } from '../sprite-generator/open-motion-model';
+import { motionUrl, type MotionCandidate, type MotionWork } from '../sprite-generator/open-motion-model';
 
 /**
  * The interactable panel shows one open-motion work as a state graph. Nodes
@@ -61,16 +61,29 @@ export const nodeSourceLabels: Record<NodeSource, string> = {
 const MAX_TRANSITIONS = 4;
 export const draftLimits = { states: MAX_TRANSITIONS + 1, name: 40, appearance: 200 };
 
-/** Toggle objects start with A/B; sequence objects follow their entries. */
-export function defaultDraft(kind?: 'toggle' | 'sequence' | null, entries: string[] = []): InteractableDraft {
+/** The first draft state uses the bound object's actual initial appearance. */
+export function defaultDraft(kind?: 'toggle' | 'sequence' | null, entries: string[] = [], initialToggle = false): InteractableDraft {
   const names = kind === 'sequence' && entries.length >= 2
     ? entries.slice(0, draftLimits.states)
-    : kind === 'toggle' && entries.length === 2 ? entries : ['关闭', '打开'];
+    : kind === 'toggle' && entries.length === 2 ? (initialToggle ? [entries[1], entries[0]] : entries) : ['关闭', '打开'];
   return {
     states: names.map((name, index) => ({ name: name.slice(0, draftLimits.name) || `状态 ${index + 1}`, appearance: '' })),
     hold: '',
     loop: false,
     returnToStart: false,
+  };
+}
+
+export function draftFromWork(work: MotionWork): InteractableDraft | null {
+  const skeleton = work.spec.interactable_skeleton;
+  if (!skeleton) return null;
+  const returnToStart = work.spec.return_to_reference;
+  const hasClosingState = returnToStart && skeleton.states.length > 2 && skeleton.states.at(-1)?.name === skeleton.states[0].name;
+  return {
+    states: (hasClosingState ? skeleton.states.slice(0, -1) : skeleton.states).map(state => ({ ...state })),
+    hold: skeleton.hold ?? '',
+    loop: work.spec.loop,
+    returnToStart,
   };
 }
 
@@ -110,8 +123,20 @@ export function draftDescription(draft: InteractableDraft): { description: strin
 export function draftSkeleton(draft: InteractableDraft) {
   const states = draft.states.map(s => ({ name: s.name.trim(), appearance: s.appearance.trim() || s.name.trim() }));
   // Returning to the start is one more transition, back to the reference state.
-  if (draft.returnToStart && states.length < draftLimits.states) states.push({ ...states[0], appearance: `回到初始状态：${states[0].appearance}` });
+  if (draft.returnToStart && states.length < draftLimits.states) states.push({
+    ...states[0], appearance: `回到初始状态：${states[0].appearance}`.slice(0, draftLimits.appearance),
+  });
   return { states, hold: draft.hold.trim() };
+}
+
+export function draftTransitionCount(draft: InteractableDraft): number {
+  return draft.states.length - 1 + Number(draft.returnToStart);
+}
+
+export function pendingDraftTargets(work: MotionWork, draft: InteractableDraft) {
+  return draft.states.slice(1).flatMap((state, stage) => state.targetPng && !work.end_targets?.some(t => t.stage === stage)
+    ? [{ name: state.name, png: state.targetPng, stage }]
+    : []);
 }
 
 function stageStatus(work: MotionWork, candidate: MotionCandidate | undefined, stage: number): EdgeStatus {
@@ -178,6 +203,13 @@ export function workGraph(work: MotionWork | null, candidateIndex = 1, draft?: I
 }
 
 export type Selection = { kind: 'node'; index: number } | { kind: 'edge'; stage: number };
+
+export function nodeImageUrl(node: GraphNode, work: Pick<MotionWork, 'id' | 'revision'> | null, referenceUrl: string) {
+  if (node.index === 0 && referenceUrl) return referenceUrl;
+  return node.image && work
+    ? motionUrl(`open-motion/${work.id}/${node.image.path}`, { revision: String(work.revision), v: node.image.v })
+    : '';
+}
 
 /** What still blocks the panel, phrased for the status bar, plus its one primary action. */
 export type PanelAction = 'plan' | 'replan' | 'generate' | 'resume' | 'review-stage' | 'review-candidate' | 'writeback' | 'wait' | 'none';

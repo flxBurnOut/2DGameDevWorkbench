@@ -185,6 +185,7 @@ try {
   const reviewCalls=complete.job.candidates.reduce((sum,c)=>sum+c.quality_review.requests.length+c.plan_execution.stages.reduce((n,s)=>n+s.review.requests.length+s.review_history.reduce((n,r)=>n+r.requests.length,0),0),0);
   assert.equal(reviewCalls,35);
   const clip = await mcp('workbench_get_task', { taskId: generated.task.id });
+  assert.ok(!clip.refreshError, clip.refreshError);
   assert.equal(clip.presentation.reviewProgress.scope, 'clip');
   assert.equal(clip.presentation.reviewProgress.readyForApproval, true);
   assert.equal(clip.presentation.reviewProgress.callsUsed, 5);
@@ -197,7 +198,7 @@ try {
   console.log(`MCP animation result: ${JSON.stringify(stored).length} saved JSON characters, ${JSON.stringify(compact).length} summary characters.`);
   const approved = await runConnector(manifest, capability, { operation: 'approve', jobId: complete.job.job_id,
     candidateIndex: clip.presentation.reviewProgress.candidateIndex, acknowledgeWarnings: true, reviewNote: '已播放诊断用完整动画，测试一次提交采用。' });
-  assert.equal(approved.task.status, 'completed');
+  assert.equal(approved.task.status, 'completed', approved.refreshError);
   // Local image workspace -> bounded animation alternative -> new version; keep the other tests on candidate 1.
   const editReq=(op,input)=>imageEditRequest(process.cwd(),manifest,op,input);
   const frameRef={kind:'motion-frame',workId,workRevision:1,candidateIndex:2,frameIndex:1};
@@ -290,7 +291,7 @@ try {
   for(let n=0;alt.task.status==='running'&&n<100;n++){await delay(100);alt=await refreshTask(manifest,alt.task.id);}
   assert.equal(alt.task.status,'attention_required');
   const alternative=JSON.parse(await readFile(alt.task.outputs.find(p=>p.endsWith('/result.json')),'utf8'));
-  assert.equal(alternative.adjustment.state,'ready');
+  assert.equal(alternative.adjustment.state,'ready',alt.refreshError);
   assert.equal(alternative.adjustment.preserve_motion,true);
   assert.deepEqual(alternative.adjustment.edit_regions,altInput.adjustmentRegions);
   assert.ok(alternative.adjustment.spatial_protection.frames.every(f=>f.protected_changed_pixels===0));

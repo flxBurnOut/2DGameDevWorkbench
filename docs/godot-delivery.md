@@ -69,6 +69,10 @@ CLI 对应 `npm run workbench -- agent <共享操作> --input <输入文件> --j
 
 导出、安装和完成接入共用工程内的操作系统锁。运行时持有 `forge_imports/.install-gate.sqlite` 的写锁，并在 `forge_imports/install.lock` 原子发布完整的持有者记录，与使用该路径安装资源的旧版互斥。进程退出后，下一次操作可以自动恢复已识别的持有者记录。旧版留下的空目录、坏记录或来源不明的锁需要人工核验。先停止涉及该工程的旧版和新版写入进程，确认锁没有持有者后再处理该锁路径，保留包、安装账本和备份。
 
+工程写入时，如果 `forge_imports/.gitignore` 中没有独立一行 `# Forge delivery locks`，Forge 会在文件末尾追加锁文件、SQLite 日志与锁恢复临时文件的忽略规则。保留这行标记即可自行修改或移除其下的规则。交付包、回执、安装账本和备份仍按工程自身的 Git 规则管理。已经被 Git 跟踪的锁文件需按工程的版本管理流程移出索引。
+
+如果该路径不是普通文件或无法读取、追加，Forge 会在发布 `install.lock` 前停止此次写入并释放 SQLite 写锁，返回 `INSTALL_LOCK_IGNORE_UNAVAILABLE`（HTTP 409）。检查 `forge_imports/.gitignore` 的路径及权限后可以重试，也可以从导出窗口选择“仅下载 ZIP”。
+
 目标工程所在的文件系统须支持 SQLite 文件锁及同目录硬链接。exFAT 等环境会在原子发布锁或包之前返回错误。可选择位于支持文件系统的工程后重试，也可使用“仅下载 ZIP”。
 
 首次导出在发布 ZIP 后登记交付位置。后续以工程内的 `forge_imports/<delivery-id>/delivery.json` 为准，资源和安装账本写妥后发布工程回执，再更新工作台历史副本。仅工作台写入失败时，工程已提交的变更仍保留。在线历史读取工程回执，重试同一次操作可补齐工作台副本。工程离线时可读最近一份工作台副本。
@@ -77,7 +81,7 @@ CLI 对应 `npm run workbench -- agent <共享操作> --input <输入文件> --j
 
 ## 验收
 
-运行 `npm run test:game-export` 检查角色动画与交互物格式、路径修正、文件完整性、同名冲突、备份、幂等、交付篡改、目录链接、HTTP 和 MCP。结合 `test:interactable`、`test:interactable-http`、`test:asset-import`、`test:assets`、`test:engineering` 及清单/壳层回归。浏览器应实际完成选择项目、导出、关闭重开记住路径、仅下载 ZIP、查看接入进度及动画/交互物资源加载。
+运行 `npm run test:game-export` 检查角色动画与交互物格式、路径修正、文件完整性、同名冲突、备份、幂等、交付篡改、目录链接、目标工程的 Git 忽略规则、HTTP 和 MCP。结合 `test:interactable`、`test:interactable-http`、`test:asset-import`、`test:assets`、`test:engineering` 及清单/壳层回归。浏览器应实际完成选择项目、导出、关闭重开记住路径、仅下载 ZIP、查看接入进度及动画/交互物资源加载。
 
 包导出、资源安装、代码接入、引擎执行、视觉验收和完整游戏验收是不同证据。Godot 4.7.x 行为需要实际 4.7.x 执行；只有另一版本时明确记录，不升级目标项目或把该结果当成 4.7.x 验收。
 

@@ -5,7 +5,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import sharp from 'sharp';
 import { spawn } from 'node:child_process';
-import { commandTaskId, findCapability, loadManifest, persistTask, readTask, refreshTask, repositoryRoot, runConnector, validateInput } from '../../lib/workbench/runtime.mjs';
+import { commandTaskId, findCapability, loadManifest, persistTask, readTask, refreshTask, repositoryRoot, runConnector, summarizeTask, validateInput } from '../../lib/workbench/runtime.mjs';
 import { uploadDocumentMedia } from '../../lib/workbench/editor-documents.mjs';
 import { getPublicImageGenerationSettings, resolveImageGenerationProvider } from '../../lib/workbench/image-generation-settings.mjs';
 import { imageSha256, inspectImageBytes, readImageAssetSource, validateImageAssetDimensions } from '../../lib/workbench/adapters/image-assets-source.mjs';
@@ -99,6 +99,8 @@ try {
   gate = new Promise(resolve => { release = resolve; });
   const submitted = await runConnector(manifest, capability, { operation: 'generate-prop', prompt: '独立灯笼' });
   assert.equal(submitted.task.status, 'running', 'HTTP caller receives a durable task before the paid request finishes');
+  assert.equal(submitted.task.adapter.backgroundToken, submitted.task.execution.owner.token);
+  assert(!JSON.stringify(summarizeTask(submitted)).includes(submitted.task.execution.owner.token));
   assert.equal((await readTask(manifest, submitted.task.id)).status, 'running');
   const observed = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', 'import {loadManifest,refreshTask} from "./lib/workbench/runtime.mjs"; console.log((await refreshTask(await loadManifest(),process.argv[1])).task.status);', submitted.task.id], { cwd: repositoryRoot, env: process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });

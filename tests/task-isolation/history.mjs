@@ -1,7 +1,7 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { loadManifest, repositoryRoot, archiveTaskHistory, listTaskPage, listTasks, readTask, refreshTask, persistTask } from '../../lib/workbench/runtime.mjs';
@@ -41,7 +41,16 @@ const fs = createRequire(import.meta.url)('node:fs/promises');
 const open = fs.open, readFile = fs.readFile;
 const reads = [];
 const recordRead = file => { if (path.dirname(String(file)) === directory && !path.basename(file).startsWith('.')) reads.push(path.basename(file)); };
-fs.open = (...args) => { recordRead(args[0]); return open(...args); };
+let beforeDetailRead;
+fs.open = async (...args) => {
+  recordRead(args[0]);
+  if (beforeDetailRead && args[0] === original) {
+    const update = beforeDetailRead;
+    beforeDetailRead = undefined;
+    await update();
+  }
+  return open(...args);
+};
 fs.readFile = (...args) => { recordRead(args[0]); return readFile(...args); };
 syncBuiltinESMExports();
 try {
@@ -59,6 +68,24 @@ try {
   await assert.rejects(listTaskPage(manifest, { limit: 1, offset: 1, snapshot: page.snapshot, detail: false }), { code: 'STALE_TASK_SNAPSHOT' });
   const updated = await listTaskPage(manifest, { detail: false, query: 'updated title' });
   assert.equal(updated.tasks[0].id, legacy.id);
+
+  const replaceBeforeRead = record => async () => {
+    await writeFile(original + '.next', JSON.stringify(record));
+    await rename(original + '.next', original);
+  };
+  const selection = { detail: true, query: legacy.id };
+  const beforeCheckpoint = await listTaskPage(manifest, selection);
+  const checkpoint = { ...legacy, adapter: { progress: 2 } };
+  beforeDetailRead = replaceBeforeRead(checkpoint);
+  const duringCheckpoint = await listTaskPage(manifest, selection);
+  assert.equal(duringCheckpoint.tasks[0].detailChanged, true);
+  assert.deepEqual(duringCheckpoint.tasks[0].adapter, checkpoint.adapter);
+  const afterCheckpoint = await listTaskPage(manifest, { ...selection, since: beforeCheckpoint.revision, snapshot: beforeCheckpoint.snapshot });
+  assert.equal(afterCheckpoint.snapshot, beforeCheckpoint.snapshot);
+  assert.notEqual(afterCheckpoint.revision, beforeCheckpoint.revision);
+  assert.equal(afterCheckpoint.tasks[0].detailChanged, undefined);
+  beforeDetailRead = replaceBeforeRead({ ...checkpoint, status: 'failed' });
+  await assert.rejects(listTaskPage(manifest, { ...selection, status: 'completed' }), { code: 'STALE_TASK_SNAPSHOT' });
   await writeFile(path.join(directory, 'invalid.json'), '{ partial');
   assert.deepEqual((await listTaskPage(manifest, { detail: false })).coverage, { complete: false, unavailableTaskIds: ['invalid'] });
   await assert.rejects(archiveTaskHistory(manifest), /部分任务记录无法读取/);

@@ -65,6 +65,8 @@ CLI、HTTP、MCP 对共享操作校验完整对象。MCP 纯文本任务列表�
 
 MCP 的 `workbench_get_task` 支持 `taskId` 或 `commandId`。CLI 的 `prepare`、`run` 和 `status` 支持 `--command-id`。默认任务查询和列表返回精简输入与状态。MCP 的 `detail: true`、CLI 的 `status --detail` 或 HTTP 的 `detail=true` 可读取保存的完整输入。产物与审核证据通过 `workbench_get_result` 或登记的文件入口读取。
 
+执行者身份与后台租约令牌仅保存在工作台的恢复记录中。调用方可通过任务身份、请求指纹、执行阶段和适配器进度跟踪同一请求。运行时租约和发布日志属于内部文件。
+
 ## 3. 状态机
 
 ```text
@@ -274,7 +276,13 @@ image-assets 的外部操作为 generate-prop、edit-image，使用gpt-image-2.6
 
 资产 kind 包含 character、prop、animation、interactable。共享保存、读取和资产查询不触发生图；浏览器独有草稿不自动收录。图片或动画的来源、候选、采用与导出分别记录。
 
-`tasks` 支持 query、capabilityId、status、limit（1–200）、offset（非负整数）、snapshot。搜索在全部未归档记录上执行，返回 totalTasks、totalNativeJobs、searchedTasks、nextOffset 和 snapshot；各来源独立分页，带回相同 snapshot 和 nextOffset 直到 null。Web `GET /v1/tasks` 使用本地记录分页，另支持 refresh 与 since，返回 tasks、total、nextOffset、snapshot 和 revision（还覆盖临时 refreshError）。第一页带上次的 revision 作为 since 且历史未变时，只返回 `unchanged: true`、空 tasks 与当前 revision、snapshot、total；不认识 since 的旧 runtime 照常返回完整页。历史变化时拒绝旧快照，客户端从第一页重新查询。已归档记录仅从执行列表隐藏，资产与原始产物仍可读。
+### 任务历史分页
+
+`tasks` 支持 query、capabilityId、status、limit（1–200）、offset（非负整数）、snapshot 和 detail。搜索范围是全部未归档任务。两类来源独立分页，返回 totalTasks、totalNativeJobs、searchedTasks、nextOffset 和 snapshot。续页保持筛选条件与 detail 模式，并传回 snapshot 和 nextOffset，直到 nextOffset 为 null。已归档的记录及其产物仍可按原身份读取。
+
+精简页的快照核对记录版本。以 `detail: true` 开始的查询按匹配记录的身份和顺序翻页，同一任务写入进度后可继续查询并读取新正文。若工作台选中该行后、读取正文前发生改写，返回的最新明细带 `detailChanged: true`。匹配集合、顺序或来源覆盖发生变化时，旧快照返回 409，需从第一页重新查询。
+
+Web `GET /v1/tasks` 分页返回本地记录，另支持 refresh 与 since。revision 跟踪正文版本与临时 refreshError。第一页将上次的 revision 作为 since 传回，内容相同时返回 `unchanged: true`、空 tasks 及当前 revision、snapshot、total。不了解 since 的旧 runtime 照常返回完整页。
 
 ### 序列帧 Godot 交付
 

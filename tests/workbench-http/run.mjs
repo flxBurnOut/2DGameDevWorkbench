@@ -162,6 +162,8 @@ try {
     value.endsWith('/image.png'),
   );
   assert(artifact);
+  const privateMarker = artifact.replace(/image\.png$/, '.task-publication.json');
+  assert.equal((await fetch(baseUrl + '/v1/artifacts?path=' + encodeURIComponent(privateMarker))).status, 403);
 
   const tasks = await jsonFetch(`${baseUrl}/v1/tasks?limit=1`);
   assert.equal(tasks.tasks[0].id, task.taskId);

@@ -88,4 +88,4 @@ PixelLab Key 在原图或序列帧设置中保存一次，两处共用；由 Spr
 
 本仓库分发工作台源码、测试夹具、使用文档和产品 Skills。个人游戏工程、生成资产、导入包、演示材料、内部开发说明及工作记录保留在本机，不随源码分发。首次使用请上传自己的角色参考图或通过原图模块创建；`diagnostic_dummy` 仅用于测试。
 
-忽略规则阻止本机资料被常规提交；`npm run check:public`（CI 唯一保留的检查）检查已跟踪文件，拦截误用强制添加的情况。
+忽略规则阻止本机资料被常规提交。CI 在 Node.js 22.13.0 和 24 上运行 `npm run check:public` 与工作台功能测试。`check:public` 核对已跟踪文件，拦截强制添加的本机资料。Python 和跨平台门禁见[开发导航](workbench/guides/development.md)。

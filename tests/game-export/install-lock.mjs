@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { fork } from 'node:child_process';
+import { execFile, fork } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import JSZip from 'jszip';
 import { createProject } from '../../features/interactable-editor/contract.mjs';
 import { buildGodotPackage } from '../../features/interactable-editor/godot-builder.mjs';
@@ -13,6 +14,22 @@ import {
   completeGameExport, deliverGodotPackage, getGameExport, installGameExport,
   listGameExports, readGameExportSummary,
 } from '../../lib/workbench/game-export.mjs';
+
+const exec = promisify(execFile);
+const ignoreMarker = '# Forge delivery locks';
+const ignoreError = {
+  code: 'INSTALL_LOCK_IGNORE_UNAVAILABLE',
+  status: 409,
+  message: /forge_imports\/\.gitignore.*权限.*仅下载 ZIP/,
+};
+async function git(game, ...args) {
+  const { stdout } = await exec('git', ['-C', game, '-c', 'core.excludesFile=', ...args]);
+  return stdout;
+}
+async function gitChanges(game) {
+  const status = await git(game, 'status', '--porcelain=v1', '-z', '--untracked-files=all');
+  return new Set(status.split('\0').filter(Boolean).map((entry) => entry.slice(3)));
+}
 
 async function childInstall(options) {
   const { root, manifest, input, mode, projectPath, packagePath } = options;
@@ -25,6 +42,12 @@ async function childInstall(options) {
     if (mode.endsWith('before-lock') && path.basename(file) === '.install-gate.sqlite')
       await pause('before-lock');
     return lstat(file, ...args);
+  };
+  const readFile = fs.readFile;
+  fs.readFile = async (file, ...args) => {
+    if (mode === 'deny-ignore-read' && path.basename(file) === '.gitignore')
+      throw Object.assign(new Error('ignore read denied'), { code: 'EACCES' });
+    return readFile(file, ...args);
   };
   const rename = fs.rename;
   fs.rename = async (file, destination) => {
@@ -40,7 +63,10 @@ async function childInstall(options) {
   const writeFile = fs.writeFile;
   fs.writeFile = async (file, ...args) => {
     const name = typeof file === 'string' ? file : '';
+    if (mode === 'deny-ignore-write' && path.basename(name) === '.gitignore')
+      throw Object.assign(new Error('ignore write denied'), { code: 'EACCES' });
     const owner = path.basename(name).startsWith('install.lock.owner-');
+    if (owner && mode.startsWith('deny-ignore-')) throw new Error('owner staging reached before checking .gitignore');
     if (owner && mode === 'fail-owner') throw Object.assign(new Error('owner write failed'), { code: 'EIO' });
     if (owner && mode === 'crash-before-publication') {
       await writeFile(file, args[0].slice(0, 31), args[1]);
@@ -164,6 +190,150 @@ if (process.argv[2] === '--child') {
   }
   const tests = [];
   const test = (name, run) => tests.push([name, run]);
+  test('an exact ignore marker preserves edited or removed rules with LF, CRLF, or no final newline', async () => {
+    for (const [name, custom] of [
+      ['lf', `/user-local.json\n${ignoreMarker}\n/.install-gate.sqlite\n!/install.lock\n`],
+      ['crlf', `${ignoreMarker}\r\n# The game owns these rules\r\n/user-local.json\r\n`],
+      ['eof', `/user-local.json\n${ignoreMarker}`],
+    ]) {
+      const f = await fixture(`edited-ignore-${name}`);
+      const ignore = path.join(path.dirname(f.lock), '.gitignore');
+      await fs.writeFile(ignore, custom);
+      assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
+      assert.equal(await fs.readFile(ignore, 'utf8'), custom);
+    }
+  });
+  test('without an exact marker Forge appends once and preserves custom content and line endings', async () => {
+    for (const [name, eol] of [['lf', '\n'], ['crlf', '\r\n']]) {
+      const f = await fixture(`missing-ignore-marker-${name}`);
+      const ignore = path.join(path.dirname(f.lock), '.gitignore');
+      const custom = [`${ignoreMarker} (notes)`, ` ${ignoreMarker}`, `${ignoreMarker} `, '/user-local.json'].join(eol);
+      await fs.writeFile(ignore, custom);
+      const before = await fs.stat(ignore);
+      assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
+      const added = await fs.readFile(ignore, 'utf8');
+      assert.ok(added.startsWith(custom + eol + ignoreMarker + eol));
+      assert.equal(added.split(eol).filter(line => line === ignoreMarker).length, 1);
+      assert.equal((await fs.stat(ignore)).ino, before.ino);
+      for (let retry = 0; retry < 2; retry++) {
+        assert.deepEqual((await installGameExport(f.root, manifest, f.input)).changedFiles, []);
+        assert.equal(await fs.readFile(ignore, 'utf8'), added);
+      }
+    }
+  });
+  test('unreadable or unwritable ignore rules fail before publishing ownership and can be retried', async () => {
+    const f = await fixture('permissions-ignore'), inbox = path.dirname(f.lock);
+    const ignore = path.join(inbox, '.gitignore');
+    const custom = '/user-local.json\n';
+    await fs.writeFile(ignore, custom);
+    for (const mode of ['deny-ignore-read', 'deny-ignore-write']) {
+      const denied = launch(f, mode);
+      const result = await denied.message('result');
+      assert.equal(result.code, ignoreError.code);
+      assert.equal(result.status, ignoreError.status);
+      assert.match(result.error, ignoreError.message);
+      assert.match(result.error, /EACCES/);
+      assert.equal((await denied.exited).code, 0);
+    }
+    await fs.chmod(ignore, 0o444);
+    try {
+      if (process.getuid?.() !== 0)
+        await assert.rejects(installGameExport(f.root, manifest, f.input), ignoreError);
+      const names = await fs.readdir(inbox);
+      assert.equal(names.some(name => name.startsWith('install.lock')), false);
+      await absent(path.join(f.game, scene));
+      await absent(path.join(inbox, 'install-ledger.json'));
+      await assertCopies(f, f.delivery);
+      assert.equal(await fs.readFile(ignore, 'utf8'), custom);
+    } finally {
+      await fs.chmod(ignore, 0o644);
+    }
+    assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
+    const marked = await fs.readFile(ignore, 'utf8');
+    await fs.chmod(ignore, 0o444);
+    try {
+      assert.deepEqual((await installGameExport(f.root, manifest, f.input)).changedFiles, []);
+      assert.equal(await fs.readFile(ignore, 'utf8'), marked);
+    } finally {
+      await fs.chmod(ignore, 0o644);
+    }
+  });
+  test('non-regular ignore paths stop installation and leave target files alone', async () => {
+    const f = await fixture('non-regular-ignore');
+    const ignore = path.join(path.dirname(f.lock), '.gitignore');
+    const other = path.join(f.root, 'outside-ignore');
+    await fs.unlink(ignore);
+    await fs.mkdir(ignore);
+    await assert.rejects(installGameExport(f.root, manifest, f.input), {
+      ...ignoreError, message: /forge_imports\/\.gitignore.*普通文件.*权限.*仅下载 ZIP/,
+    });
+    await absent(f.lock);
+    assert.deepEqual(await fs.readdir(ignore), []);
+
+    await fs.rmdir(ignore);
+    await fs.mkdir(other);
+    await fs.symlink(other, ignore, process.platform === 'win32' ? 'junction' : 'dir');
+    await assert.rejects(installGameExport(f.root, manifest, f.input), {
+      ...ignoreError, message: /forge_imports\/\.gitignore.*包含链接.*权限.*仅下载 ZIP/,
+    });
+    await absent(f.lock);
+    assert.deepEqual(await fs.readdir(other), []);
+    await fs.unlink(ignore);
+    assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
+  });
+  test('Git ignores shared install lock files and preserves custom rules on older deliveries', async () => {
+    const f = await fixture('git-ignore'), inbox = path.dirname(f.lock);
+    await git(f.game, 'init', '--quiet', '--template=');
+    const ignore = path.join(inbox, '.gitignore');
+    assert.match(await fs.readFile(ignore, 'utf8'), /^\/\.install-gate\.sqlite$/m);
+
+    // Simulate an inbox made before Forge added its lock exclusions.
+    const customRules = '# Existing rules\r\n/user-local.json';
+    const projectRules = '/custom-settings.json\n';
+    await fs.writeFile(ignore, customRules);
+    await fs.writeFile(path.join(f.game, '.gitignore'), projectRules);
+    await fs.writeFile(path.join(f.game, 'custom-settings.json'), '{}');
+    await fs.writeFile(path.join(inbox, 'user-local.json'), '{}');
+
+    const child = launch(f, 'hold-owner');
+    const { owner } = await child.message('owner-written');
+    await assert.rejects(installGameExport(f.root, manifest, f.input), busy);
+    const stagedOwner = `forge_imports/install.lock.owner-${owner.token}.tmp`;
+    const activeLocks = ['forge_imports/.install-gate.sqlite', 'forge_imports/install.lock', stagedOwner];
+    const duringInstall = await gitChanges(f.game);
+    for (const lock of activeLocks) {
+      assert.ok((await fs.lstat(path.join(f.game, lock))).isFile(), lock);
+      assert.equal(duringInstall.has(lock), false, lock);
+    }
+    child.release();
+    assert.equal((await child.message('result')).result.installed, true);
+    assert.equal((await child.exited).code, 0);
+    const updatedRules = await fs.readFile(ignore, 'utf8');
+    assert.ok(updatedRules.startsWith(customRules + '\r\n'));
+    assert.equal(await fs.readFile(path.join(f.game, '.gitignore'), 'utf8'), projectRules);
+    assert.deepEqual((await installGameExport(f.root, manifest, f.input)).changedFiles, []);
+    assert.equal(await fs.readFile(ignore, 'utf8'), updatedRules);
+
+    const retired = path.join(inbox, `install.lock.recovered-${owner.token}`);
+    await fs.mkdir(retired);
+    await fs.writeFile(path.join(retired, `${owner.token}.json`), '{}');
+    for (const suffix of ['-journal', '-wal', '-shm'])
+      await fs.writeFile(path.join(inbox, `.install-gate.sqlite${suffix}`), 'SQLite sidecar fixture');
+    // A similar name in game content is still visible to Git.
+    await fs.writeFile(path.join(f.game, 'install.lock'), 'unrelated game file');
+    const receipt = `forge_imports/${f.delivery.deliveryId}`;
+    const changes = await gitChanges(f.game);
+    assert.deepEqual(
+      [...changes].filter(name => name.startsWith('forge_imports/')).sort(),
+      [
+        'forge_imports/.gdignore', 'forge_imports/.gitignore', 'forge_imports/install-ledger.json',
+        `${receipt}/README.txt`, `${receipt}/delivery.json`, `${receipt}/package.zip`,
+      ].sort(),
+    );
+    assert.ok(changes.has('install.lock'));
+    assert.ok(changes.has(scene));
+    assert.equal(changes.has('custom-settings.json'), false);
+  });
   test('ledger read failures release ownership before a successful retry', async () => {
     const f = await fixture('ledger-failure'), ledger = path.join(f.game, 'forge_imports/install-ledger.json');
     await fs.mkdir(ledger);
@@ -340,6 +510,11 @@ if (process.argv[2] === '--child') {
     const backups = path.join(delivery.inboxPath, 'backups-by-sha256');
     const [digest] = await fs.readdir(backups);
     assert.deepEqual(await fs.readFile(path.join(backups, digest, scene)), nextBytes);
+    await git(update.game, 'init', '--quiet', '--template=');
+    const changes = await gitChanges(update.game);
+    const inbox = `forge_imports/${delivery.deliveryId}`;
+    assert.ok(changes.has(`${inbox}/backups/${scene}`));
+    assert.ok(changes.has(`${inbox}/backups-by-sha256/${digest}/${scene}`));
   });
   async function evidenceFor(f) {
     await fs.writeFile(path.join(f.game, 'Proof.gd'), 'extends Node2D\n');

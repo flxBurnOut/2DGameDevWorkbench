@@ -1,7 +1,7 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, writeFile, readFile, readdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -27,6 +27,7 @@ import {
 
 let offline = false;
 let changeNativeBytes = false;
+let nativeHistoryUpdatedAt = '2026-08-01';
 const nativePng = await sharp({
   create: { width: 128, height: 128, channels: 4, background: '#abcdef' },
 })
@@ -75,7 +76,7 @@ const server = createServer((req, res) => {
   if (req.url === '/v1/jobs') {
     res.end(JSON.stringify({ data: { jobs: Array.from({ length: 215 }, (_, i) => ({
       job_id: `native-history-${String(i).padStart(3, '0')}`, status: 'review_required',
-      updated_at: '2026-08-01', created_at: '2026-08-01', character_name: '历史角色', action_name: '待检查动作',
+      updated_at: i === 0 ? nativeHistoryUpdatedAt : '2026-08-01', created_at: '2026-08-01', character_name: '历史角色', action_name: '待检查动作',
     })) } }));
     return;
   }
@@ -521,6 +522,12 @@ try {
   assert(!historyFirst.tasks.some((t) => historySecond.tasks.some((u) => u.id === t.id)));
   const historyMcp = await client.callTool({ name: 'workbench_list_tasks', arguments: { limit: 200, offset: 200, snapshot: historyFirst.snapshot } });
   assert.deepEqual(historyMcp.structuredContent.tasks, historySecond.tasks);
+  const nativeDetails = { query: 'native-history-', detail: true, limit: 1 };
+  const beforeProgress = await agentRequest(manifest, 'tasks', nativeDetails);
+  nativeHistoryUpdatedAt = '2026-08-02';
+  const afterProgress = await agentRequest(manifest, 'tasks', { ...nativeDetails, offset: beforeProgress.nextOffset, snapshot: beforeProgress.snapshot });
+  assert.equal(afterProgress.snapshot, beforeProgress.snapshot);
+  assert.equal(afterProgress.nativeJobs[0].job_id, 'native-history-001');
   const httpPage = await (await fetch(base + '/v1/tasks?limit=200')).json();
   const httpOlder = await (await fetch(base + `/v1/tasks?limit=200&offset=${httpPage.nextOffset}&snapshot=${httpPage.snapshot}`)).json();
   assert.equal(httpPage.tasks.length + httpOlder.tasks.length, httpPage.total);
@@ -536,6 +543,7 @@ try {
   await assert.rejects(listTaskPage(manifest, { snapshot: 'stale' }), /历史已变化/);
   await assert.rejects(agentRequest(manifest, 'tasks', { offset: -1 }), /offset/);
   await assert.rejects(agentRequest(manifest, 'tasks', { snapshot: 'stale' }), /历史已变化/);
+  await verifyLiveTaskDetails(task, base);
   // Archive only hides history. The index file is never parsed as a task, and
   // exact source/history links and downloadable assets still work afterwards.
   const prior = await agentRequest(manifest, 'assets', { limit: 100 });
@@ -617,4 +625,65 @@ try {
   bridge?.kill();
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
+}
+
+async function verifyLiveTaskDetails(task, base) {
+  const cursorQuery = { detail: true, capabilityId: 'image-assets', query: 'cursor-test', limit: 1 };
+  const earlier = await task('cursor-test-b', 'image-assets', { name: 'earlier' }, {}, '2026-01-01');
+  const later = await task('cursor-test-a', 'image-assets', { name: 'later' }, {}, '2026-03-01');
+  const listDetailed = arguments_ => client.callTool({ name: 'workbench_list_tasks', arguments: { ...cursorQuery, ...arguments_ } });
+  const first = (await listDetailed({})).structuredContent;
+  assert.equal(first.tasks[0].id, later.id);
+  const token = 'private-lease-fixture';
+  const running = { ...earlier, updatedAt: '2026-02-01', status: 'running',
+    execution: { taskId: earlier.id, phase: 'submitting', owner: { token, pid: process.pid } },
+    adapter: { progress: 2, backgroundToken: token } };
+  await persistTask(manifest, running);
+  const second = await listDetailed({ offset: first.nextOffset, snapshot: first.snapshot });
+  const detailed = second.structuredContent.tasks[0];
+  assert.equal(second.structuredContent.snapshot, first.snapshot);
+  assert.deepEqual([detailed.id, detailed.status, detailed.adapter.progress], [earlier.id, 'running', 2]);
+  assert(!('owner' in detailed.execution));
+  const statusArgs = ['scripts/workbench.mjs', 'status', earlier.id, '--detail', '--json'];
+  const cli = JSON.parse(execFileSync(process.execPath, statusArgs, { cwd: repositoryRoot, encoding: 'utf8' }));
+  const get = await client.callTool({ name: 'workbench_get_task', arguments: { taskId: earlier.id, detail: true } });
+  const urls = [`/v1/tasks/${earlier.id}?detail=true`, `/v1/tasks?query=${earlier.id}&detail=true`, `/v1/tasks?query=${earlier.id}`];
+  const [single, list, compact] = await Promise.all(urls.map(async url => {
+    const response = await fetch(base + url);
+    assert.equal(response.status, 200);
+    return response.json();
+  }));
+  for (const row of [cli, get.structuredContent.task, single.task, list.tasks[0]]) {
+    assert.equal(row.id, earlier.id);
+    assert.equal(row.execution.owner, undefined);
+    assert.equal(row.adapter.backgroundToken, undefined);
+  }
+  assert(!JSON.stringify([second, get, cli, single, list, compact]).includes(token));
+  let stop = false;
+  let checkpoints = 0;
+  async function writeCheckpoints() {
+    while (!stop) {
+      checkpoints++;
+      await persistTask(manifest, { ...running,
+        updatedAt: new Date(Date.UTC(2026, 1, 1) + checkpoints).toISOString(),
+        adapter: { ...running.adapter, progress: checkpoints },
+      });
+    }
+  }
+  const writer = writeCheckpoints();
+  try {
+    for (let i = 0; i < 10; i++) {
+      const page = await listDetailed({ offset: first.nextOffset, snapshot: first.snapshot });
+      assert.equal(page.structuredContent?.tasks[0]?.id, earlier.id, JSON.stringify(page.content));
+      assert.equal(page.structuredContent.snapshot, first.snapshot);
+    }
+  } finally {
+    stop = true;
+    await writer;
+  }
+  assert(checkpoints > 1);
+  await persistTask(manifest, { ...earlier, updatedAt: '2026-04-01' });
+  const reordered = await listDetailed({ offset: first.nextOffset, snapshot: first.snapshot });
+  assert.equal(reordered.isError, true);
+  assert.match(reordered.content[0].text, /制作历史已变化/);
 }

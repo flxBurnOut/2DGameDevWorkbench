@@ -201,7 +201,12 @@ const server = http.createServer(async (request, response) => {
           response.writeHead(200,{'content-type':'application/zip','cache-control':'no-store','content-length':prepared.bytes.length});response.end(prepared.bytes);return;
         }
         throw new Error('Unknown game export action.');
-      } catch(error) {sendJson(response,error.status || (error.code==='ENOENT' ? 404 : 400),{error:error.message});}
+      } catch (error) {
+        sendJson(response, error.status || (error.code === 'ENOENT' ? 404 : 400), {
+          error: error.message,
+          ...(error.status && error.code ? { code: error.code } : {}),
+        });
+      }
       return;
     }
     if (url.pathname.startsWith('/v1/assets/packages/')) {
@@ -539,6 +544,11 @@ async function sendArtifact(response, requestedPath) {
   const relative = path.relative(outputRoot, resolved);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     sendJson(response, 403, { error: 'Artifact path is outside outputs/.' });
+    return;
+  }
+  // Runtime recovery files can contain the active worker's private lease.
+  if (/^\.(?:background-lease|task-publication)\.json(?:\.|$)/i.test(path.basename(resolved))) {
+    sendJson(response, 403, { error: 'This file is reserved for task recovery.' });
     return;
   }
   const info = await stat(resolved);

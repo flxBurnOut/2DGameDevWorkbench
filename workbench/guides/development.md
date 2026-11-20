@@ -47,4 +47,8 @@ Windows 上运行会启动 Python 子进程的 Node 回归前，设置 `$env:PYT
 
 任务执行使用 `task-runtime.mjs`，清单与路径使用 `workbench-manifest.mjs`。内部调用按领域导入；`runtime.mjs` 保留公共导出。运行 `node tests/task-isolation/dependency-graph.mjs` 检查生产静态依赖环。任务目录性能可用 `node tests/task-isolation/benchmark.mjs 1000 128 25` 重测，参数依次为记录数、每条载荷 KiB、归档百分比。
 
-向论文分支推送会运行 Linux 功能门禁和 Python 3.11 / 3.13 API-only 回归。在推送顶端提交说明中加入 `[platform-ci]` 或手动运行 CI，可追加 Linux、macOS、Windows 的完整原生测试、Web 启动、代理、离线 Agent 接入和任务历史基准。
+运行 `node tests/task-isolation/history-stress.mjs 128 500 0` 可复测任务记录原子替换时的列表覆盖率和归档预检。三个参数可省略，默认依次为 128 KiB 载荷、500 轮和 0 秒。每轮执行一次列表查询和一次归档预检。0 秒表示连续查询，指定正数时会把调用分布在该时长内，执行较慢时继续完成指定轮数。脚本使用系统临时目录和独立写入进程，输出原子替换总数、查询期间的替换数、两类调用次数、覆盖不完整次数和归档拒绝次数。未观测到查询期间的替换、覆盖不完整或预检拒绝时，脚本返回非零状态。
+
+向论文分支推送时，Linux CI 使用最低支持版本 Node 22.13.0 和 Node 24，分别通过 `npm ci --engine-strict` 安装锁定依赖并运行工作台功能门禁。调整 `package.json` 的最低 Node 版本时同步更新 CI 矩阵。
+
+每次推送也会运行 Python 3.11 / 3.13 API-only 回归。在推送顶端提交说明中加入 `[platform-ci]` 或手动运行 CI，可追加 Linux、macOS、Windows 的完整原生测试、Web 启动、代理、离线 Agent 接入和任务历史基准。

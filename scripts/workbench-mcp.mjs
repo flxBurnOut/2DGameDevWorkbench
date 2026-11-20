@@ -381,7 +381,7 @@ const discoveryTools = [
       limit: z.number().int().min(1).max(200).optional(),
       offset: z.number().int().min(0).optional(),
       snapshot: z.string().max(2000).optional(),
-      detail: z.boolean().optional().describe('Include full saved task input for each row.'),
+      detail: z.boolean().optional().describe('Include full task inputs. Detail pages follow the ordered matches across checkpoints. A row updated during its read has detailChanged:true.'),
     },
   ],
   [

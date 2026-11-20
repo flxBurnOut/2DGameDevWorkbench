@@ -9,7 +9,9 @@ import {
   writeFile,
   readFile,
   readdir,
+  rmdir,
   symlink,
+  unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -414,17 +416,29 @@ test('HTTP rejects unauthenticated project writes and exposes remembered setting
       ).status,
       200,
     );
-    const response = await fetch(url + '/v1/game-export/deliver', {
+    const deliver = projectPath => fetch(url + '/v1/game-export/deliver', {
       method: 'POST',
       headers: {
         'content-type': 'application/zip',
         'x-forge-game-token': settings.token,
-        'x-forge-project': encodeURIComponent(game),
+        'x-forge-project': encodeURIComponent(projectPath),
       },
       body: object.bytes,
     });
+    const response = await deliver(game);
     assert.equal(response.status, 200);
     assert.equal((await response.json()).kind, 'interactable');
+
+    const blockedGame = path.join(sandbox, 'blocked-delivery');
+    const inbox = path.join(blockedGame, 'forge_imports');
+    await mkdir(path.join(inbox, '.gitignore'), { recursive: true });
+    await writeFile(path.join(blockedGame, 'project.godot'), config);
+    const blocked = await deliver(blockedGame);
+    assert.equal(blocked.status, 409);
+    const failure = await blocked.json();
+    assert.equal(failure.code, 'INSTALL_LOCK_IGNORE_UNAVAILABLE');
+    assert.match(failure.error, /forge_imports\/\.gitignore.*普通文件.*权限.*仅下载 ZIP/);
+    assert.equal((await readdir(inbox)).some(name => /^(?:install\.lock|delivery-)/.test(name)), false);
   } finally {
     child.kill();
     await new Promise(r=>pipeline.close(r));
@@ -456,6 +470,26 @@ test('MCP discovers all delivery tools and verifies the same delivery through st
     });
     assert.equal(result.isError, undefined);
     assert.equal(result.structuredContent.project.path, game);
+
+    const { packageSha256, deliveryRevision, inspection } = result.structuredContent;
+    const ignore = path.join(game, 'forge_imports', '.gitignore');
+    const existing = await readFile(ignore);
+    await unlink(ignore);
+    await mkdir(ignore);
+    try {
+      const blocked = await client.callTool({
+        name: 'workbench_install_game_export',
+        arguments: { deliveryId: delivery.deliveryId, packageSha256, deliveryRevision, projectRevision: inspection.projectRevision },
+      });
+      assert.equal(blocked.isError, true);
+      const failure = blocked.structuredContent.error;
+      assert.equal(failure.status, 409);
+      assert.equal(failure.code, 'INSTALL_LOCK_IGNORE_UNAVAILABLE');
+      assert.match(failure.message, /forge_imports\/\.gitignore.*普通文件.*权限.*仅下载 ZIP/);
+    } finally {
+      await rmdir(ignore);
+      await writeFile(ignore, existing);
+    }
   } finally {
     await client.close();
   }

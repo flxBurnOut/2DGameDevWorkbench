@@ -1,6 +1,6 @@
 # 系统架构
 
-本文描述 `paper-vbyc` 分支的当前实现，核对基准为 `48deac3`，更新于 2026-11-17。实施历史与验收记录见[论文分支执行计划](论文分支执行计划.md)和[工程问题清单](问题清单/README.md)。
+本文描述 `paper-vbyc` 分支的当前实现，本轮架构复验始于 2026-11-19。实施历史与验收记录见[论文分支执行计划](论文分支执行计划.md)和[工程问题清单](问题清单/README.md)。
 
 Forge 是本地优先的资产制作工作台：Node 负责接入、任务适配、共享编辑与交付，Python SpritePipeline 负责原图服务、动画生产、检查点与备选，并调用独立打包的 PixelProp 做物品图像素化转换。当前分支保留角色与交互物序列帧、物品图片、局部调整、交互物编辑和 Godot 交付；地图拼接、场景组装、场景协作、地图分层及可站面原型保留在 `new-arch`，不属于本分支运行架构。
 
@@ -17,7 +17,7 @@ flowchart TB
         Web["Web 工作台 · 3000<br/>React 19 + Vinext / Vite"]
         Entry["STDIO MCP / CLI"]
         Bridge["HTTP Bridge · 8790<br/>共享文档与图片会话的写入权威"]
-        Core["共用业务模块，按入口加载<br/>agent-api · runtime · adapters"]
+        Core["共用业务模块，按入口加载<br/>agent-api · task-runtime · adapters"]
         Web -->|"工作台 Web API"| Bridge
         Entry -->|"任务调用"| Core
         Entry -->|"共享编辑请求"| Bridge
@@ -39,7 +39,7 @@ flowchart TB
     Web --> Drafts[("浏览器草稿 · IndexedDB")]
 ```
 
-图中端口是本地默认值，箭头表示调用或持久化；虚线表示可选辅助处理。`agent-api.mjs`、`runtime.mjs` 和适配器是共用代码模块，不是额外的常驻服务。MCP 随客户端启动，CLI 按次运行。
+图中端口是本地默认值，箭头表示调用或持久化；虚线表示可选辅助处理。`agent-api.mjs`、`task-runtime.mjs` 和适配器是共用代码模块，不是额外的常驻服务。MCP 随客户端启动，CLI 按次运行。
 
 `npm run dev` 由 [scripts/dev.mjs](../scripts/dev.mjs) 启动或复用三个服务：
 
@@ -57,6 +57,8 @@ flowchart TB
 
 `npm run dev:interactable` 仍启动 Web 与 Bridge，但不启动 SpritePipeline。配置非默认 Bridge 地址时总控不接管该服务；`SPRITE_PIPELINE_API_URL` 指向非默认或非回环地址时，SpritePipeline 由外部维护。托管 Web 页面不会自动获得开发者电脑上的本地服务，远程使用需要单独部署经过认证与访问控制的服务。详见[使用与操作手册](operations-manual.md)。
 
+本机 Web、CLI 与 MCP 的共享编辑客户端按工作区配对。新客户端先核对 Bridge 健康响应的服务名、协议版本和工作区指纹，随后通过专用路由发送请求。可在远端代理部署填写 `WORKBENCH_RUNTIME_WORKSPACE_ID` 指定预期工作区。指纹取自规范化仓库路径的 SHA-256，服务迁移时需重新核对。SpritePipeline 可选 API-only 安装与启动。
+
 ## 2. 模块分层与能力来源
 
 | 层 | 主要位置 | 职责 |
@@ -64,7 +66,7 @@ flowchart TB
 | Agent 指导 | MCP discovery、`.agents/skills/`、`workbench/guides/` | 能力选择、主题路由、制作与工程交接规则 |
 | 能力与配置清单 | [workbench/manifest.json](../workbench/manifest.json) | 能力 ID、输入 schema、连接器、产物、页面路由、工作流与数据目录 |
 | 接入层 | `scripts/workbench-mcp.mjs`、`scripts/workbench.mjs`、`scripts/workbench-http.mjs`、`app/api/workbench/` | STDIO MCP、CLI、HTTP 与 Web 代理 |
-| 共用业务层 | [agent-api.mjs](../lib/workbench/agent-api.mjs)、[runtime.mjs](../lib/workbench/runtime.mjs)、`lib/workbench/adapters/` | Agent 操作分派、任务校验与持久化、适配器执行和异步恢复 |
+| 共用业务层 | [agent-api.mjs](../lib/workbench/agent-api.mjs)、[task-runtime.mjs](../lib/workbench/task-runtime.mjs)、`lib/workbench/adapters/` | Agent 操作分派、任务校验与持久化、适配器执行和异步恢复 |
 | Web 外壳与交互层 | `components/workbench/`、`components/ui/`、`app/interaction.css`、`app/theme-tokens.css` | 统一顶栏与首页、制作记录与帮助、交互状态（悬停、按下、选中、禁用、加载、焦点）、Toast 与 Tooltip、主题变量 |
 | Web 编辑层 | `app/`、`components/`、`features/` | 页面、图形交互、播放、检查、草稿和共享编辑同步 |
 | 动画生产层 | `Tools/SpritePipeline/sprite_pipeline/`，开放动作位于 `collaboration/` | 对象、规划、生成、技术 QA、复核、检查点、修正、派生素材与导出 |
@@ -115,6 +117,8 @@ runtime 的主要状态为：
 - `failed`：本次操作失败，保留可报告的错误与证据。
 
 `prepareTask` 不执行制作；`runConnector` 先保存任务身份再调用适配器；查询通过 refresh 更新同一上游任务，不重新提交生成。异步后台执行还保留租约与恢复信息，未知提交不自动重发。runtime 只接纳该任务输出目录内的声明产物。
+
+任务正文与按哈希校验的发布记录提供重启恢复依据。付费调用前浏览器保存命令身份，发布失败后先核验原回执或已保存的产物。任务目录旁的 `.summaries-v1/` 保存可重建摘要。分页先核对文件代次、归档集合与查询快照，稳定轮询仅读摘要。损坏记录以 `coverage.unavailableTaskIds` 暴露；部分覆盖时归档操作会中止。删除摘要可重建视图。旧调用方仍可从 `runtime.mjs` 导入公共函数。
 
 ## 4. 动画生产与检查点
 
@@ -246,6 +250,8 @@ Web 合并展示 runtime task、原生 Job 与浏览器草稿，提供图形编�
 `tracking.py` 和本地 worker 绑定同一作品、候选、阶段、真实帧与结构，`tracking_observation.py` 可补充稀疏关键帧观察，未知区域与关系继续保持未知。`temporal_review_service.py` 另存结构辅助意见，`structure_judgment.py` 校验要求与建议来源；观察不会自动改变作品审批或成为姿态控制。结构格式、复核协议和模型传输按冻结版本兼容，GET、恢复与草稿修改不触发新模型调用。详见[角色视觉结构](visual-structures.md)。
 
 `collaboration/experiment.py` 将作品方案冻结为实验协议，让对照组与完整方法共用实际提示词、帧数、种子和末帧条件。不经检查点的组别在流程外回放；需要检查点的组别建立带实验标记的作品副本，模型验证组使用流程内复核与明确的自动裁决规则。`experiment_policy.py` 仅限制实验副本的可用修正工具，不改原始作品。工具还提供只读作业清点、开放动作/旧版作业回顾性导出和匿名播放包；保留调用、未知费用及显式填写的人工秒数，把被叫停的运行计入包外对应表的分母，来源映射留在包外。现有模拟与归档回归不代表四组真实效果实验已完成。详见[实验支撑](motion-experiments.md)。
+
+原生任务提交和恢复位于 `job_execution.py`，候选产物检查与物化位于 `candidate_artifacts.py`。开放动作以持久的执行授权和绑定的 Job 恢复，版本命令回执分别保存生效版本与当前版本。段预览使用版本化清单核对所选帧，批准与导出仍完整核验。论文对照使用冻结提示、原始返回帧及统一的额外姿势帧规则，历史协议继续按原版本解释。
 
 ## 10. 实现状态与验证边界
 

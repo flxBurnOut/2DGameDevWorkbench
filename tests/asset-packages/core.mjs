@@ -12,7 +12,7 @@ import { buildGodotPackage } from '../../features/interactable-editor/godot-buil
 import { repositoryRoot } from '../../lib/workbench/runtime.mjs';
 import { ASSET_PACKAGE_LIMITS } from '../../lib/workbench/asset-package-contract.mjs';
 import { inspectAssetPackage, commitAssetPackages, readAssetPackagePreview, readAssetPackageCommit } from '../../lib/workbench/asset-packages.mjs';
-import { assetPackageDirectories, assetPackageHash as sha, listImportedAssets, resolveImportedAssetFile, withAssetPackageCommitLock } from '../../lib/workbench/asset-packages-store.mjs';
+import { assetPackageDirectories, assetPackageHash as sha, listImportedAssets, readImportedAsset, resolveImportedAssetFile, withAssetPackageCommitLock } from '../../lib/workbench/asset-packages-store.mjs';
 import { readBoundedAssetZip } from '../../lib/workbench/asset-packages-zip.mjs';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'forge-package-core-'));
@@ -66,6 +66,32 @@ try {
   const reused = await commit(inspection, 'mixed-again', { animation: { loop: false }, interactable: { definitionIds: [project.objects[0].definitionId] } });
   assert.equal(reused.importedCount, 0); assert.equal(reused.reusedCount, 4);
   for (const record of await listImportedAssets(root, manifest)) for (const file of record.files) assert.equal(sha(await readFile(await resolveImportedAssetFile(root, record, file.path, manifest))), file.sha256);
+  const [firstAsset] = await listImportedAssets(root, manifest);
+  const batchRoot = path.join(assetPackageDirectories(root, manifest).persistent, 'batches');
+  const stray = path.join(batchRoot, '0'.repeat(64));
+  const unknownAsset = 'imported:' + '0'.repeat(32);
+  await writeFile(stray, 'An unrelated file, not a batch.');
+  assert.deepEqual(await readImportedAsset(root, firstAsset.id, manifest), firstAsset);
+  assert.deepEqual(await readImportedAsset(root, firstAsset.id, manifest, firstAsset.storageBatchKey), firstAsset);
+  assert.equal(await readImportedAsset(root, unknownAsset, manifest), null);
+  assert.equal((await listImportedAssets(root, manifest)).length, 4);
+  await rm(stray);
+  const vanishedBatch = path.join(batchRoot, '1'.repeat(64));
+  await mkdir(vanishedBatch);
+  await assert.rejects(readImportedAsset(root, unknownAsset, manifest), { code: 'ENOENT' });
+  const realReadPath = fs.realpath;
+  let vanished = false;
+  fs.realpath = async (file, options) => {
+    if (file === path.join(vanishedBatch, 'commit.json')) {
+      await rm(vanishedBatch, { recursive: true });
+      vanished = true;
+    }
+    return realReadPath(file, options);
+  };
+  syncBuiltinESMExports();
+  try { assert.equal(await readImportedAsset(root, unknownAsset, manifest), null); }
+  finally { fs.realpath = realReadPath; syncBuiltinESMExports(); }
+  assert.equal(vanished, true);
 
   // Source wrappers restore one logical asset and retain original Godot bytes.
   const objectGodot = (await buildGodotPackage({ project }, { repositoryRoot })).bytes;

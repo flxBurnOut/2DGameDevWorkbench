@@ -4,13 +4,21 @@ import tempfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 from sprite_pipeline.api_app import create_api
 from sprite_pipeline.asset_catalog import AssetCatalog
+from sprite_pipeline.collaboration.derived_assets import DerivedAssets
 from sprite_pipeline.service import SpritePipelineService
 from test_harness_integration import TemporaryHarness
+from test_interactable_state_chain import chain, decide  # noqa: F401
+
+
+def deny_inventory(*_args, **_kwargs):
+    raise AssertionError('a single-asset lookup must not enumerate the catalog')
 
 
 def test_list_reports_exact_original_mime_without_using_preview_format(tmp_path):
@@ -23,7 +31,7 @@ def test_list_reports_exact_original_mime_without_using_preview_format(tmp_path)
         rows.append(dict(id=f'character:{extension}', kind='character', title=extension,
                          fallback=str(source), source=str(preview), updated_at='test', status_label='saved'))
     catalog = AssetCatalog(SimpleNamespace(list_jobs=lambda **_kwargs: [], settings=SimpleNamespace(data_root=tmp_path)))
-    catalog.library = SimpleNamespace(list_artworks=lambda: rows, preview_source=lambda row: Path(row['source']))
+    catalog.library = SimpleNamespace(list_artworks=lambda *, jobs: rows, preview_source=lambda row: Path(row['source']))
     listed = catalog.list()['assets']
     assert [row['primaryMime'] for row in listed] == ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
     assert all(row['previewKind'] == 'animation' for row in listed)
@@ -46,7 +54,15 @@ def test_inventory_exact_candidate_and_files_are_read_only():
         assert selected['frameCount'] == 4
         client = TestClient(create_api(service=service))
         assert client.get('/v1/artworks').json()['data']['assets'] == rows
-        detail = client.get('/v1/artworks/' + selected['id']).json()['data']['asset']
+        with patch.object(AssetCatalog, 'list', side_effect=deny_inventory), \
+             patch.object(service, 'list_jobs', side_effect=deny_inventory), \
+             patch.object(service.presets, 'list_characters', side_effect=deny_inventory):
+            detail = client.get('/v1/artworks/' + selected['id']).json()['data']['asset']
+            for character in (row for row in rows if row['kind'] == 'character'):
+                item = client.get('/v1/artworks/' + character['id']).json()['data']['asset']
+                assert {key: item[key] for key in character} == character
+                assert all(hashlib.sha256(Path(f['path']).read_bytes()).hexdigest() == f['sha256'] for f in item['files'])
+        assert {key: detail[key] for key in selected} == selected
         assert detail['width'] == 64 and detail['height'] == 64
         assert detail['fps'] == job.action.fps
         assert detail['loop'] is job.action.loop
@@ -58,10 +74,16 @@ def test_inventory_exact_candidate_and_files_are_read_only():
         image = client.get('/v1/artworks/file', params={'asset_id': selected['id'], 'key': 'frame-1'})
         assert image.status_code == 200
         assert hashlib.sha256(image.content).hexdigest() == frame['sha256']
+        with patch.object(service, 'get_job', side_effect=deny_inventory):
+            preview = client.get('/v1/artworks/file', params={'asset_id': selected['id'], 'key': 'preview'})
+            assert preview.status_code == 200
+            assert hashlib.sha256(preview.content).hexdigest() == next(
+                f['sha256'] for f in detail['files'] if f['key'] == 'preview')
         assert client.get('/v1/artworks/file', params={'asset_id': selected['id'], 'key': '../../config/credentials.json'}).status_code == 404
         assert client.get('/v1/artworks/' + f'animation:{job.job_id}:1').status_code == 404
         Path(frame['path']).unlink()
-        missing = catalog.detail(selected['id'])
+        with patch.object(catalog, 'list', side_effect=deny_inventory):
+            missing = catalog.detail(selected['id'])
         assert next(f for f in missing['files'] if f['key'] == 'frame-1')['available'] is False
         assert service.get_job(job.job_id).model_dump_json() == before
 
@@ -94,7 +116,9 @@ def test_archiving_history_preserves_artwork_details_and_downloads(tmp_path):
     reopened = SpritePipelineService(tmp_path)
     assert reopened.list_jobs() == []
     catalog = AssetCatalog(reopened)
-    assert catalog.detail(asset_id) == before
+    with patch.object(catalog, 'list', side_effect=deny_inventory), \
+         patch.object(reopened, 'list_jobs', side_effect=deny_inventory):
+        assert catalog.detail(asset_id) == before
     assert catalog.file(asset_id, 'frame-1').read_bytes() == frame
     assert reopened.get_job(job.job_id).model_dump_json() == job_bytes
 
@@ -125,3 +149,30 @@ def test_original_frames_and_godot_export_have_separate_verified_playback(tmp_pa
     sheet.write_bytes(sheet.read_bytes() + b'changed')
     assert len(catalog.detail(f'animation:{job.job_id}:1')['animationRepresentations']) == 1
     assert service.get_job(job.job_id).model_dump_json() == before
+
+
+@pytest.mark.parametrize('chain', ['catalog'], indirect=True)
+def test_exact_state_transition_and_derived_details_match_list_projection(chain):
+    service, work, engine, provider, client = chain
+    decide(client, 0, 'accept', 2)
+    engine.advance(work.job_id, provider, wait=True)
+    decide(client, 1, 'accept')
+    response = client.post('derived', json={'expected_revision': 1, 'candidate_index': 1, 'request_key': 'catalog-exact-reverse',
+                                           'method': 'reverse', 'stage_index': 0})
+    assert response.status_code == 200, response.text
+    derived = response.json()['derived']
+    result = client.post(f"derived/{derived['id']}/decision",
+                         json={'token': derived['token'], 'decision': 'accept', 'note': '逐帧检查通过', 'played': True})
+    assert result.status_code == 200, result.text
+    catalog = AssetCatalog(service)
+    rows = [row for row in catalog.list()['assets'] if row.get('motionSource')]
+    assert {row['id'].split(':')[0] for row in rows} == {'motion-state', 'motion-transition', 'motion-derived'}
+    with patch.object(catalog, 'list', side_effect=deny_inventory), \
+         patch.object(service, 'list_jobs', side_effect=deny_inventory), \
+         patch.object(DerivedAssets, 'catalog_rows', side_effect=deny_inventory):
+        for row in rows:
+            detail = catalog.detail(row['id'])
+            assert {key: detail[key] for key in row} == row
+            for file in detail['files']:
+                data = catalog.file(row['id'], file['key']).read_bytes()
+                assert file['bytes'] == len(data) and file['sha256'] == hashlib.sha256(data).hexdigest()

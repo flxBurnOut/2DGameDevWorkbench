@@ -64,6 +64,7 @@ nativeAssets.push({
   status: 'saved',
   hasArtwork: true,
 });
+let inventoryRequests = 0;
 const server = createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
   if (offline) {
@@ -79,6 +80,7 @@ const server = createServer((req, res) => {
     return;
   }
   if (req.url === '/v1/artworks') {
+    inventoryRequests++;
     res.end(JSON.stringify({ data: { assets: nativeAssets, issues: [] } }));
     return;
   }
@@ -289,11 +291,13 @@ try {
   assert.deepEqual(door.history.map((h) => h.operation), ['export-godot', 'save-project']);
   assert(!door.files.some((f) => f.name.endsWith('.zip')), 'saving newer source must not retain an obsolete export');
   assert.deepEqual((await readdir(taskDirectory)).sort(), before.sort());
+  const beforePreview = inventoryRequests;
   assert(
     (
       await readAssetPreview(manifest, 'reference:reference-original')
     ).bytes.equals(png),
   );
+  assert.equal(inventoryRequests, beforePreview, 'A single task preview must not inventory the native catalog');
   const archiveIds = [
     'reference:reference-original',
     'character:transferred',

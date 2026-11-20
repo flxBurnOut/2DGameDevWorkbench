@@ -1,6 +1,6 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
@@ -10,7 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createProject, createObject } from '../../features/interactable-editor/contract.mjs';
 import { parseDocumentMediaReference } from '../../features/editor-documents/media-references.mjs';
-import { applyDocumentCommands, createDocument, getDocument, listDocuments, restoreDocument, saveDocument, documentDirectory, validateDocument, simulateDocument } from '../../lib/workbench/editor-documents.mjs';
+import { applyDocumentCommands, createDocument, getDocument, getMotionBindings, listDocuments, restoreDocument, saveDocument, documentDirectory, validateDocument, simulateDocument } from '../../lib/workbench/editor-documents.mjs';
 
 const testRoot = path.resolve('work/test-runs', process.env.WORKBENCH_TEST_RUN);
 await mkdir(testRoot, { recursive: true });
@@ -74,6 +74,17 @@ try {
   await reject(() => applyDocumentCommands(root, manifest, { documentId: id, expectedRevision: 4, commandId: 'eval', commands: [{ type: 'eval', code: 'process.exit()' }] }));
   const current = await getDocument(root, manifest, { documentId: id });
   check(current.document.revision, 4);
+  const docPath = path.join(documentDirectory(root, manifest), 'document-' + createHash('sha256').update(id).digest('hex').slice(0, 40));
+  const headPath = path.join(docPath, 'head.json');
+  const headBytes = await readFile(headPath, 'utf8');
+  const head = JSON.parse(headBytes);
+  check(head.versions.every(version => version.hasMotionImports === false), true);
+  const indexedBindings = await getMotionBindings(root, manifest, { documentId: id });
+  // A legacy head has no index bits and must reproduce the indexed view by checked replay.
+  for (const version of head.versions) delete version.hasMotionImports;
+  await writeFile(headPath, JSON.stringify(head));
+  check(await getMotionBindings(root, manifest, { documentId: id }), indexedBindings);
+  await writeFile(headPath, headBytes);
   check((await listDocuments(root, manifest, { kind: 'interactable' })).total, 1);
 
   // Importing a local file embeds its bytes, so later file edits never alter history.

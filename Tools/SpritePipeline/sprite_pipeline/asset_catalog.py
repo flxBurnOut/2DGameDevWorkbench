@@ -13,6 +13,9 @@ from .errors import ConflictError, NotFoundError, ValidationHarnessError
 from .jsonio import inside
 
 
+MOTION_PREFIXES = ('motion-state:', 'motion-transition:', 'motion-derived:')
+
+
 def _image_file_mime(path: Path) -> str | None:
     try:
         with path.open('rb') as source:
@@ -38,52 +41,79 @@ class AssetCatalog:
     def list(self):
         # Use the same durable scope as ArtworkLibrary, including archived jobs.
         summaries = {j["job_id"]: j for j in self.service.list_jobs(include_archived=True)}
-        rows = []
-        for row in self.library.list_artworks():
-            job = summaries.get(row.get("job_id"), {})
-            material = next((m for m in job.get("artworks", []) if m["candidate_index"] == row.get("candidate_index")), {})
-            source = self.library.preview_source(row)
-            rows.append({
-                "id": row["id"], "kind": row["kind"], "title": row["title"],
-                "status": "exported" if material.get("exported") else material.get("status", "saved"),
-                "statusLabel": row["status_label"],
-                "createdAt": job.get("created_at", row.get("created_at")), "updatedAt": row["updated_at"],
-                "availability": "available" if source else "missing",
-                "characterId": row.get("character_id"), "actionId": job.get("action_id"),
-                **({"objectId": job["object_id"], "objectType": job["object_type"]} if job.get("object_id") else {}),
-                "jobId": row.get("job_id"), "candidateIndex": row.get("candidate_index"),
-                "candidateCount": job.get("candidate_count"), "frameCount": material.get("frame_count"),
-                "previewKind": "animation" if source and source.suffix.lower() == ".gif" else "image",
-                "hasArtwork": True, "engineValidated": False,
-                **({"primaryMime": _image_file_mime(Path(row['fallback']))} if row['kind'] in ('character', 'prop') else {}),
-            })
-        for job in summaries.values():
-            for saved in job.get("state_assets", []):
-                row = saved.copy()
-                path = self.service.store.resolve_job_path(job['job_id'], row.pop('previewPath'))
-                rows.append(dict(row, status='approved', statusLabel='已确认状态图' if row['kind'] == 'prop' else '已确认过渡',
-                                 createdAt=job['created_at'], updatedAt=job['updated_at'], previewKind='image',
-                                 **({'primaryMime': _image_file_mime(path)} if row['kind'] == 'prop' else {}),
-                                 availability='available' if path.is_file() else 'missing', hasArtwork=True))
+        rows = [self._artwork_row(row, summaries.get(row.get("job_id"), {}))
+                for row in self.library.list_artworks(jobs=summaries.values())]
+        rows.extend(self._state_row(saved, job) for job in summaries.values() for saved in job.get("state_assets", []))
         from .collaboration.derived_assets import DerivedAssets
         rows.extend(DerivedAssets(self.service).catalog_rows())
         return {"assets": rows, "issues": [{"source": "sprite-pipeline", "message": "部分作业摘要损坏，作品目录可能不完整。"}] if any(j.get("status") == "invalid" for j in summaries.values()) else []}
 
+    def _artwork_row(self, row, job):
+        material = next((m for m in job.get("artworks", []) if m["candidate_index"] == row.get("candidate_index")), {})
+        source = self.library.preview_source(row)
+        return {
+            "id": row["id"], "kind": row["kind"], "title": row["title"],
+            "status": "exported" if material.get("exported") else material.get("status", "saved"),
+            "statusLabel": row["status_label"],
+            "createdAt": job.get("created_at", row.get("created_at")), "updatedAt": row["updated_at"],
+            "availability": "available" if source else "missing",
+            "characterId": row.get("character_id"), "actionId": job.get("action_id"),
+            **({"objectId": job["object_id"], "objectType": job["object_type"]} if job.get("object_id") else {}),
+            "jobId": row.get("job_id"), "candidateIndex": row.get("candidate_index"),
+            "candidateCount": job.get("candidate_count"), "frameCount": material.get("frame_count"),
+            "previewKind": "animation" if source and source.suffix.lower() == ".gif" else "image",
+            "hasArtwork": True, "engineValidated": False,
+            **({"primaryMime": _image_file_mime(Path(row['fallback']))} if row['kind'] in ('character', 'prop') else {}),
+        }
+
+    def _state_row(self, saved, job):
+        row = saved.copy()
+        path = self.service.store.resolve_job_path(job['job_id'], row.pop('previewPath'))
+        return dict(row, status='approved', statusLabel='已确认状态图' if row['kind'] == 'prop' else '已确认过渡',
+                    createdAt=job['created_at'], updatedAt=job['updated_at'], previewKind='image',
+                    **({'primaryMime': _image_file_mime(path)} if row['kind'] == 'prop' else {}),
+                    availability='available' if path.is_file() else 'missing', hasArtwork=True)
+
     def _motion_asset(self, asset_id):
         if asset_id.startswith('motion-derived:'):
             from .collaboration.derived_assets import DerivedAssets
-            return DerivedAssets(self.service).resolve(asset_id)
+            row, files = DerivedAssets(self.service).resolve(asset_id)
+            if row['id'] != asset_id:
+                raise NotFoundError('未找到所选派生素材')
+            return row, files
         return resolve_asset(self.service, asset_id)
+
+    def _native_motion_detail(self, asset_id):
+        asset = {}
+        if not asset_id.startswith('motion-derived:'):
+            parts = asset_id.split(':')
+            if len(parts) != 4:
+                raise NotFoundError('状态链资产编号无效')
+            summary = self.service.store.job_summary(parts[1])
+            saved = next((row for row in summary.get('state_assets', []) if row['id'] == asset_id), None)
+            if saved is None:
+                raise NotFoundError('所选资产不存在或无法读取')
+            asset = self._state_row(saved, summary)
+        row, registered = self._motion_asset(asset_id)
+        files = []
+        for key, (path, expected) in registered.items():
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise ConflictError('已确认的素材文件发生变化')
+            files.append(dict(key=key, name=path.name, available=True, bytes=path.stat().st_size, sha256=expected))
+        return {**asset, **row, 'files': files}
 
     def paths(self, asset_id):
         row = self.library.get(asset_id)
+        job = self.service.get_job(row["job_id"]) if row["kind"] == "animation" else None
+        return row, self._artwork_paths(row, job)
+
+    def _artwork_paths(self, row, job):
         # Paths are obtained only from durable records and confined by their stores.
         files = {"source": Path(row["fallback"])}
         preview = self.library.preview_source(row)
         if preview:
             files["preview"] = preview
-        if row["kind"] == "animation":
-            job = self.service.get_job(row["job_id"])
+        if job is not None:
             candidate = next(c for c in job.candidates if c.candidate_index == row["candidate_index"])
             files.update({f"frame-{frame.index}": self.service.store.resolve_job_path(job.job_id, frame.active_path) for frame in candidate.frames})
             if job.export and job.export.candidate_index == candidate.candidate_index:
@@ -91,10 +121,10 @@ class AssetCatalog:
                     files[key] = inside(self.service.settings.exports_dir, self.service.settings.resolve_record_path(getattr(job.export, field)))
                 if job.export.godot_package_path:
                     files["godot"] = inside(self.service.settings.exports_dir, self.service.settings.resolve_record_path(job.export.godot_package_path))
-        return row, files
+        return files
 
     def file(self, asset_id, key):
-        if asset_id.startswith(('motion-state:', 'motion-transition:', 'motion-derived:')):
+        if asset_id.startswith(MOTION_PREFIXES):
             _, registered = self._motion_asset(asset_id)
             if key not in registered:
                 raise NotFoundError('状态链资产没有此文件')
@@ -102,8 +132,11 @@ class AssetCatalog:
             if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 raise ConflictError('已确认的素材文件发生变化')
             return path
-        _row, files = self.paths(asset_id)
-        value = files.get(key)
+        if key == 'preview':
+            value = self.library.preview_source(self.library.get(asset_id))
+        else:
+            _row, files = self.paths(asset_id)
+            value = files.get(key)
         if value is None or not value.is_file():
             raise NotFoundError("所选资产文件不存在")
         if value.stat().st_size > 64 * 1024 * 1024:
@@ -111,18 +144,16 @@ class AssetCatalog:
         return value
 
     def detail(self, asset_id):
-        asset = next((a for a in self.list()["assets"] if a["id"] == asset_id), None)
-        if asset is None:
-            raise NotFoundError("所选资产不存在或无法读取")
-        if asset.get('motionSource'):
-            row, registered = self._motion_asset(asset_id)
-            files = []
-            for key, (path, expected) in registered.items():
-                if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-                    raise ConflictError('已确认的素材文件发生变化')
-                files.append(dict(key=key, name=path.name, available=True, bytes=path.stat().st_size, sha256=expected))
-            return {**asset, **row, 'files': files}
-        row, paths = self.paths(asset_id)
+        if asset_id.startswith(MOTION_PREFIXES):
+            return self._native_motion_detail(asset_id)
+        try:
+            row = self.library.get(asset_id)
+        except (OSError, ValueError, ValidationHarnessError) as exc:
+            raise NotFoundError('所选资产不存在或无法读取') from exc
+        job = self.service.get_job(row["job_id"]) if row["kind"] == "animation" else None
+        summary = self.service.store.job_summary(job.job_id) if job is not None else {}
+        asset = self._artwork_row(row, summary)
+        paths = self._artwork_paths(row, job)
         files = []
         for key, file in paths.items():
             entry = {"key": key, "name": file.name, "path": str(file), "available": file.is_file()}
@@ -134,8 +165,7 @@ class AssetCatalog:
                     entry.update(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
             files.append(entry)
         metadata: dict[str, Any] = {}
-        if row["kind"] == "animation":
-            job = self.service.get_job(row["job_id"])
+        if job is not None:
             candidate = next(c for c in job.candidates if c.candidate_index == row["candidate_index"])
             metadata = {
                 "width": job.character.cell_width, "height": job.character.cell_height,

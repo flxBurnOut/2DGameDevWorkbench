@@ -5,6 +5,8 @@ from ..providers.account import AccountSlotBusy
 from ..providers.base import (ImagePayloadError, PollStatus, ProviderRequest,
                               normalize_image_bytes, redact_provider_payload)
 from .drawing_frames import FRAME_NORMALIZATION, playback_indices, validate_drawing_frame
+from .drawing_receipts import poll_error_usage, response_usage
+from .experiment_cost import drawing_cost
 from .experiment_requests import PROTOCOL, freeze_drawing, preflight, sha, verify_protocol
 
 
@@ -79,6 +81,8 @@ class Replay:
                                usage_accounting=drawing['usage_accounting'])
 
     def save(self):
+        if self.version == PROTOCOL:
+            self.ledger['cost'] = drawing_cost([response_usage(call) for call in self.ledger['calls'] if call.get('attempted')])
         atomic_write_json(self.output / 'run.json', self.ledger)
 
     def stop(self, status, kind, reason, **details):
@@ -104,7 +108,7 @@ class Replay:
         request = ProviderRequest(reference_image=first, last_frame=last, prompt=spec['prompt'],
                                   frame_count=spec['count'], seed=spec['seed'],
                                   transparent_background=spec['transparent_background'])
-        call['state'] = 'submitting'
+        call.update(state='submitting', attempted=True)
         self.save()
         try:
             accepted = self.provider.submit(request)
@@ -114,41 +118,42 @@ class Replay:
             # A provider configuration or account gate proves that no POST was sent.
             if isinstance(exc, (ProviderConfigurationError, AccountSlotBusy)):
                 outcome, reason = 'not_submitted', exc.code
+                call['attempted'] = False
             elif details.get('submission_rejected'):
                 outcome, reason = 'provider_failure', 'submission_rejected'
             else:
                 outcome, reason = 'provider_failure', 'submission_unknown'
-            call.update(state=reason, id=upstream_id, error=error_record(exc))
-            if upstream_id:
-                call['usage'] = redact_provider_payload((details.get('response') or {}).get('usage') or {})
+            call.update(state=reason, id=upstream_id, error=error_record(exc),
+                        usage=response_usage(details.get('response')))
             self.stop('interrupted', outcome, reason, stage=spec['stage'])
             raise
         call.update(state='submitted', id=accepted.provider_job_id, started=True,
                     diagnostic_only=accepted.diagnostic_only,
                     submission_receipt=redact_provider_payload(accepted.raw_response),
                     provider_request=redact_provider_payload(accepted.request_record),
-                    usage=redact_provider_payload(accepted.raw_response.get('usage') or {}))
+                    usage=response_usage(accepted.raw_response))
         self.ledger['diagnostic_only'] |= accepted.diagnostic_only
         self.save()
         try:
             result = self.provider.wait(accepted.provider_job_id)
         except Exception as exc:
             call.update(state='provider_outcome_unknown', error=error_record(exc))
+            if isinstance(exc, ProviderError) and exc.details.get('provider_job_id') in (None, accepted.provider_job_id):
+                call['usage'] = poll_error_usage(exc) or call['usage']
             self.stop('interrupted', 'provider_failure', 'poll_interrupted', stage=spec['stage'])
             raise
-        call.update(provider_status=result.provider_status, poll_receipt=redact_provider_payload(result.raw_response),
-                    usage=redact_provider_payload(result.usage) or call['usage'])
+        call.update(provider_status=result.provider_status, poll_receipt=redact_provider_payload(result.raw_response))
         self.ledger['diagnostic_only'] |= result.diagnostic_only
+        if result.provider_job_id != accepted.provider_job_id:
+            call.update(state='provider_failed', response_id=result.provider_job_id)
+            self.stop('interrupted', 'provider_failure', 'provider_job_mismatch', stage=spec['stage'])
+            raise ValueError('provider result belongs to another request')
+        call['usage'] = response_usage({'usage': result.usage}) or response_usage(result.raw_response) or call['usage']
         if result.status != PollStatus.completed:
             call.update(state='provider_failed', error=redact_provider_payload(result.error))
             reason = (result.error or {}).get('code', 'unexpected_provider_status')
             self.stop('interrupted', 'provider_failure', reason, stage=spec['stage'])
             raise ValueError('unexpected provider result; no retry')
-        if result.provider_job_id != accepted.provider_job_id:
-            call.update(state='provider_failed', response_id=result.provider_job_id)
-            self.stop('interrupted', 'provider_failure', 'provider_job_mismatch', stage=spec['stage'])
-            raise ValueError('provider result belongs to another request')
-
         call.update(state='provider_completed', raw_count=len(result.images), frames=[])
         self.save()
         if self.version == 2 and len(result.images) != spec['count']:

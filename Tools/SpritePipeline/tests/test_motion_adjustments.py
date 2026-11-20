@@ -1,7 +1,9 @@
 """Controlled alternatives: user intent, scope, independent costs and adoption."""
 import copy
+import hashlib
 import json
 import uuid
+from dataclasses import replace
 from pathlib import Path
 import pytest
 from test_open_motion import setup, spec, ready
@@ -9,8 +11,11 @@ from test_open_motion_checkpoints import CheckpointPlanner, accept
 from test_production_review import ExpertRegistry
 from sprite_pipeline.collaboration.adjustments import Adjustments, AdjustmentInput, AdjustmentIntent
 from sprite_pipeline.collaboration.execution import PlanGeneration
+from sprite_pipeline.collaboration.experiment import retrospective
 from sprite_pipeline.collaboration.checkpoints import Checkpoints, review_call_count
-from sprite_pipeline.errors import ConflictError, ValidationHarnessError
+from sprite_pipeline.errors import ConflictError, ProviderTemporaryError, ValidationHarnessError
+from sprite_pipeline.providers.base import PollStatus
+from sprite_pipeline.service import SpritePipelineService
 
 
 def test_unlocked_tail_edits_only_selection_and_becomes_next_input_after_acceptance(setup):
@@ -284,6 +289,64 @@ def test_unknown_submission_never_retries_and_record_is_retained(setup):
     with pytest.raises(ConflictError):m.create(w.id,request(m,w))
     m.decide(w.id,t['id'],token=t['source_token'],decision='reject',note='保留原版')
     assert m.load(w.id,t['id'])['generation_calls'][0]['state']=='unknown'
+
+
+@pytest.mark.parametrize('shape', ['extra_frames', 'poll_failure', 'charged_without_id', 'pending_usage'])
+def test_failed_alternative_preserves_charge_and_original_outputs(setup, tmp_path, monkeypatch, shape):
+    service, workspace, provider, work = stage_work(setup)
+    manager = Adjustments(service)
+    task = manager.create(work.id, request(manager, work))
+    submit, poll = provider.submit, provider.poll
+    amount = {'type': 'usd', 'usd': 2.5}
+
+    def charged_submit(request):
+        if shape == 'charged_without_id':
+            provider.requests.append(request)
+            raise ProviderTemporaryError('charged response, missing ID', details={
+                'submission_unknown': True, 'response': {'usage': amount},
+            })
+        return replace(submit(request), raw_response={'usage': {'type': 'usd', 'usd': 1}})
+
+    polls = []
+
+    def returned(identity):
+        polls.append(identity)
+        result = poll(identity)
+        if shape == 'pending_usage' and len(polls) == 1:
+            return replace(result, status=PollStatus.pending, provider_status='processing', images=[], usage=amount)
+        if shape in ('poll_failure', 'pending_usage'):
+            return replace(result, status=PollStatus.failed, provider_status='failed', images=[],
+                           usage=amount if shape == 'poll_failure' else {}, error={'code': 'provider_job_failed'})
+        return replace(result, images=[*result.images, result.images[-1]], usage=amount)
+
+    monkeypatch.setattr(provider, 'submit', charged_submit)
+    monkeypatch.setattr(provider, 'poll', returned)
+    result = manager.advance(work.id, task['id'], provider)
+    if shape == 'pending_usage':
+        assert result['state'] == 'pending' and result['usage'] == amount
+        reopened = SpritePipelineService(service.settings.data_root)
+        result = Adjustments(reopened).advance(work.id, task['id'], provider)
+        assert len(set(polls)) == 1
+    assert len(provider.requests) == 2
+    assert result['state'] == ('unknown' if shape == 'charged_without_id' else 'failed')
+    assert result['usage'] == result['generation_calls'][0]['usage'] == amount
+    if shape == 'extra_frames':
+        assert result['error']['details']['reason'] == 'unexpected_frame_count'
+        assert len(result['raw_frames']) == 5 and not result.get('proposed_frames')
+    if shape == 'charged_without_id':
+        assert result.get('provider_job_id') is None and polls == []
+    else:
+        saved = json.loads((manager.folder(result) / 'provider-result.json').read_bytes())
+        assert saved['usage'] == amount and saved['provider_job_id'] == result['provider_job_id']
+    out = tmp_path / ('alternative-export-' + shape)
+    cost = retrospective(service.store.job_dir(work.job_id), workspace.load(work.id).model_dump(mode='json'),
+                         workspace.directory(work.id) / 'adjustments', out)
+    assert cost['calls']['generation'] == 2 and cost['priced_drawing_calls'] == 1
+    assert cost['known_drawing_usd'] == 2.5
+    archived = json.loads((out / 'retrospective.json').read_bytes())['alternatives'][0]
+    assert archived['usage'] == amount
+    assert [hashlib.sha256((out / f['file']).read_bytes()).hexdigest() for f in archived['original_images']] == [
+        f['sha256'] for f in result.get('raw_frames', [])]
 
 
 def test_frozen_goal_and_proposed_frame_tampering_block_adoption(setup):

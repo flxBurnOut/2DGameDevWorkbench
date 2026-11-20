@@ -7,11 +7,12 @@ import shutil
 from ..errors import ConflictError, HarnessError, ProviderError, ValidationHarnessError
 from ..jsonio import atomic_write_json, read_json
 from ..models import CandidateStatus, utc_now
-from ..providers.base import PollStatus, ProviderRequest
+from ..providers.base import PollStatus, ProviderRequest, redact_provider_payload
 from ..providers.account import AccountSlotBusy, animation_intent_id
 from .checkpoints import Checkpoints, checked_plan
 from .contracts import digest
 from .drawing_frames import validate_drawing_frame
+from .drawing_receipts import poll_error_usage, read_poll_receipt, response_usage
 from .state_chain import transition
 
 
@@ -147,7 +148,7 @@ class PlanGeneration:
                     c.status = CandidateStatus.submission_unknown if unknown else CandidateStatus.failed
                     if isinstance(exc, ProviderError):
                         c.provider_job_id = r.provider_job_id = exc.details.get("provider_job_id")
-                        c.usage = r.usage = (exc.details.get("response") or {}).get("usage") or {}
+                        c.usage = r.usage = response_usage(exc.details.get("response"))
                     c.error = exc.as_dict() if isinstance(exc, ProviderError) else {"code": "submission_unknown", "message": "提交结果未知，不能自动重发"}
                     r.error = c.error; current.plan_control.enabled = False
                     current.plan_control.message = "请核对原请求" if unknown else "生成请求失败，原记录已保留"
@@ -159,7 +160,7 @@ class PlanGeneration:
             with self.store.locked_job(job_id) as current:
                 c = self.candidate(current, index); r = self.validate(current, c)[stage]
                 r.provider_job_id = submission.provider_job_id; r.state = "pending"
-                c.usage = r.usage = submission.raw_response.get("usage") or {}
+                c.usage = r.usage = response_usage(submission.raw_response)
                 c.provider_job_id = submission.provider_job_id; c.provider_status = submission.status
                 c.status = CandidateStatus.provider_pending; c.submitted_at = utc_now()
                 c.diagnostic_only = submission.diagnostic_only; c.error = None
@@ -175,23 +176,39 @@ class PlanGeneration:
         if not run.provider_job_id:
             raise ConflictError("缺少原请求编号，不能自动生成替代结果")
         if not (folder / "frames.json").exists():
-            result = provider.wait(run.provider_job_id) if wait else provider.poll(run.provider_job_id)
+            receipt_path = folder / 'poll-receipt.json'
+            identity = {'version': 1, 'provider_job_id': run.provider_job_id}
+            known = response_usage(read_poll_receipt(receipt_path, run.provider_job_id)) or run.usage
+            try:
+                result = provider.wait(run.provider_job_id) if wait else provider.poll(run.provider_job_id)
+            except ProviderError as exc:
+                if exc.details.get('provider_job_id') in (None, run.provider_job_id):
+                    usage = poll_error_usage(exc) or known
+                    atomic_write_json(receipt_path, {**identity, 'status': 'poll_error',
+                        'usage': usage, 'error': redact_provider_payload(exc.as_dict())})
+                    self._remember_usage(job_id, index, stage, run, usage)
+                raise
+            if result.provider_job_id != run.provider_job_id:
+                raise ConflictError('远端返回的片段请求编号与本次提交不符')
+            usage = response_usage({'usage': result.usage}) or response_usage(result.raw_response) or known
+            if result.status != PollStatus.pending or usage != run.usage:
+                atomic_write_json(receipt_path, {**identity, 'status': result.status.value, 'usage': usage,
+                    'provider_status': result.provider_status, 'response': redact_provider_payload(result.raw_response),
+                    'error': redact_provider_payload(result.error)})
             if result.status == PollStatus.pending:
+                self._remember_usage(job_id, index, stage, run, usage)
                 return False
             if result.status == PollStatus.failed:
                 with self.store.locked_job(job_id) as current:
                     c = self.candidate(current, index); r = self.validate(current, c)[stage]
                     r.state = "failed"; r.error = result.error; c.error = result.error
-                    c.usage = r.usage = result.usage or r.usage
+                    c.usage = r.usage = usage
                     c.status = CandidateStatus.failed; current.plan_control.enabled = False
                     current.plan_control.message = "此片段生成失败，已保留原请求"
                     self.s._refresh_job_status(current)
                 return False
-            atomic_write_json(folder / "poll.response.json", result.raw_response)
             size = (job.character.cell_width, job.character.cell_height)
-            with self.store.locked_job(job_id) as current:
-                c = self.candidate(current, index); r = self.validate(current, c)[stage]
-                c.usage = r.usage = result.usage or r.usage
+            self._remember_usage(job_id, index, stage, run, usage)
             if not 1 <= len(result.images) <= 64:
                 raise ValidationHarnessError("片段返回的帧数无效", details={'reason': 'unexpected_frame_count'})
             manifest = []
@@ -202,7 +219,7 @@ class PlanGeneration:
                     raise ConflictError("远端返回的片段发生变化，已有原始帧保留")
                 self.s._atomic_write_bytes(path, data)
                 manifest.append({"filename": path.name, "sha256": hashlib.sha256(data).hexdigest()})
-            atomic_write_json(folder / "frames.json", {"provider_job_id": run.provider_job_id, "frames": manifest, "usage": result.usage})
+            atomic_write_json(folder / "frames.json", {"provider_job_id": run.provider_job_id, "frames": manifest, "usage": usage})
         frames = self.saved_frames(job_id, index, stage)
         saved = read_json(folder / "frames.json")
         if saved["provider_job_id"] != run.provider_job_id:
@@ -216,6 +233,12 @@ class PlanGeneration:
             current.plan_control.message = "片段已保存，准备检查实际姿势" if checked_plan(job) else "片段已保存，完整动作需人工确认"
             self.s._refresh_job_status(current); current.touch("plan_stage_saved", stage=stage, candidate_index=index)
         return True
+
+    def _remember_usage(self, job_id, index, stage, run, usage):
+        if usage and usage != run.usage:
+            with self.store.locked_job(job_id) as current:
+                c = self.candidate(current, index)
+                c.usage = self.validate(current, c)[stage].usage = usage
 
     def assemble(self, job_id, index):
         job = self.store.load(job_id); c = self.candidate(job, index)

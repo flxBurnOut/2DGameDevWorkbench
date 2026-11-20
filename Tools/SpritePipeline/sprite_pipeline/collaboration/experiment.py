@@ -21,11 +21,13 @@ from pathlib import Path
 from PIL import Image
 
 from ..errors import ConflictError, HarnessError, ValidationHarnessError
-from ..jsonio import atomic_write_json, inside
+from ..jsonio import atomic_write_json, inside, read_json
 from ..models import JobRecord
 from ..providers.fixture import FixtureProvider
 from .checkpoints import review_call_count
 from .contracts import digest
+from .drawing_receipts import read_poll_receipt, response_usage
+from .experiment_cost import drawing_cost, priced_amounts
 from .experiment_policy import REPAIR_POLICIES
 from .experiment_replay import ARMS, run_arm
 from .experiment_requests import PROTOCOL, freeze_drawing, pipeline_prompts, sha, verify_protocol
@@ -358,8 +360,9 @@ def retrospective(job_dir, work, adjustments, out):
     current_protocol = (work.get('experiment') or {}).get('protocol') == PROTOCOL
     out.mkdir(parents=True, exist_ok=False)
 
-    def copy_png(item, name):
-        data = inside(job_dir, job_dir / item['path']).read_bytes()
+    def copy_png(item, name, *, root=job_dir):
+        relative = item['path'] if 'path' in item else item['file']
+        data = inside(root, root / relative).read_bytes()
         if sha(data) != item['sha256']:
             raise ValueError('archive frame hash mismatch')
         (out / name).parent.mkdir(parents=True, exist_ok=True)
@@ -367,7 +370,30 @@ def retrospective(job_dir, work, adjustments, out):
         return {'file': name, 'sha256': item['sha256']}
 
     def receipt_usage(call):
-        return call.get('usage') or (call.get('receipt') or {}).get('usage') or {}
+        usage = response_usage(call) or response_usage(call.get('receipt'))
+        error = call.get('error')
+        if usage or not isinstance(error, dict):
+            return usage
+        return response_usage((error.get('details') or {}).get('response'))
+
+    def optional_record(path):
+        try:
+            return read_json(path)
+        except FileNotFoundError:
+            return {}
+
+    def drawing_record(record, folder, submit_name):
+        identity = record.get('provider_job_id')
+        returned, observed = None, None
+        if identity and folder is not None:
+            returned = read_poll_receipt(folder / 'provider-result.json', identity)
+            observed = read_poll_receipt(folder / 'poll-receipt.json', identity)
+        # One call has several observations. Use the latest bound usage and
+        # fall back to the accepted submission when a poll omits usage.
+        known = response_usage(returned) or response_usage(observed) or receipt_usage(record)
+        if not known and folder is not None:
+            known = response_usage(optional_record(folder / submit_name))
+        return known, returned
 
     rows, timings, drawing_usage, review_usage, tools = [], [], [], [], {}
 
@@ -383,9 +409,10 @@ def retrospective(job_dir, work, adjustments, out):
             folder = f'candidate-{c.candidate_index}/stage-{i}'
             raw = []
             manifest = job_dir / 'provider' / f'candidate_{c.candidate_index:02}.plan' / str(i) / 'frames.json'
-            if manifest.exists():
+            saved_stage = optional_record(manifest)
+            if saved_stage:
                 raw = [{'path': (manifest.parent / f['filename']).relative_to(job_dir).as_posix(), 'sha256': f['sha256']}
-                       for f in json.loads(manifest.read_bytes())['frames']]
+                       for f in saved_stage['frames']]
             reports = [*run.review_history, run.review or {}]
             for report in reports:
                 note_review(report)
@@ -399,13 +426,27 @@ def retrospective(job_dir, work, adjustments, out):
                 level = attempt.get('repair_level') or REPAIR_LEVELS[attempt['mode']]
                 note_tool(level)
                 frames = [copy_png(f, f'{folder}/repair-{n}/{j:03}.png') for j, f in enumerate(attempt.get('proposed_frames', []))]
-                repairs.append({**attempt, 'repair_level': level, 'images': frames})
-                drawing_usage.append(attempt.get('usage', {}))
+                repair_root = inside(job_dir, job_dir / attempt['folder']) if attempt.get('folder') else None
+                usage, returned = drawing_record(attempt, repair_root, 'response.json')
+                inherited = job.request.request_key.startswith('adjustment-') and repair_root is not None and not repair_root.is_dir()
+                raw_entries = [] if inherited else attempt.get('raw_frames', [])
+                raw_frames = [
+                    copy_png(f, f'{folder}/repair-{n}/raw/{f["raw_index"]:03}.png', root=repair_root)
+                    for f in (returned or {}).get('frames', [])
+                ] if returned else [
+                    copy_png(f, f'{folder}/repair-{n}/raw/{j:03}.png') for j, f in enumerate(raw_entries)
+                ]
+                repairs.append({**attempt, 'repair_level': level, 'images': frames, 'usage': usage, 'original_images': raw_frames,
+                                **({'original_archive_unavailable': True} if inherited and attempt.get('raw_frames') else {})})
+                drawing_usage.append(usage)
+            stage_usage = (response_usage(saved_stage) or run.usage)
             if run.submission_attempts:
-                drawing_usage.append(run.usage)
+                stage_usage, _ = drawing_record({'provider_job_id': run.provider_job_id, 'usage': stage_usage, 'error': run.error},
+                                                manifest.parent, 'submit.response.json')
+                drawing_usage.append(stage_usage)
             rows.append({'candidate': c.candidate_index, 'stage': i, 'state': run.state,
                          'raw': [copy_png(f, f'{folder}/raw/{j:03}.png') for j, f in enumerate(raw)],
-                         'provider_job_id': run.provider_job_id, 'usage': run.usage, 'drawing_error': run.error,
+                         'provider_job_id': run.provider_job_id, 'usage': stage_usage, 'drawing_error': run.error,
                          'submitted_attempts': run.submission_attempts,
                          'frame_normalization': (run.accepted or {}).get('frame_normalization'),
                          'accepted': [{**copy_png(f, f'{folder}/accepted/{j:03}.png'), 'raw_index': f.get('raw_index')}
@@ -418,7 +459,7 @@ def retrospective(job_dir, work, adjustments, out):
     alternatives = []
     for path in sorted(adjustments.glob('*/task.json')):
         task = json.loads(path.read_bytes())
-        if task['source_job'] != job.job_id:
+        if job.job_id not in (task['source_job'], task.get('target_job')):
             continue
         media = []
         for i, frame in enumerate(task.get('proposed_frames', [])):
@@ -429,12 +470,26 @@ def retrospective(job_dir, work, adjustments, out):
             (out / name).parent.mkdir(parents=True, exist_ok=True)
             (out / name).write_bytes(data)
             media.append({'file': name, 'sha256': frame['sha256']})
-        alternatives.append({**task, 'exported_frames': media})
+        attempts = task['generation_calls']
+        alternative_usage = []
+        returned = None
+        for i, call in enumerate(attempts):
+            if i == len(attempts) - 1:
+                latest = {**call, 'provider_job_id': call.get('provider_job_id') or task.get('provider_job_id')}
+                latest['usage'] = receipt_usage(call) or receipt_usage(task)
+                known, returned = drawing_record(latest, path.parent, 'provider-response.json')
+            else:
+                known = receipt_usage(call)
+            alternative_usage.append(known)
+        raw = [copy_png(f, f'alternatives/{len(alternatives)}/raw/{f["raw_index"]:03}.png', root=path.parent)
+               for f in (returned or {}).get('frames', task.get('raw_frames', []))]
+        alternatives.append({**task, 'exported_frames': media, 'original_images': raw,
+                             **({'usage': alternative_usage[-1]} if alternative_usage else {})})
         if task.get('repair_level'):
             note_tool(task['repair_level'])
         if task.get('decision_note'):
             timings.append(task.get('human_seconds'))
-        drawing_usage.extend([task.get('usage', {})] * len(task['generation_calls']))
+        drawing_usage.extend(alternative_usage)
 
     calls = {kind: sum(len(t[kind + '_calls']) for t in alternatives) for kind in ('planning', 'generation', 'review')}
     calls['planning'] += len(work.get('planning_calls', []))
@@ -443,26 +498,19 @@ def retrospective(job_dir, work, adjustments, out):
     visual_usage = [*review_usage, *(receipt_usage(x) for x in work.get('planning_calls', [])),
                     *(receipt_usage(x) for t in alternatives for k in ('planning_calls', 'review_calls') for x in t[k])]
 
-    def priced(usages):
-        amounts = [u.get('cost_usd', u.get('usd') if current_protocol and u.get('type') == 'usd' else None)
-                   for u in usages]
-        return [amount for amount in amounts if isinstance(amount, (int, float)) and not isinstance(amount, bool)]
-
-    def units(usages):
-        amounts = [u.get('units', u.get('generations') if current_protocol and u.get('type') == 'generations' else None)
-                   for u in usages]
-        return sum(amount for amount in amounts if isinstance(amount, (int, float)) and not isinstance(amount, bool))
-
     # Keep every native unit. A missing price is unknown, never zero dollars.
-    unpriced = max(0, sum(calls.values()) - len(priced(drawing_usage)) - len(priced(visual_usage)))
+    draws = drawing_cost(drawing_usage)
+    visual_prices = list(priced_amounts(visual_usage))
+    known_total = draws['known_usd'] + sum(visual_prices)
+    unpriced = sum(calls.values()) - draws['priced_calls'] - len(visual_prices)
     cost = {'calls': calls, 'drawing_usage': drawing_usage, 'visual_usage': visual_usage,
             'known_human_seconds': sum(t for t in timings if t is not None),
             'unmeasured_decisions': sum(t is None for t in timings),
             'human_seconds': sum(timings) if timings and None not in timings else None,
-            'known_drawing_units': units(drawing_usage), 'unpriced_calls': unpriced,
-            'known_drawing_usd': sum(priced(drawing_usage)),
-            'known_total_usd': sum(priced(drawing_usage)) + sum(priced(visual_usage)),
-            'total_usd': None if unpriced else sum(priced(drawing_usage)) + sum(priced(visual_usage))}
+            'known_drawing_units': draws['known_units'], 'unpriced_calls': unpriced,
+            'priced_drawing_calls': draws['priced_calls'],
+            'known_drawing_usd': draws['known_usd'], 'known_total_usd': known_total,
+            'total_usd': None if unpriced else known_total}
     result = {
         'job': job.job_id, 'kind': 'open_plan', 'revision': work['revision'], 'experiment': work.get('experiment'),
         'clips': _playback(job, job_dir, out), 'stages': rows, 'alternatives': alternatives,

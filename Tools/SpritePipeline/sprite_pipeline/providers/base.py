@@ -18,11 +18,13 @@ import io
 import time
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable, Mapping, Sequence
 
 from PIL import Image, UnidentifiedImageError
+
+from ..errors import ProviderError
 
 
 DEFAULT_MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -240,10 +242,21 @@ class SpriteProvider(ABC):
         """
 
         deadline = self._monotonic() + self.max_wait_seconds
-        last_result: PollResult | None = None
+        observed_usage: dict[str, Any] = {}
         while True:
-            last_result = self.poll(provider_job_id)
+            try:
+                last_result = self.poll(provider_job_id)
+            except ProviderError as exc:
+                if observed_usage:
+                    exc.details.setdefault("last_poll_usage", observed_usage)
+                raise
+            if last_result.provider_job_id == provider_job_id:
+                usage = last_result.usage or last_result.raw_response.get("usage")
+                if isinstance(usage, Mapping) and usage:
+                    observed_usage = redact_provider_payload(usage)
             if last_result.done:
+                if not last_result.usage and observed_usage and last_result.provider_job_id == provider_job_id:
+                    return replace(last_result, usage=observed_usage)
                 return last_result
             remaining = deadline - self._monotonic()
             if remaining <= 0:
@@ -253,7 +266,7 @@ class SpriteProvider(ABC):
                     status=PollStatus.failed,
                     provider_status=last_result.provider_status,
                     raw_response=last_result.raw_response,
-                    usage=last_result.usage,
+                    usage=observed_usage,
                     error={
                         "code": "provider_wait_timeout",
                         "message": "provider job did not finish before the harness wait deadline",

@@ -19,7 +19,7 @@ from sprite_pipeline.collaboration.experiment_policy import REFUSAL
 from sprite_pipeline.collaboration.experiment_requests import freeze_drawing
 from sprite_pipeline.collaboration.repairs import LocalRepairs, generation_calls
 from sprite_pipeline.collaboration.workspace import OpenMotionWorkspace
-from sprite_pipeline.errors import ProviderConfigurationError, ValidationHarnessError
+from sprite_pipeline.errors import ProviderConfigurationError, ProviderTemporaryError, ValidationHarnessError
 from sprite_pipeline.providers.base import PollStatus
 from sprite_pipeline.providers.fixture import FixtureProvider
 from test_interactable_state_chain import ARCHIVE, ArchiveProvider, chain, decide  # noqa: F401
@@ -250,6 +250,67 @@ def test_experiment_keeps_usage_on_provider_failure_and_classifies_pre_post_reje
         run_arm('blind', source, stages, 7, Unconfigured(), None, unsubmitted)
     run = json.loads((unsubmitted / 'run.json').read_bytes())
     assert run['outcome']['kind'] == 'not_submitted' and run['calls'][0]['id'] is None
+    assert run['cost']['attempts'] == run['cost']['priced_calls'] == 0
+
+
+@pytest.mark.parametrize('identity', [None, 'upstream-charge'])
+def test_replay_counts_ambiguous_charged_submit_once_even_without_upstream_id(tmp_path, identity):
+    source = (ARCHIVE / 'lamp/A.png').read_bytes()
+    stages = [{'prompt': 'Light the lens', 'frames': 4}, {'prompt': 'Hold position', 'frames': 4}]
+
+    class Charged(Recording):
+        def submit(self, request):
+            if not self.requests:
+                return super().submit(request)
+            self.requests.append(request)
+            raise ProviderTemporaryError('Provider acknowledged charge', details={
+                'submission_unknown': True, 'response': {'usage': {'type': 'usd', 'usd': 1.25}},
+                **({'provider_job_id': identity} if identity else {}),
+            })
+
+        def wait(self, identity):
+            return replace(super().wait(identity), usage={'type': 'usd', 'usd': 1})
+
+    out = tmp_path / 'charged'
+    provider = Charged()
+    with pytest.raises(ProviderTemporaryError):
+        run_arm('blind', source, stages, 7, provider, None, out)
+    run = json.loads((out / 'run.json').read_bytes())
+    assert len(provider.requests) == 2 and run['outcome']['reason'] == 'submission_unknown'
+    assert run['calls'][1]['id'] == identity and run['calls'][1]['usage']['usd'] == 1.25
+    assert run['cost'] == {'attempts': 2, 'priced_calls': 2, 'unpriced_calls': 0,
+                           'known_usd': 2.25, 'known_units': 0, 'total_usd': 2.25}
+    clips, excluded = collect_clips([out])
+    assert not clips and excluded[0]['status'] == 'interrupted'
+
+
+@pytest.mark.parametrize('last_poll_error', [False, True])
+def test_replay_retains_known_intermediate_poll_usage(tmp_path, last_poll_error):
+    source = (ARCHIVE / 'lamp/A.png').read_bytes()
+    stages = [{'prompt': 'Light the lens', 'frames': 4}]
+
+    class PendingBill(Recording):
+        polls = 0
+
+        def poll(self, identity):
+            self.polls += 1
+            if self.polls == 1:
+                return replace(super().poll(identity), status=PollStatus.pending, provider_status='processing',
+                               images=[], usage={'type': 'usd', 'usd': 2.5})
+            if last_poll_error:
+                raise ProviderTemporaryError('Poll interrupted')
+            return replace(super().poll(identity), usage={})
+
+    out, provider = tmp_path / 'observed-usage', PendingBill()
+    if last_poll_error:
+        with pytest.raises(ProviderTemporaryError):
+            run_arm('blind', source, stages, 7, provider, None, out)
+    else:
+        run_arm('blind', source, stages, 7, provider, None, out)
+    run = json.loads((out / 'run.json').read_bytes())
+    assert len(provider.requests) == 1 and provider.polls == 2
+    assert run['calls'][0]['usage'] == {'type': 'usd', 'usd': 2.5}
+    assert run['cost']['attempts'] == run['cost']['priced_calls'] == 1 and run['cost']['known_usd'] == 2.5
 
 
 def test_optional_diagnostic_redraw_respects_budget_reserved_for_later_stages(tmp_path):

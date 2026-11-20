@@ -48,7 +48,16 @@ jobs:
       - run: python --version && git rev-parse HEAD
       - run: python -m pip install -c Tools/SpritePipeline/requirements.lock -e ./Tools/PixelProp -e './Tools/SpritePipeline[api,dev]'
       - run: python -c "import importlib.util; assert importlib.util.find_spec('gradio') is None"
-      - run: python -m pytest -q Tools/PixelProp/tests Tools/SpritePipeline/tests/test_paper_experiment.py Tools/SpritePipeline/tests/test_open_motion_checkpoints.py Tools/SpritePipeline/tests/test_open_motion_recovery_media.py Tools/SpritePipeline/tests/test_artwork_library.py Tools/SpritePipeline/tests/test_quota_result_safety.py
+      - run: >
+          python -m pytest -q Tools/PixelProp/tests
+          Tools/SpritePipeline/tests/test_paper_experiment.py
+          Tools/SpritePipeline/tests/test_open_motion_checkpoints.py
+          Tools/SpritePipeline/tests/test_open_motion_recovery_media.py
+          Tools/SpritePipeline/tests/test_open_motion_repairs.py
+          Tools/SpritePipeline/tests/test_adjustment_attempts.py
+          Tools/SpritePipeline/tests/test_motion_adjustments.py
+          Tools/SpritePipeline/tests/test_artwork_library.py
+          Tools/SpritePipeline/tests/test_quota_result_safety.py
 
   platform:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[platform-ci]'))

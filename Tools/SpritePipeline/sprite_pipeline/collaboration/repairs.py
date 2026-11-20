@@ -3,8 +3,7 @@ import hashlib
 import io
 from PIL import Image
 from .contracts import digest, review_calls_per_check
-from .targets import checked_png
-from ..attack_timeline import is_context_frame
+from .drawing_receipts import poll_drawing, read_poll_receipt, repair_playback, response_usage
 from ..errors import ConflictError, ValidationHarnessError, ProviderError
 from ..jsonio import atomic_write_json
 from ..models import CandidateStatus, utc_now
@@ -14,6 +13,10 @@ from ..providers.base import ProviderRequest, PollStatus
 
 # Same tiers as motion alternatives, so tool usage can be counted in one place.
 REPAIR_LEVELS = {'appearance': 'restricted_generation', 'transition': 'window_redraw'}
+
+
+def raw_repair_name(index):
+    return f'frame_{index:03d}.png'
 
 
 def generation_calls(job):
@@ -124,11 +127,16 @@ class LocalRepairs:
                     a=self.run(current,index,stage).repairs[number]
                     a['state']='unknown' if not isinstance(exc,ProviderError) or exc.details.get('submission_unknown') else 'failed'
                     a['error']=exc.as_dict() if isinstance(exc,ProviderError) else {'code':'submission_unknown','message':'修复提交结果未知，禁止重发'}
+                    if isinstance(exc, ProviderError):
+                        a['usage'] = response_usage(exc.details.get('response'))
+                        if exc.details.get('provider_job_id'):
+                            a['provider_job_id'] = exc.details['provider_job_id']
                     self.run(current,index,stage).state='awaiting_review';self.s._candidate(current,index).status=CandidateStatus.created
                     current.plan_control.message='局部修复未完成；请核对原请求，原片段保留'
                 raise
             with self.store.locked_job(job_id) as current:
-                a=self.run(current,index,stage).repairs[number];a.update(state='pending',provider_job_id=submitted.provider_job_id)
+                a=self.run(current,index,stage).repairs[number]
+                a.update(state='pending', provider_job_id=submitted.provider_job_id, usage=response_usage(submitted.raw_response))
             atomic_write_json(folder/'request.json',submitted.request_record);atomic_write_json(folder/'response.json',submitted.raw_response)
             return (a, current) if with_job else a
 
@@ -141,34 +149,46 @@ class LocalRepairs:
                 current.plan_control.message='局部修复提交曾中断，未自动重发'
             return
         if a['state']!='pending':return
-        result=provider.poll(a['provider_job_id'])
-        if result.status==PollStatus.pending:return
+        folder = self.store.resolve_job_path(job_id, a['folder'])
+        update = {}
         try:
-            if result.status==PollStatus.failed:raise ValidationHarnessError('修复请求失败，原始片段保留',details=result.error or {})
-            base=self.read_frames(job_id,a['base_frames'])
-            frames=result.images
-            if a['mode']=='transition' and len(frames)==a['input_count']+1 and is_context_frame(frames[0],base[a['start']]):frames=frames[1:]
-            if len(frames)!=a['input_count']:raise ValidationHarnessError('修复返回的帧数不匹配，不截断或补帧')
-            # Save ALL raw outputs including context; replacement mapping is explicit.
-            folder=self.store.resolve_job_path(job_id,a['folder']);items=[]
-            for i,data in enumerate(result.images):
-                sha=checked_png(data,job.character.cell_width,job.character.cell_height)
-                path=folder/f'frame_{i:03d}.png'
-                if path.exists() and path.read_bytes()!=data:raise ConflictError('远端修复帧发生变化，保留原文件')
-                self.s._atomic_write_bytes(path,data)
-                items.append({'path':path.relative_to(self.store.job_dir(job_id)).as_posix(),'sha256':sha,'repair_index':i})
-            window=items[1:-1] if a['mode']=='appearance' else items[-a['input_count']:]
+            result = poll_drawing(folder, provider, a['provider_job_id'], (job.character.cell_width, job.character.cell_height),
+                                  raw_repair_name, self.s._atomic_write_bytes, usage=a.get('usage'))
+            if result['status'] == PollStatus.pending:
+                self._record_usage(job_id, index, stage, a, result['usage'])
+                return
+            items = [{'path': (folder / item['file']).relative_to(self.store.job_dir(job_id)).as_posix(),
+                      'sha256': item['sha256'], 'repair_index': item['raw_index']} for item in result['frames']]
+            update.update(usage=result['usage'], raw_frames=items, raw_count=result['raw_count'],
+                          provider_status=result['provider_status'], invalid_raw_indices=result['invalid_frames'])
+            if result['status'] == PollStatus.failed:
+                raise ValidationHarnessError('修复请求失败，原始片段保留',details=result['error'] or {})
+            base = self.read_frames(job_id, a['base_frames'])
+            _, indices = repair_playback(folder, result, raw_repair_name, a['input_count'], a['mode'], base[a['start']])
+            window = [items[i] for i in indices]
             combined=[dict(x) for x in a['base_frames']]
             for i,item in enumerate(window,a['start']):combined[i]={**item,'raw_index':combined[i]['raw_index'],'repair_attempt':a['number']}
             preview_token=digest({'base':a['base_token'],'attempt':a['number'],'frames':combined})
-            update={'state':'awaiting_review','raw_frames':items,'proposed_frames':combined,'token':preview_token,'usage':result.usage}
-            atomic_write_json(folder/'result.json',update)
-        except (ConflictError,ValidationHarnessError) as exc:update={'state':'failed','error':exc.as_dict()}
+            update.update(state='awaiting_review', proposed_frames=combined, token=preview_token, playback_raw_indices=list(indices))
+        except ProviderError:
+            receipt = read_poll_receipt(folder / 'poll-receipt.json', a['provider_job_id'])
+            self._record_usage(job_id, index, stage, a, response_usage(receipt))
+            raise
+        except (ConflictError,ValidationHarnessError) as exc:
+            receipt = read_poll_receipt(folder / 'poll-receipt.json', a['provider_job_id'])
+            update.update(state='failed', error=exc.as_dict(), usage=response_usage(update) or response_usage(receipt) or a.get('usage', {}))
+        atomic_write_json(folder/'result.json',update)
         with self.store.locked_job(job_id) as current:
             r=self.run(current,index,stage);r.repairs[-1].update(update);r.state='awaiting_review'
             self.s._candidate(current,index).status=CandidateStatus.created;current.plan_control.enabled=False
-            current.plan_control.message='修复预览已保存，请检查整段与两侧接缝后选择采用或保留原片段'
+            current.plan_control.message = ('修复预览已保存，请检查整段与两侧接缝后选择采用或保留原片段'
+                                            if update['state'] == 'awaiting_review' else '修复未完成，原片段和绘图回执已保留')
             self.s._refresh_job_status(current);current.touch('motion_local_repair_saved',stage=stage,candidate_index=index)
+
+    def _record_usage(self, job_id, index, stage, attempt, usage):
+        if usage and usage != attempt.get('usage'):
+            with self.store.locked_job(job_id) as job:
+                self.run(job, index, stage).repairs[attempt['number']]['usage'] = usage
 
     def decide(self,job_id,index,stage,number,token,note,decision):
         from .checkpoints import Checkpoints

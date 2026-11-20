@@ -38,6 +38,8 @@ EXP simulate blind /absolute/new-protocol /absolute/new-run
 
 生产检查点与 v3 对照组共用 `input_pose_v1`。当绘图恰好多回传一帧、首帧确认为输入姿势时，播放映射跳过该帧。额外帧若不能确认为输入姿势，该次调用按提供方结果异常记账。帧数判定前归档通过校验的全部原始 PNG 与用量，正常结果一并保存播放帧对应的原始编号。
 
+v3 的 `run.json.cost` 按绘图尝试登记一次费用。已知未发出请求和本地预检拦截至零次。提供方结果未知的尝试计入分母，即使回复缺少作业编号也保留其中的用量。后续轮询省略用量时沿用此前最近一次可核实的记录。
+
 关键帧先行组的姿势来自一条 4 帧动画调用的末帧，写论文时须如实报告，不能称为一次静态图生成。一次生成组把各段提示词拼成一条，这是该组做法本身的一部分。
 
 手写协议仍可用于连通性检查：`EXP simulate blind protocol.json /absolute/new-run --reference /absolute/reference.png`，其中 `protocol.json` 含 `seed`、`fps`、`stages`（每段 `prompt` 与 `frames`）。这样的运行在 `run.json` 中标记为 `manual`，不能与真实流程的结果放在一起比较。
@@ -96,7 +98,7 @@ EXP export-legacy /absolute/jobs/JOB /absolute/new-export
 `retrospective.json` 中：
 
 - `tool_usage` 按级别统计修正工具的使用次数，覆盖检查点流程中的段内修复和修改备选两处。级别为 `deterministic`、`restricted_generation`、`window_redraw`、`stage_redraw`。
-- `cost` 的调用次数与原生预算账本同口径，另加属于本作业的独立修改调用。Token、额度单位和美元分别保存，不用估计汇率混算。没有明确 `cost_usd` 的请求计入 `unpriced_calls`，此时 `total_usd` 为 null。未知人工用时单独计数，`known_human_seconds` 只是已记录小计。
+- `cost` 的调用次数与原生预算账本同口径，另加关联的独立修改调用。每个提交、轮询和归档回执归入同一次尝试。被拒绝的修补与备选保留已确认的用量和通过格式校验的原始帧，重启后可从已保存的原始结果继续。美元和额度分别汇总。缺少美元价格的调用计入 `unpriced_calls`，此时 `total_usd` 为 null。未知人工用时单独计数，`known_human_seconds` 是已记录小计。
 - 派生作业包含来源作业继承的预算记录，跨多个版本统计时需按来源请求去重。
 
 ## 匿名播放包

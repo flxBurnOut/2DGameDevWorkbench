@@ -14,18 +14,22 @@ from .repairs import LocalRepairs, edit_window_limit
 from .review_evaluation import ReviewEvidence
 from .visual_review import frame_digest, evidence_panels
 from .checkpoints import Checkpoints
+from .drawing_receipts import poll_drawing, read_poll_receipt, repair_playback, response_usage
 from ..errors import ConflictError, HarnessError, NotFoundError, ValidationHarnessError, ProviderError
 from ..jsonio import atomic_write_json, read_json, inside
 from ..providers.account import AccountSlotBusy, PixelLabSlot
 from ..providers.base import ProviderRequest, PollStatus
 from ..models import CandidateStatus
-from .targets import checked_png
 from .adjustment_regions import FrameEditRegion, validate_regions, region_summary, region_panels, composite_region, verify_protection
 from .adjustment_attempts import ATTEMPT_LIMIT, frame_attempts, require_drawing_slot
 
 ACTIVE={'queued','planning','submitting','pending','reviewing','ready','adopting','unknown'}
 FROZEN=('work_id','revision','candidate','stage','source_job','source_token','source_frames','fps','loop','start','end',
         'user_request','expert_suggestions','intent_source','methods','budget','models','protocol','diagnostic','seed','reference_sha256')
+
+
+def raw_alternative_name(index):
+    return f'raw/{index:03d}.png'
 
 
 def frozen_inputs(task):
@@ -432,32 +436,51 @@ class Adjustments:
             task['generation_calls'].append(call);task.update(state='submitting',message='正在生成一个备选，原版保留');self.save(task)
             try:
                 result=provider.submit(request)
-                call.update(state='submitted',provider_job_id=result.provider_job_id)
-                task.update(state='pending',provider_job_id=result.provider_job_id);self.save(task)
-                atomic_write_json(folder/'provider-request.json',result.request_record);atomic_write_json(folder/'provider-response.json',result.raw_response)
             except AccountSlotBusy as exc:
                 task['generation_calls'].pop()
                 task.update(state='queued',message=exc.message);self.save(task)
             except Exception as exc:
                 unknown=not isinstance(exc,ProviderError) or exc.details.get('submission_unknown')
-                call['state']='unknown' if unknown else 'failed';task.update(state=call['state'],message='绘图未确认完成，记录保留，不自动重发');self.save(task)
+                call['state']='unknown' if unknown else 'failed'
+                if isinstance(exc, ProviderError):
+                    call.update(error=exc.as_dict(), usage=response_usage(exc.details.get('response')))
+                    if exc.details.get('provider_job_id'):
+                        call['provider_job_id'] = task['provider_job_id'] = exc.details['provider_job_id']
+                    task['usage'] = call['usage']
+                task.update(state=call['state'],message='绘图未确认完成，记录保留，不自动重发');self.save(task)
+            else:
+                usage = response_usage(result.raw_response)
+                call.update(state='submitted',provider_job_id=result.provider_job_id,usage=usage)
+                task.update(state='pending',provider_job_id=result.provider_job_id,usage=usage);self.save(task)
+                atomic_write_json(folder/'provider-request.json',result.request_record);atomic_write_json(folder/'provider-response.json',result.raw_response)
 
     def collect(self, task, provider):
-        result=provider.poll(task['provider_job_id'])
-        if result.status==PollStatus.pending:return
-        if result.status==PollStatus.failed:raise ValidationHarnessError('备选生成失败，原版保留')
-        from ..attack_timeline import is_context_frame
-        frames=result.images;folder=self.folder(task);count=task['input_count']
+        folder = self.folder(task)
+        job = self.store.load(task['source_job'])
+        call = task['generation_calls'][-1]
+        try:
+            result = poll_drawing(folder, provider, task['provider_job_id'], (job.character.cell_width, job.character.cell_height),
+                                  raw_alternative_name, self.s._atomic_write_bytes, usage=task.get('usage'))
+        except (ProviderError, ConflictError):
+            receipt = read_poll_receipt(folder / 'poll-receipt.json', task['provider_job_id'])
+            if response_usage(receipt):
+                call['usage'] = task['usage'] = response_usage(receipt)
+            raise
+        if result['status'] == PollStatus.pending:
+            if result['usage'] and result['usage'] != call.get('usage'):
+                call['usage'] = task['usage'] = result['usage']
+                self.save(task)
+            return
+        call.update(usage=result['usage'],provider_status=result['provider_status'],raw_count=result['raw_count'])
+        task.update(usage=result['usage'],raw_frames=result['frames'],invalid_raw_indices=result['invalid_frames'])
+        self.save(task)
+        if result['status'] == PollStatus.failed:
+            raise ValidationHarnessError('备选生成失败，原版保留', details=result['error'] or {})
         first=task['start']-1 if task.get('range_policy')=='unlocked_stage_tail_v2' else task['start']
-        if task['intent']['method']=='transition' and len(frames)==count+1 and is_context_frame(frames[0],(folder/'source'/f"{first:03d}.png").read_bytes()):frames=frames[1:]
-        if len(frames)!=count:raise ValidationHarnessError('返回帧数不符，未截断或替换原帧')
-        job=self.store.load(task['source_job']);raw=folder/'raw';raw.mkdir(exist_ok=True)
-        for i,png in enumerate(result.images):
-            checked_png(png,job.character.cell_width,job.character.cell_height)
-            path=raw/f'{i:03d}.png'
-            if path.exists() and path.read_bytes()!=png:raise ConflictError('远端返回已改变，保留旧结果')
-            path.write_bytes(png)
-        replacements=frames[1:-1] if task['intent']['method']=='appearance' else frames
+        frames, indices = repair_playback(folder, result, raw_alternative_name, task['input_count'], task['intent']['method'],
+                                         (folder / 'source' / f'{first:03d}.png').read_bytes())
+        replacements = [frames[index] for index in indices]
+        task['playback_raw_indices'] = list(indices)
         output=folder/'proposed';output.mkdir(exist_ok=True);items=[]
         regions={r['frame']:r for r in task.get('edit_regions',[])};protection=[]
         for i,f in enumerate(task['source_frames']):
@@ -468,7 +491,7 @@ class Adjustments:
         if regions:
             task['spatial_protection']={'version':1,'frames':protection,'regions_sha256':digest(task['edit_regions'])}
             task['protection_digest']=digest(task['spatial_protection'])
-        task.update(proposed_frames=items,usage=result.usage,state='reviewing',message='备选已保存，正在检查修改目标与衔接')
+        task.update(proposed_frames=items,state='reviewing',message='备选已保存，正在检查修改目标与衔接')
         task['preview_token']=digest({'source':task['source_token'],'intent':task['intent'],'user':task['user_request'],'frames':items,'fps':task['fps'],'models':task['models'],'protocol':task['protocol']})
         self.save(task);self.verify(task,live=True)
         from ..processing import run_qa
@@ -496,7 +519,7 @@ class Adjustments:
                 if slot.key!=task['generation_account']:return task
                 receipt=slot.accepted_receipt(f"adjustment:{task['id']}")
                 if receipt and task['generation_calls']:
-                    task['generation_calls'][-1].update(state='submitted',provider_job_id=receipt['jobId'])
+                    task['generation_calls'][-1].update(state='submitted',provider_job_id=receipt['jobId'],usage=receipt['usage'])
                     task.update(state='pending',provider_job_id=receipt['jobId'],usage=receipt['usage']);self.save(task)
             if task['state'] in {'planning','submitting','reviewing'}:
                 task.update(state='unknown',message='上次请求中断，未自动重发；已有结果保留');self.save(task);return task
@@ -515,6 +538,8 @@ class Adjustments:
                 if task['state']=='pending':self.collect(task,provider)
             except Exception as exc:
                 task.update(state='failed',message=str(exc) if isinstance(exc,(ConflictError,ValidationHarnessError)) else '修改未完成；原版与请求记录保留，不自动重试')
+                if isinstance(exc, HarnessError):
+                    task['error'] = exc.as_dict()
                 self.save(task)
             return task
 

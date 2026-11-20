@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import shutil
-
-from PIL import Image
 
 from ..errors import ConflictError, HarnessError, ProviderError, ValidationHarnessError
 from ..jsonio import atomic_write_json, read_json
@@ -13,6 +10,8 @@ from ..models import CandidateStatus, utc_now
 from ..providers.base import PollStatus, ProviderRequest
 from ..providers.account import AccountSlotBusy, animation_intent_id
 from .checkpoints import Checkpoints, checked_plan
+from .contracts import digest
+from .drawing_frames import validate_drawing_frame
 from .state_chain import transition
 
 
@@ -44,9 +43,11 @@ class PlanGeneration:
             raise ConflictError("调用记录超过预算，停止执行")
         return candidate.plan_execution.stages
 
-    def saved_frames(self, job_id, index, stage):
+    def saved_frames(self, job_id, index, stage, *, expected_manifest_sha256=None):
         folder = self.directory(job_id, index, stage)
         manifest = read_json(folder / "frames.json")
+        if expected_manifest_sha256 is not None and digest(manifest) != expected_manifest_sha256:
+            raise ConflictError('片段原始帧清单已改变')
         frames = []
         for i, item in enumerate(manifest["frames"]):
             if item["filename"] != f"frame_{i:03d}.png":
@@ -111,6 +112,8 @@ class PlanGeneration:
                 if work.revision != binding.revision or work.job_id != job_id:
                     current.plan_control.enabled = False
                     current.touch('open_plan_superseded')
+                    return False
+                if current.generation_requested_at is None or (work.execution_intent and work.execution_intent.phase == 'paused'):
                     return False
                 if r.state != "created" or r.submission_attempts:
                     raise ConflictError("其他进程已提交此片段")
@@ -184,14 +187,16 @@ class PlanGeneration:
                     current.plan_control.message = "此片段生成失败，已保留原请求"
                     self.s._refresh_job_status(current)
                 return False
+            atomic_write_json(folder / "poll.response.json", result.raw_response)
+            size = (job.character.cell_width, job.character.cell_height)
+            with self.store.locked_job(job_id) as current:
+                c = self.candidate(current, index); r = self.validate(current, c)[stage]
+                c.usage = r.usage = result.usage or r.usage
             if not 1 <= len(result.images) <= 64:
-                raise ValidationHarnessError("片段返回的帧数无效")
+                raise ValidationHarnessError("片段返回的帧数无效", details={'reason': 'unexpected_frame_count'})
             manifest = []
             for i, data in enumerate(result.images):
-                with Image.open(io.BytesIO(data)) as image:
-                    image.load()
-                    if image.format != "PNG" or image.size != (job.character.cell_width, job.character.cell_height) or "A" not in image.getbands():
-                        raise ValidationHarnessError("片段格式、尺寸或透明通道无效，不会用它继续生成")
+                validate_drawing_frame(data, size, i)
                 path = folder / f"frame_{i:03d}.png"
                 if path.exists() and path.read_bytes() != data:
                     raise ConflictError("远端返回的片段发生变化，已有原始帧保留")
@@ -205,6 +210,7 @@ class PlanGeneration:
         with self.store.locked_job(job_id) as current:
             c = self.candidate(current, index); r = self.validate(current, c)[stage]
             r.state = "complete"; r.actual_frame_count = len(frames); c.usage = r.usage = saved.get("usage") or r.usage
+            r.frames_manifest_sha256 = digest(saved)
             c.status = CandidateStatus.saving if stage == len(c.plan_execution.stages) - 1 else CandidateStatus.created
             c.provider_completed_at = utc_now(); c.error = None
             current.plan_control.message = "片段已保存，准备检查实际姿势" if checked_plan(job) else "片段已保存，完整动作需人工确认"

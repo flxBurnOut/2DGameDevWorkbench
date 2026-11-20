@@ -12,7 +12,6 @@ Every arm of a comparison starts from one frozen plan:
 * ``retrospective`` exports a finished job for labelling, ``blind_pack``
   anonymises clips, ``inventory`` lists which stored jobs can be exported.
 """
-import hashlib
 import io
 import json
 import secrets
@@ -21,26 +20,21 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..errors import ConflictError, ValidationHarnessError
+from ..errors import ConflictError, HarnessError, ValidationHarnessError
 from ..jsonio import atomic_write_json, inside
 from ..models import JobRecord
-from ..providers.base import PollStatus, ProviderRequest
 from ..providers.fixture import FixtureProvider
 from .checkpoints import review_call_count
-from .execution import stage_seed
+from .contracts import digest
 from .experiment_policy import REPAIR_POLICIES
+from .experiment_replay import ARMS, run_arm
+from .experiment_requests import PROTOCOL, freeze_drawing, pipeline_prompts, sha, verify_protocol
 from .repairs import REPAIR_LEVELS, generation_calls
 from .visual_review import audit_verdict
 
-# Control strategies replayed outside the checkpoint pipeline.
-ARMS = ('single', 'blind', 'keyframe_first', 'model_only')
 # Checkpointed strategies, run in the real pipeline on a copy of the work.
 PIPELINE_ARMS = ('model_only', 'human_verified')
 MODEL_ONLY_REVIEWER = 'experiment-model-only'
-
-
-def sha(data):
-    return hashlib.sha256(data).hexdigest()
 
 
 # ---------------------------------------------------------------- protocol
@@ -71,25 +65,43 @@ def _frozen_plan(service, work_id, revision):
     return ws, work, seed, fps, prompts, targets
 
 
-def freeze_protocol(service, work_id, revision, out):
-    """Write the frozen inputs of one work so every control arm shares them."""
-    ws, work, seed, fps, prompts, targets = _frozen_plan(service, work_id, revision)
-    reference = ws.reference(work)
-    out.mkdir(parents=True, exist_ok=False)
-    (out / 'reference.png').write_bytes(reference)
-    stages = []
+def _protocol_data(work, seed, fps, prompts, reference, targets):
+    stages, end_hashes = [], []
+    reference_sha256 = sha(reference)
     for i, definition in enumerate(work.plan.stages):
         # Same end condition the pipeline submits: a bound target image, the
         # original reference when the plan returns to it, otherwise none.
         last = 'target' if i in targets else 'original' if definition.last_frame == 'original' else None
         stage = {'prompt': prompts[i], 'frames': definition.frame_count, 'last': last}
         if last == 'target':
-            (out / f'target-{i}.png').write_bytes(targets[i])
             stage['last_sha256'] = sha(targets[i])
+        end_hashes.append(reference_sha256 if last == 'original' else stage.get('last_sha256'))
         stages.append(stage)
-    protocol = {'protocol': 2, 'seed': seed, 'fps': fps, 'stages': stages, 'reference_sha256': sha(reference),
+    with Image.open(io.BytesIO(reference)) as image:
+        size = image.size
+    budget = work.spec.budget.model_dump(mode='json')
+    if work.frame_budget:
+        for key in ('max_frames_per_request', 'max_total_frames', 'remaining_units'):
+            if key in work.frame_budget:
+                budget[key] = work.frame_budget[key]
+    protocol = {'protocol': PROTOCOL, 'seed': seed, 'fps': fps, 'stages': stages,
+                'reference_sha256': reference_sha256,
                 'source': {'work_id': work.id, 'revision': work.revision, 'plan_sha256': work.plan_sha256,
-                           'job_id': work.job_id}}
+                           'job_id': work.job_id, 'provider': work.spec.provider,
+                           'review_protocol': work.spec.review_protocol},
+                'drawing': freeze_drawing(stages, seed, reference_sha256, size, end_hashes, budget=budget)}
+    return {**protocol, 'protocol_sha256': digest(protocol)}
+
+
+def freeze_protocol(service, work_id, revision, out):
+    """Write the original inputs and the exact provider-facing requests for each arm."""
+    ws, work, seed, fps, prompts, targets = _frozen_plan(service, work_id, revision)
+    reference = ws.reference(work)
+    protocol = _protocol_data(work, seed, fps, prompts, reference, targets)
+    out.mkdir(parents=True, exist_ok=False)
+    (out / 'reference.png').write_bytes(reference)
+    for i, data in targets.items():
+        (out / f'target-{i}.png').write_bytes(data)
     atomic_write_json(out / 'protocol.json', protocol)
     return protocol
 
@@ -98,7 +110,8 @@ def load_protocol(folder):
     """Read a frozen protocol directory, verifying every image it names."""
     protocol = json.loads((folder / 'protocol.json').read_bytes())
     reference = (folder / 'reference.png').read_bytes()
-    if protocol.get('protocol') != 2 or sha(reference) != protocol['reference_sha256']:
+    verify_protocol(protocol)
+    if sha(reference) != protocol['reference_sha256']:
         raise ValueError('protocol directory is not a frozen plan or its reference changed')
     last_frames = []
     for i, stage in enumerate(protocol['stages']):
@@ -113,106 +126,6 @@ def load_protocol(folder):
     return protocol, reference, last_frames
 
 
-# ------------------------------------------------------- replayed controls
-
-def run_arm(arm, source, stages, seed, provider, judge, output, fps=8, *, last_frames=None, origin=None):
-    """Run one control strategy against ``provider``.
-
-    ``stages`` and ``last_frames`` come from ``load_protocol`` in a real
-    comparison, so prompts, frame counts and end conditions equal the
-    pipeline's. Segment ``i`` always draws with ``stage_seed(seed, i)``.
-
-    ``model_only`` here takes an injected ``judge(first, stage, frames)`` and
-    redraws a refused segment once. It exists for offline dry runs; a real
-    model-verified arm uses ``drive_model_only`` and the pipeline reviewer.
-    """
-    if arm not in ARMS or not 1 <= fps <= 60 or not 1 <= len(stages) <= 4:
-        raise ValueError('invalid protocol')
-    counts = [s['frames'] for s in stages]
-    if any(type(n) is not int or n not in range(4, 17, 2) for n in counts) or (arm == 'single' and sum(counts) > 16):
-        raise ValueError('requested arm exceeds drawing call limit')
-    last_frames = list(last_frames or [None] * len(stages))
-    if len(last_frames) != len(stages):
-        raise ValueError('one end condition per stage is required')
-    output.mkdir(parents=True, exist_ok=False)
-    ledger = {'protocol': 2, 'arm': arm, 'source_sha256': sha(source), 'seed': seed, 'fps': fps, 'stages': stages,
-              'origin': origin or {'kind': 'manual'}, 'calls': [], 'reviews': [], 'frames': [],
-              'diagnostic_only': bool(provider.diagnostic_only), 'human_seconds': None, 'status': 'running'}
-
-    def save():
-        atomic_write_json(output / 'run.json', ledger)
-
-    def draw(first, last, count, prompt, stage, kind):
-        call = {'kind': kind, 'stage': stage, 'seed': stage_seed(seed, stage), 'first': sha(first),
-                'last': sha(last) if last else None, 'count': count, 'state': 'submitting'}
-        ledger['calls'].append(call)
-        save()
-        request = provider.submit(ProviderRequest(reference_image=first, last_frame=last, prompt=prompt,
-                                                  frame_count=count, seed=call['seed']))
-        call.update(state='submitted', id=request.provider_job_id)
-        save()
-        result = provider.wait(request.provider_job_id)
-        if result.status != PollStatus.completed or len(result.images) != count:
-            raise ValueError('unexpected provider result; no retry')
-        saved = []
-        for i, png in enumerate(result.images):
-            name = f"calls/{len(ledger['calls']) - 1:02}/{i:03}.png"
-            (output / name).parent.mkdir(parents=True, exist_ok=True)
-            (output / name).write_bytes(png)
-            saved.append({'file': name, 'sha256': sha(png)})
-        call.update(state='complete', usage=result.usage, frames=saved)
-        save()
-        return result.images
-
-    def publish(frames):
-        for frame in frames:
-            name = f"{len(ledger['frames']):03}.png"
-            (output / name).write_bytes(frame)
-            ledger['frames'].append({'file': name, 'sha256': sha(frame)})
-        save()
-
-    try:
-        if arm == 'single':
-            prompt = ' '.join(s['prompt'] for s in stages)
-            publish(draw(source, last_frames[-1], sum(counts), prompt, 0, 'clip'))
-        else:
-            targets = list(last_frames)
-            if arm == 'keyframe_first':
-                # The provider only draws animations. Freeze the real last frame
-                # of one separate pose call per segment before any transition.
-                for i, stage in enumerate(stages):
-                    if targets[i] is None:
-                        targets[i] = draw(source, None, 4, 'Hold ending pose: ' + stage['prompt'], i, 'pose')[-1]
-                        (output / f'pose-{i}.png').write_bytes(targets[i])
-            first = source
-            for i, stage in enumerate(stages):
-                for attempt in range(2):
-                    frames = draw(first, targets[i], stage['frames'], stage['prompt'], i, 'repair' if attempt else 'segment')
-                    if arm != 'model_only':
-                        break
-                    finding = judge(first, stage, frames)
-                    if finding not in ('pass', 'fail', 'uncertain'):
-                        raise ValueError('review verdict missing')
-                    ledger['reviews'].append({'stage': i, 'attempt': attempt, 'verdict': finding,
-                                              'frame_hashes': [sha(f) for f in frames]})
-                    save()
-                    if finding == 'pass':
-                        break
-                else:
-                    ledger['status'] = 'stopped_by_review'
-                    save()
-                    return ledger
-                publish(frames)
-                first = frames[-1]
-        ledger['status'] = 'complete'
-        save()
-        return ledger
-    except Exception:
-        ledger['status'] = 'interrupted'
-        save()
-        raise
-
-
 # ------------------------------------------------- checkpointed pipeline arms
 
 def clone_for_arm(service, work_id, revision, arm, request_key, *, repair_policy='toolset'):
@@ -221,32 +134,40 @@ def clone_for_arm(service, work_id, revision, arm, request_key, *, repair_policy
     The copy is an ordinary work marked with ``experiment``. It has no job yet;
     starting it spends drawing calls like any other work.
     """
-    from .contracts import OpenWork, digest
+    from .contracts import OpenWork
     from .workspace import now
     if arm not in PIPELINE_ARMS or repair_policy not in REPAIR_POLICIES:
         raise ValidationHarnessError('未知的实验组或修复策略')
-    ws, source, seed, _fps, _prompts, targets = _frozen_plan(service, work_id, revision)
+    ws, source, seed, fps, prompts, targets = _frozen_plan(service, work_id, revision)
     if source.spec.candidate_count != 1:
         raise ValidationHarnessError('实验副本只支持单候选作品')
-    marker = {'arm': arm, 'repair_policy': repair_policy, 'source_work': source.id,
-              'source_revision': source.revision, 'plan_sha256': source.plan_sha256}
-    fingerprint = digest(marker)
+    reference = ws.reference(source)
+    protocol = _protocol_data(source, seed, fps, prompts, reference, targets)
+    drawing = protocol['drawing']
+    identity = {'arm': arm, 'repair_policy': repair_policy, 'source_work': source.id,
+                'source_revision': source.revision, 'plan_sha256': source.plan_sha256}
+    frozen = {**drawing['arms'][arm], 'limits': drawing['limits'], 'frame_normalization': drawing['frame_normalization'],
+              'seed': seed, 'fps': fps}
+    marker = {**identity, 'protocol': PROTOCOL, 'protocol_sha256': protocol['protocol_sha256'],
+              'frozen_drawing': frozen, 'frozen_drawing_sha256': digest(frozen)}
+    fingerprint = digest({**identity, 'frozen_drawing_sha256': marker['frozen_drawing_sha256']})
     receipt = ws.root / 'requests' / (sha(request_key.encode()) + '.json')
     with service.store.global_lock('open-work-creation'):
         if receipt.exists():
             previous = json.loads(receipt.read_bytes())
-            if previous['fingerprint'] != fingerprint:
+            if previous['fingerprint'] not in (fingerprint, digest(identity)):
                 raise ConflictError('同一请求标识已用于其他需求')
             return ws.load(previous['id'])
         data = source.model_dump(mode='json')
+        data.pop('execution_intent', None)
         data.update(id=uuid.uuid4().hex, revision=1, request_key=request_key, request_sha256=fingerprint,
                     job_id=None, status='ready', history=[], created_at=now(), updated_at=now(),
-                    experiment=marker, message=f'实验副本（{arm}），与来源作品使用同一方案和种子')
+                    auto_execute=False, experiment=marker, message=f'实验副本（{arm}），与来源作品使用同一方案和种子')
         data['spec']['seed'] = seed
         work = OpenWork.model_validate(data)
         directory = ws.directory(work.id)
         directory.mkdir(parents=True)
-        service._atomic_write_bytes(directory / 'reference-1.png', ws.reference(source))
+        service._atomic_write_bytes(directory / 'reference-1.png', reference)
         for target in source.end_targets:
             service._atomic_write_bytes(directory / target.filename, targets[target.stage])
         ws.save(work)
@@ -280,21 +201,41 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
     if (work.experiment or {}).get('arm') != 'model_only':
         raise ValidationHarnessError('只能自动裁决 model_only 实验副本，不会替用户裁决普通作品')
     if not work.job_id:
+        try:
+            pipeline_prompts(work)
+        except ValidationHarnessError as exc:
+            summary = {'work_id': work.id, 'job_id': None, 'arm': 'model_only', 'protocol': PROTOCOL,
+                       'status': 'blocked_preflight', 'outcome': {'kind': 'local_preflight', **exc.details},
+                       'decisions': []}
+            atomic_write_json(ws.directory(work.id) / 'experiment-run.json', summary)
+            return summary
         work = ws.start(work.id, work.revision, work.plan_sha256, allow_unsupported_motion=allow_unsupported_motion)
     job_id, engine, checkpoints, repairs = work.job_id, PlanGeneration(service), Checkpoints(service), LocalRepairs(service)
     decisions, status = [], 'stalled'
+    outcome = {'kind': 'not_submitted', 'reason': 'no_provider_submission'}
     for _ in range(max_steps):
-        job = engine.advance(job_id, provider, wait=True)
+        try:
+            job = engine.advance(job_id, provider, wait=True)
+        except HarnessError:
+            job = service.store.load(job_id)
+            if job.candidates[0].status.value not in ('failed', 'submission_unknown'):
+                raise
         candidate = job.candidates[0]
         runs = candidate.plan_execution.stages
         stage = next((i for i, r in enumerate(runs) if r.state == 'awaiting_review'), None)
         if stage is None:
             if candidate.frames:
                 status = 'complete'
+                outcome = {'kind': 'complete', 'reason': 'playable'}
             elif any(r.state == 'rejected' for r in runs):
                 status = 'stopped_by_review'
+                outcome = {'kind': 'review_stopped', 'reason': 'segment_rejected'}
             elif candidate.status.value in ('failed', 'submission_unknown'):
                 status = 'interrupted'
+                error = candidate.error or {}
+                reason = (error.get('details') or {}).get('reason') or error.get('code') or candidate.status.value
+                outcome = {'kind': 'provider_failure' if any(r.submission_attempts for r in runs) else 'local_preflight',
+                           'reason': reason}
             else:
                 continue
             break
@@ -327,7 +268,10 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
         checkpoints.decide(job_id, 1, stage, token=view['token'], decision='reject', reviewer=MODEL_ONLY_REVIEWER,
                            note='Fixed policy: reviewer did not pass; ' + refusal)
         decisions.append({'stage': stage, 'action': 'reject', 'verdict': verdict, 'reason': refusal})
-    summary = {'work_id': work.id, 'job_id': job_id, 'arm': 'model_only', 'status': status, 'decisions': decisions}
+    if status == 'stalled' and service.store.load(job_id).candidates[0].submission_attempts:
+        outcome = {'kind': 'provider_failure', 'reason': 'unfinished_provider_result'}
+    summary = {'work_id': work.id, 'job_id': job_id, 'arm': 'model_only', 'status': status,
+               'protocol': work.experiment.get('protocol', 2), 'outcome': outcome, 'decisions': decisions}
     atomic_write_json(ws.directory(work.id) / 'experiment-run.json', summary)
     return summary
 
@@ -411,6 +355,7 @@ def retrospective(job_dir, work, adjustments, out):
         raise ValueError('job has no open plan (made by the earlier attack flow); use the legacy export')
     if work.get('job_id') != job.job_id or work['id'] != plan.work_id or work['revision'] != plan.revision:
         raise ValueError('work, job and revision do not match')
+    current_protocol = (work.get('experiment') or {}).get('protocol') == PROTOCOL
     out.mkdir(parents=True, exist_ok=False)
 
     def copy_png(item, name):
@@ -447,7 +392,8 @@ def retrospective(job_dir, work, adjustments, out):
             decisions = [r['human_decision'] for r in reports if r.get('human_decision')]
             if run.state_checkpoint:
                 decisions.append({'decision': 'accept_state', **run.state_checkpoint})
-            timings.extend(d.get('human_seconds') for d in decisions)
+            timings.extend(d.get('human_seconds') for d in decisions
+                           if not current_protocol or d.get('reviewer') != MODEL_ONLY_REVIEWER)
             repairs = []
             for n, attempt in enumerate(run.repairs):
                 level = attempt.get('repair_level') or REPAIR_LEVELS[attempt['mode']]
@@ -459,7 +405,10 @@ def retrospective(job_dir, work, adjustments, out):
                 drawing_usage.append(run.usage)
             rows.append({'candidate': c.candidate_index, 'stage': i, 'state': run.state,
                          'raw': [copy_png(f, f'{folder}/raw/{j:03}.png') for j, f in enumerate(raw)],
-                         'accepted': [copy_png(f, f'{folder}/accepted/{j:03}.png')
+                         'provider_job_id': run.provider_job_id, 'usage': run.usage, 'drawing_error': run.error,
+                         'submitted_attempts': run.submission_attempts,
+                         'frame_normalization': (run.accepted or {}).get('frame_normalization'),
+                         'accepted': [{**copy_png(f, f'{folder}/accepted/{j:03}.png'), 'raw_index': f.get('raw_index')}
                                       for j, f in enumerate((run.accepted or {}).get('frames', []))],
                          'review_history': reports, 'review_ablation': [counterfactual_verdicts(r) for r in reports],
                          'human_decisions': decisions, 'repairs': repairs, 'adjustment_history': run.adjustment_history})
@@ -495,10 +444,14 @@ def retrospective(job_dir, work, adjustments, out):
                     *(receipt_usage(x) for t in alternatives for k in ('planning_calls', 'review_calls') for x in t[k])]
 
     def priced(usages):
-        return [u['cost_usd'] for u in usages if isinstance(u.get('cost_usd'), (int, float))]
+        amounts = [u.get('cost_usd', u.get('usd') if current_protocol and u.get('type') == 'usd' else None)
+                   for u in usages]
+        return [amount for amount in amounts if isinstance(amount, (int, float)) and not isinstance(amount, bool)]
 
     def units(usages):
-        return sum(u['units'] for u in usages if isinstance(u.get('units'), (int, float)))
+        amounts = [u.get('units', u.get('generations') if current_protocol and u.get('type') == 'generations' else None)
+                   for u in usages]
+        return sum(amount for amount in amounts if isinstance(amount, (int, float)) and not isinstance(amount, bool))
 
     # Keep every native unit. A missing price is unknown, never zero dollars.
     unpriced = max(0, sum(calls.values()) - len(priced(drawing_usage)) - len(priced(visual_usage)))
@@ -510,10 +463,27 @@ def retrospective(job_dir, work, adjustments, out):
             'known_drawing_usd': sum(priced(drawing_usage)),
             'known_total_usd': sum(priced(drawing_usage)) + sum(priced(visual_usage)),
             'total_usd': None if unpriced else sum(priced(drawing_usage)) + sum(priced(visual_usage))}
-    atomic_write_json(out / 'retrospective.json', {
+    result = {
         'job': job.job_id, 'kind': 'open_plan', 'revision': work['revision'], 'experiment': work.get('experiment'),
         'clips': _playback(job, job_dir, out), 'stages': rows, 'alternatives': alternatives,
-        'tool_usage': tools, 'cost': cost})
+        'tool_usage': tools, 'cost': cost}
+    if current_protocol:
+        if result['clips']:
+            result['outcome'] = {'kind': 'complete', 'reason': 'playable'}
+        elif any(row['state'] == 'rejected' for row in rows):
+            result['outcome'] = {'kind': 'review_stopped', 'reason': 'segment_rejected'}
+        elif failed := next((row for row in rows if row['drawing_error']), None):
+            error = failed['drawing_error']
+            result['outcome'] = {
+                'kind': 'provider_failure' if failed['submitted_attempts'] else 'local_preflight',
+                'reason': (error.get('details') or {}).get('reason') or error['code'],
+                'stage': failed['stage'],
+            }
+        elif any(row['submitted_attempts'] for row in rows):
+            result['outcome'] = {'kind': 'no_playable_clip', 'reason': 'unfinished_or_unaccepted'}
+        else:
+            result['outcome'] = {'kind': 'not_submitted', 'reason': 'no_provider_submission'}
+    atomic_write_json(out / 'retrospective.json', result)
     return cost
 
 
@@ -524,7 +494,7 @@ def blind_pack(clips, out, *, excluded=()):
     produced no playable clip (stopped by review, interrupted); they are named
     in the key so usable-rate denominators include them.
     """
-    if not clips:
+    if not clips and not excluded:
         raise ValueError('no clips')
     key = out.with_name(out.name + '-private-key.json')
     if key.exists():
@@ -573,7 +543,10 @@ def collect_clips(roots):
             export = json.loads((root / 'retrospective.json').read_bytes())
             arm = (export.get('experiment') or {}).get('arm')
             if not export['clips']:
-                excluded.append({'source': str(root), 'arm': arm, 'status': 'no_playable_clip'})
+                exclusion = {'source': str(root), 'arm': arm, 'status': 'no_playable_clip'}
+                if export.get('outcome'):
+                    exclusion.update(protocol=PROTOCOL, outcome=export['outcome'])
+                excluded.append(exclusion)
             for clip in export['clips']:
                 clips.append((root, clip['frames'], clip['fps'], {'arm': arm, 'candidate': clip['candidate']}))
             continue
@@ -581,9 +554,15 @@ def collect_clips(roots):
         if run['status'] == 'running':
             raise ValueError(f'run is still in progress: {root}')
         if run['status'] != 'complete':
-            excluded.append({'source': str(root), 'arm': run['arm'], 'status': run['status']})
+            exclusion = {'source': str(root), 'arm': run['arm'], 'status': run['status']}
+            if run.get('protocol') == PROTOCOL and run.get('outcome'):
+                exclusion.update(protocol=PROTOCOL, outcome=run['outcome'])
+            excluded.append(exclusion)
         else:
-            clips.append((root, run['frames'], run['fps'], {'arm': run['arm']}))
+            details = {'arm': run['arm']}
+            if run.get('protocol') == PROTOCOL:
+                details['protocol'] = PROTOCOL
+            clips.append((root, run['frames'], run['fps'], details))
     return clips, excluded
 
 
@@ -648,15 +627,15 @@ def main(argv=None):
     elif args.op == 'simulate':
         if args.protocol.is_dir():
             protocol, reference, last_frames = load_protocol(args.protocol)
-            origin = {'kind': 'frozen_plan', **protocol['source']}
+            frozen = protocol
         else:
             if not args.reference:
                 parser.error('a hand-written protocol needs --reference')
             protocol, reference, last_frames = json.loads(args.protocol.read_bytes()), args.reference.read_bytes(), None
-            origin = {'kind': 'manual'}
+            frozen = None
         verdicts = iter(protocol.get('mock_verdicts', []))
         run_arm(args.arm, reference, protocol['stages'], protocol['seed'], FixtureProvider(),
-                lambda *_: next(verdicts, None), args.output, protocol['fps'], last_frames=last_frames, origin=origin)
+                lambda *_: next(verdicts, None), args.output, protocol['fps'], last_frames=last_frames, protocol=frozen)
     elif args.op == 'inventory':
         print(json.dumps(inventory(args.jobs_dir), ensure_ascii=False, indent=2))
     elif args.op == 'export':

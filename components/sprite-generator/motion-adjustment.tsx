@@ -15,7 +15,7 @@ type Adjustment={repair_level?:'deterministic'|'restricted_generation'|'window_r
   proposed_frames?:{sha256:string}[];review?:MotionReview&{comparison?:{findings:{change:ComparisonFinding;preservation:ComparisonFinding}}};qa?:{hard_failures:unknown[];warnings:unknown[]};
   spatial_protection?:{frames:{protected_pixels:number;protected_changed_pixels:number;changed_inside_pixels:number}[]};
   planning_calls:unknown[];generation_calls:unknown[];review_calls:unknown[];fps:number};
-type Context={token:string;frames:{sha256:string}[];width:number;height:number;fps:number;locked_frames:number[];editable_stage_end?:boolean;appearance_max:number;attempt_limit:number;attempt_scope?:string;legacy_frame_attempts?:number[];
+type Context={token:string;frames:{sha256:string;raw_index?:number}[];job_revision?:number;width:number;height:number;fps:number;locked_frames:number[];editable_stage_end?:boolean;appearance_max:number;attempt_limit:number;attempt_scope?:string;legacy_frame_attempts?:number[];
   suggestions:{text:string;frames:number[]}[];tasks:Adjustment[];budget:{planning:number;generation:number;review:number}};
 type Response={adjustment:Adjustment;work:MotionWork};
 const processing=new Set(['queued','planning','submitting','pending','reviewing','adopting']);
@@ -75,7 +75,7 @@ export function MotionAdjustment({work,candidate,stage,readOnly,onSaved,onPendin
     let live=true;
     void Promise.all(Array.from({length:previewCount},(_,i)=>i).flatMap(i=>['source','proposed'].map(kind=>new Promise<void>((resolve,reject)=>{
       const img=new Image();img.onload=()=>resolve();img.onerror=()=>reject(new Error('对比图片未完整加载，请稍后重试'));
-      img.src=motionUrl(`${route}/${task.id}/${kind}/${i}`,{v:evidence});
+      img.src=motionUrl(`${route}/${task.id}/${kind}/${i}`,{token:evidence});
     })))).then(()=>{if(live){setLoaded(evidence);setPlaying(false);setPlayed(false);setFrame(0);setAck(false);setNote('');}}).catch(e=>{if(live)setError(e.message);});
     return()=>{live=false;};
   },[evidence,task?.id,previewCount,route]);
@@ -127,8 +127,17 @@ export function MotionAdjustment({work,candidate,stage,readOnly,onSaved,onPendin
       onSaved(r.work);localStorage.removeItem(draftKey);setOpen(false);setStart(null);setEnd(null);setUser('');setSpatial(false);setRegionDraft(null);setHistoryPreview(false);}
     catch(e){setError((e as Error).message);}finally{setBusy(false);}
   }
-  const original=(i:number)=>motionUrl(stage===undefined?`jobs/${work.job?.job_id}/candidates/${candidate}/frames/${i}/image`:
-    `open-motion/${work.id}/candidates/${candidate}/stages/${stage}/frames/${i}`,{revision:String(work.revision),v:context?.token||''});
+  const original = (i: number) => {
+    const item = context?.frames[i];
+    if (!item || !work.job) return '';
+    return stage === undefined
+      ? motionUrl(`jobs/${work.job.job_id}/candidates/${candidate}/frames/${item.raw_index ?? i}/image`, {
+        revision: String(context?.job_revision ?? work.job.revision), expected_sha256: item.sha256,
+      })
+      : motionUrl(`open-motion/${work.id}/candidates/${candidate}/stages/${stage}/frames/${i}`, {
+        revision: String(work.revision), expected_sha256: item.sha256,
+      });
+  };
   return <section className="motion-adjustment">
     {!open?<button onClick={()=>setOpen(true)}>调整部分帧{pending?' · 有备选待处理':''}</button>:<div className="motion-card-title"><h3>调整部分帧</h3><button onClick={()=>{setOpen(false);setPlaying(false);}}>返回动画检查</button></div>}
     {open&&<div className="motion-adjustment-body">
@@ -139,7 +148,7 @@ export function MotionAdjustment({work,candidate,stage,readOnly,onSaved,onPendin
         <p>本次替换第 {task.start+1}–{task.end+1} 帧 · {task.user_request||task.intent?.goal||'按所选范围的专家建议'}</p>
         {task.proposed_frames&&<>
           <div className="motion-adjustment-compare">{(['source','proposed'] as const).map(kind=><figure key={kind}>
-            <figcaption>{kind==='source'?'原版':'备选'}</figcaption><div className="motion-canvas"><img loading="lazy" decoding="async" alt={`${kind==='source'?'原版':'备选'}第 ${frame+1} 帧`} src={motionUrl(`${route}/${task.id}/${kind}/${frame}`,{v:task.preview_token||''})} /></div>
+            <figcaption>{kind==='source'?'原版':'备选'}</figcaption><div className="motion-canvas"><img loading="lazy" decoding="async" alt={`${kind==='source'?'原版':'备选'}第 ${frame+1} 帧`} src={motionUrl(`${route}/${task.id}/${kind}/${frame}`,task.preview_token ? {token:task.preview_token} : undefined)} /></div>
           </figure>)}</div>
           <div className="motion-card-title"><button disabled={loaded!==task.preview_token} onClick={()=>{setFrame(0);setPlayed(false);setPlaying(true);}}>同步播放完整对比</button><span>{frame+1} / {task.proposed_frames.length} · {task.fps} FPS</span></div>
           <input aria-label="备选对比逐帧" type="range" min={0} max={task.proposed_frames.length-1} value={frame} onChange={e=>{setPlaying(false);setFrame(Number(e.target.value));}} />

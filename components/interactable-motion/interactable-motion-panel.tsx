@@ -214,11 +214,12 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
   const selectedStage = selection?.kind === 'edge' ? selection.stage : -1;
   const stageFrames = useMemo(() => {
     const timeline = graph.edges.find(e => e.stage === selectedStage)?.timeline;
-    const current = work?.job?.candidates.find(c => c.candidate_index === candidateIndex);
-    if (!timeline || !current || !work?.job) return [];
+    const job = work?.job;
+    const current = job?.candidates.find(c => c.candidate_index === candidateIndex);
+    if (!timeline || !current || !job) return [];
     const { start, count, hold } = timeline;
     return current.frames.slice(start, start + count).map((f, i) => ({
-      url: motionUrl(`jobs/${work.job?.job_id}/candidates/${current.candidate_index}/frames/${f.index}/image`, { v: f.sha256 }),
+      url: motionUrl(`jobs/${job.job_id}/candidates/${current.candidate_index}/frames/${f.index}/image`, { revision: String(job.revision), expected_sha256: f.sha256 }),
       sha256: f.sha256, locked: i === 0 || i >= count - 1 - hold, label: `候选第 ${f.index + 1} 帧`,
     }));
   }, [graph, selectedStage, work, candidateIndex]);
@@ -449,7 +450,7 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
               playback={rhythm?.playback || 'once'} durations={rhythm?.durations} overlays={overlays} measuredBoxes={measuredBoxes} measuredPivot={measuredPivot}
               radius={pivotRadius} marks={marks} drawMode={drawMode} onDraw={onDraw} frame={frame} onFrame={setFrame} readOnly={readOnly}
               onEditFrame={i => work && edge.timeline && setPixelTarget({ kind: 'motion-frame', workId: work.id, workRevision: work.revision, candidateIndex, frameIndex: edge.timeline.start + i })} />
-            : work?.job ? <><div className="motion-canvas motion-large"><img src={motionUrl(`open-motion/${work.id}/progress-image`, { candidate: String(candidateIndex), revision: String(work.revision), v: String(work.job.revision) })} alt="已确认状态或已保存片段的末帧" /></div>
+            : work?.job ? <><div className="motion-canvas motion-large"><img src={motionUrl(`open-motion/${work.id}/progress-image`, { candidate: String(candidateIndex), revision: String(work.revision), job_revision: String(work.job.revision) })} alt="已确认状态或已保存片段的末帧" /></div>
               <p className="motion-muted">{work.job.plan_control.message || '这段过渡还在制作；显示已确认的状态或最近保存的末帧。'}</p></>
             : work ? <StagePlan work={work} stage={edge.stage} /> : null}
             {pixelTarget && <ImageEditWorkspace target={pixelTarget} readOnly={readOnly} onClose={() => setPixelTarget(null)}

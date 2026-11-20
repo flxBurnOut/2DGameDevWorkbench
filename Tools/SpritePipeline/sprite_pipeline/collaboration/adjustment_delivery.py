@@ -139,6 +139,7 @@ def adopt_clip(manager, task):
     atomic_write_json(version_path,snapshot)
     work.history.append({'revision':work.revision,'title':work.plan.title,'job_id':work.job_id})
     work.revision=new_revision;work.job_id=job_id;work.spec.candidate_count=1
+    work.execution_intent=None;work.auto_execute=False
     work.request_key='adjustment-'+task['id'];work.request_sha256=digest({'adjustment':task['id']})
     work.message='已采用修改版；原版可在历史版本中查看';work.updated_at=now()
     s._atomic_write_bytes(manager.ws.directory(work.id)/f'reference-{new_revision}.png',(manager.folder(task)/'reference.png').read_bytes())

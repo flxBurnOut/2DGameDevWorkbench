@@ -4,7 +4,7 @@ import hashlib
 from .contracts import digest
 from .model_config import ModelRegistry
 from .visual_review import Observations, Audit, evidence_panels, grounded_audit
-from ..attack_timeline import is_context_frame
+from .drawing_frames import FRAME_NORMALIZATION, playback_indices
 from ..errors import ConflictError, ValidationHarnessError
 from ..models import CandidateStatus, utc_now
 from ..vision_evidence import image_part, raster
@@ -76,17 +76,13 @@ class Checkpoints:
         if run.state in {'created', 'submitting', 'pending', 'unknown', 'failed'}:
             raise ConflictError('片段尚未完整保存，暂时不能检查')
         engine = PlanGeneration(self.s)
-        raw = engine.saved_frames(job.job_id, index, stage)
+        raw = engine.saved_frames(job.job_id, index, stage, expected_manifest_sha256=run.frames_manifest_sha256)
         first = self.input_frame(job, index, stage)
         definition = job.request.open_plan.plan.stages[stage]
-        if not definition.frame_count <= len(raw) <= definition.frame_count + 1:
-            raise ValidationHarnessError('片段帧数不符合方案；不补帧、不丢弃实际姿势')
-        offset = int(len(raw) == definition.frame_count + 1 and is_context_frame(raw[0], first))
-        if len(raw) - offset != definition.frame_count:
-            raise ValidationHarnessError('多出的帧不是可确认的输入参考帧，停止衔接')
+        indices = playback_indices(raw, definition.frame_count, first)
         frames = [{'raw_index': i, 'sha256': hashlib.sha256(raw[i]).hexdigest(),
                    'path': (engine.directory(job.job_id,index,stage) / f'frame_{i:03d}.png').relative_to(self.s.store.job_dir(job.job_id)).as_posix()}
-                  for i in range(offset, len(raw))]
+                  for i in indices]
         if run.active_frames is not None:
             from .repairs import LocalRepairs
             if len(run.active_frames)!=len(frames):raise ConflictError('修复版本帧数与原片段不同')
@@ -100,14 +96,16 @@ class Checkpoints:
                         **target_identity,
                         'input_sha256': hashlib.sha256(first).hexdigest()})
         return {'token': token, 'frames': frames, **target_identity, 'input_sha256': hashlib.sha256(first).hexdigest(),
-                'context_removed': bool(offset), 'raw_count': len(raw)}
+                'context_removed': indices[0] != 0, 'raw_count': len(raw),
+                'frame_normalization': FRAME_NORMALIZATION}
 
-    def view(self, job_id, index, stage):
-        job = self.s.store.load(job_id)
+    def view(self, job_id, index, stage, *, job=None, preview=None):
+        job = job if job is not None else self.s.store.load(job_id)
         run = self.run_record(job, index, stage)
-        evidence = self.evidence(job, index, stage)
+        evidence = self.evidence(job, index, stage) if preview is None else preview
         if run.accepted:
-            self.accepted_frames(job, index, stage)
+            if preview is None:
+                self.accepted_frames(job, index, stage)
             if run.accepted['token'] != evidence['token']:
                 raise ConflictError('片段原始内容已改变，已采用记录不能用于新内容')
         edge = transition(job.request.open_plan.plan, stage)
@@ -236,12 +234,12 @@ class Checkpoints:
             if evidence['token'] != token:
                 raise ConflictError('片段或输入姿势已改变，请重新查看；旧结论不可沿用')
             if pinned and decision == 'accept_state':
-                return  # Same selected frame, verified against the current version.
+                return job  # Same selected frame, verified against the current version.
             if run.state == 'accepted' and decision == 'accept' and run.accepted['token'] == token:
                 if run.accepted.get('selected_anchor_frame',len(evidence['frames'])-1) != end:
                     raise ConflictError('该片段已锁定为其他锚点，不能重复确认改写')
                 self.accepted_frames(job,index,stage)
-                return  # Idempotent response recovery, never re-enable a paused task.
+                return job  # Idempotent response recovery, never re-enable a paused task.
             if run.state != 'awaiting_review':
                 raise ConflictError('当前片段不能重复裁决或绕过未完成的检查')
             from .adjustments import pending_adjustment
@@ -273,7 +271,7 @@ class Checkpoints:
                     current.plan_control.enabled = False
                     current.plan_control.message = '状态帧已锁定，过渡仍待修复或确认'
                     current.touch('open_motion_state_frame_accepted', candidate_index=index, stage=stage, frame=end)
-                return
+                return current
             snapshot = None
             if decision == 'accept':
                 # Keep Windows paths short; full identity and integrity hashes stay in the record.
@@ -300,3 +298,4 @@ class Checkpoints:
                 if not snapshot:self.s._candidate(current,index).status = CandidateStatus.rejected
                 self.s._refresh_job_status(current)
                 current.touch('open_motion_checkpoint_decided',candidate_index=index,stage=stage,decision=decision)
+            return current

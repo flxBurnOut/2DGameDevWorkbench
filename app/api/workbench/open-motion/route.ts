@@ -1,9 +1,21 @@
 import manifest from '@/workbench/manifest.json';
 import { trustedRequest } from '@/lib/workbench/request-security.mjs';
+import { endpointUrl } from '@/lib/workbench/service-endpoints.mjs';
 
 // Deliberately bounded proxy: no arbitrary URL, path, header or method passthrough.
 const work = '[0-9a-f]{32}';
 const job = '[a-zA-Z0-9_]{1,200}';
+const workPath = `open-motion/${work}`;
+const segment = `${workPath}/candidates/[1-8]/stages/[0-3]`;
+const indexedFrame = 'frames/[0-9]{1,2}';
+const stageFrame = new RegExp(`^${segment}/${indexedFrame}$`);
+const workReference = new RegExp(`^${workPath}/reference$`);
+const progressImage = new RegExp(`^${workPath}/progress-image$`);
+const tokenMedia = new RegExp(`^(?:${segment}/(?:repairs/[0-1]/)?${indexedFrame}|${workPath}/adjustments/${work}/(?:source|proposed)/[0-9]{1,2})$`);
+const editSource = new RegExp(`^${workPath}/edit-source/[0-9]{1,2}$`);
+const hashMedia = new RegExp(`^(?:jobs/${job}/(?:candidates/[1-8]/${indexedFrame}/image|exports/(?:sheet|preview|godot))|${segment}/state-image|${workPath}/(?:reference|targets/[0-3]|derived/${work}/${indexedFrame}))$`);
+const sha256 = /^[0-9a-f]{64}$/;
+const positiveRevision = /^[1-9][0-9]{0,14}$/;
 const structureRead = new RegExp(`^open-motion/(?:structure-runtime|references/[a-z0-9_]+/structure|structures/${work}(?:/source|/masks/[a-z][a-z0-9_-]{0,63})?)$`);
 const structureWrite = new RegExp(`^open-motion/structures(?:/${work}/corrections)?$`);
 const temporalRead = new RegExp(`^open-motion/(?:${work}/temporal|temporal-structures/${work}(?:/frames/[0-9]{1,3}(?:/parts/[a-z][a-z0-9_-]{0,63})?)?)$`);
@@ -32,21 +44,44 @@ async function proxy(request: Request) {
     : undefined;
   if (!base)
     return Response.json({ error: '序列帧服务未配置' }, { status: 503 });
-  const target = new URL(`/v1/${path}`, base);
-  const revision = url.searchParams.get('revision');
-  if (revision) {
-    if (!/^[1-9][0-9]{0,3}$/.test(revision))
+  const target = new URL(endpointUrl(base, `/v1/${path}`));
+  const legacyVersion = url.searchParams.get('v');
+  const legacyWorkRevision = workReference.test(path) && legacyVersion !== null && positiveRevision.test(legacyVersion) ? legacyVersion : null;
+  const revision = url.searchParams.get('revision') ?? legacyWorkRevision;
+  if (revision !== null) {
+    if ((!positiveRevision.test(revision) && !(revision === '0' && path.startsWith('jobs/')))
+        || (legacyWorkRevision !== null && legacyWorkRevision !== revision))
       return Response.json({ error: '版本号无效' }, { status: 400 });
     target.searchParams.set('revision', revision);
+  }
+  const legacyJobRevision = progressImage.test(path) ? legacyVersion : null;
+  const jobRevision = url.searchParams.get('job_revision') ?? legacyJobRevision;
+  if (jobRevision !== null) {
+    if (!progressImage.test(path) || !(jobRevision === '0' || positiveRevision.test(jobRevision))
+        || (legacyJobRevision !== null && legacyJobRevision !== jobRevision))
+      return Response.json({ error: 'Job 版本号无效' }, { status: 400 });
+    target.searchParams.set('job_revision', jobRevision);
+  }
+  // Older callers overloaded v with different identities. Each media route binds
+  // the identity it previously displayed, including the stage adjustment token.
+  const legacyHash = hashMedia.test(path) && legacyWorkRevision === null ? legacyVersion : null;
+  const expectedSha = url.searchParams.get('expected_sha256') ?? legacyHash;
+  if (expectedSha !== null) {
+    if (!(hashMedia.test(path) || tokenMedia.test(path)) || !sha256.test(expectedSha) || (legacyHash !== null && legacyHash !== expectedSha))
+      return Response.json({ error: '图片哈希无效' }, { status: 400 });
+    target.searchParams.set('expected_sha256', expectedSha);
   }
   const candidate = url.searchParams.get('candidate');
   if (candidate && /^[1-8]$/.test(candidate))
     target.searchParams.set('candidate', candidate);
-  // Exact frame sources for deterministic panel tools are bound to their adjustment token.
   const frameToken = url.searchParams.get('token');
-  if (frameToken !== null) {
-    if (!/^[0-9a-f]{64}$/.test(frameToken)) return Response.json({ error: '帧来源标识无效' }, { status: 400 });
-    target.searchParams.set('token', frameToken);
+  const legacyToken = tokenMedia.test(path) ? legacyVersion : null;
+  const previewToken = frameToken ?? legacyToken;
+  if (previewToken !== null) {
+    if (!(tokenMedia.test(path) || editSource.test(path)) || !sha256.test(previewToken)
+        || (legacyToken !== null && legacyToken !== previewToken))
+      return Response.json({ error: '帧来源标识无效' }, { status: 400 });
+    target.searchParams.set(frameToken === null && stageFrame.test(path) ? 'legacy_token' : 'token', previewToken);
   }
   const stage = url.searchParams.get('stage');
   if (stage !== null) {

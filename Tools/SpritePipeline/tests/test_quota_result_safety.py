@@ -368,9 +368,9 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         )
         provider = SequencedProvider(self._frame_bytes())
         provider.poll_count = 1
-        from sprite_pipeline import service as service_module
+        from sprite_pipeline import job_execution
 
-        original_write = service_module.atomic_write_json
+        original_write = job_execution.atomic_write_json
 
         def fail_only_poll_audit(path: Path, payload: object) -> None:
             if path.name.endswith(".poll.response.json"):
@@ -380,7 +380,7 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         with (
             patch("sprite_pipeline.providers.get_provider", return_value=provider),
             patch(
-                "sprite_pipeline.service.atomic_write_json",
+                "sprite_pipeline.job_execution.atomic_write_json",
                 side_effect=fail_only_poll_audit,
             ),
         ):

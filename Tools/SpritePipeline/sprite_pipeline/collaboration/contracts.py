@@ -416,6 +416,12 @@ def digest(value: Any) -> str:
                                      separators=(",", ":")).encode()).hexdigest()
 
 
+def adjustment_source_token(job, work_revision, frame_token):
+    return digest({'token': frame_token, 'fps': job.action.fps, 'loop': job.action.loop,
+                   'reference': job.reference_sha256, 'plan': job.request.open_plan.plan_sha256,
+                   'revision': work_revision})
+
+
 def user_source(spec):
     """Every text the user actually supplied; a user requirement must quote it."""
     source = spec.description + "\n" + spec.ending
@@ -586,6 +592,7 @@ class StageRun(Contract):
     provider_job_id: str | None = None
     error: dict[str, Any] | None = None
     actual_frame_count: int = Field(default=0, ge=0, le=64)
+    frames_manifest_sha256: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
     usage: dict[str, Any] = Field(default_factory=dict)
     review: dict[str, Any] | None = None
     accepted: dict[str, Any] | None = None
@@ -598,6 +605,7 @@ class StageRun(Contract):
     @model_serializer(mode='wrap')
     def preserve_legacy_stage(self, handler):
         data=handler(self)
+        if self.frames_manifest_sha256 is None: data.pop('frames_manifest_sha256', None)
         if self.state_checkpoint is None: data.pop('state_checkpoint', None)
         if not self.adjustment_history:data.pop('adjustment_history',None)
         return data
@@ -615,6 +623,18 @@ class PlanExecution(Contract):
 class PlanControl(Contract):
     enabled: bool = False
     message: str = "等待确认制作方案"
+
+
+class ExecutionIntent(Contract):
+    version: Literal[1] = 1
+    revision: int = Field(ge=1)
+    plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    targets_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization: Literal['automatic', 'explicit', 'legacy_binding']
+    phase: Literal['authorized', 'paused', 'active'] = 'authorized'
+    generation_account: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    allow_unsupported_motion: bool = False
+    activation_error: dict[str, str] | None = None
 
 
 class OpenWork(Contract):
@@ -636,6 +656,7 @@ class OpenWork(Contract):
     plan: PlanProposal | None = None
     plan_sha256: str | None = None
     job_id: str | None = None
+    execution_intent: ExecutionIntent | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
     planning_authorized: bool = False
     auto_execute: bool = False
@@ -651,6 +672,7 @@ class OpenWork(Contract):
     @model_serializer(mode='wrap')
     def preserve_structure_free_work(self,handler):
         data=handler(self)
+        if self.execution_intent is None:data.pop('execution_intent',None)
         if self.experiment is None:data.pop('experiment',None)
         if self.visual_structure is None:data.pop('visual_structure',None)
         if self.planning_format_version is None:data.pop('planning_format_version',None)

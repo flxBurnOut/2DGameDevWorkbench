@@ -6,7 +6,6 @@ import re
 import uuid
 from contextlib import nullcontext
 from datetime import datetime, timezone
-from pathlib import Path
 from pydantic import ValidationError
 
 from ..errors import ConflictError, HarnessError, InvalidPlanningResponse, NotFoundError, ValidationHarnessError
@@ -18,10 +17,16 @@ from .planning import PLANNING_FORMAT_VERSION, PlanningModel
 from .planning_observations import REFERENCE_CROP_FOLLOWUP, reusable_observations
 from .generation_conditions import DEFAULT_GENERATION_POLICY
 from .visibility_review import DEFAULT_VISIBILITY_REVIEW
+from .execution_authorization import ExecutionAuthorization, can_auto_start
 
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def record_error(exc, **identity):
+    return {**identity, 'type': type(exc).__name__,
+            **({'code': exc.code, 'message': exc.message} if isinstance(exc, HarnessError) else {})}
 
 
 class OpenMotionWorkspace:
@@ -30,6 +35,7 @@ class OpenMotionWorkspace:
         self.store = service.store
         self.root = service.settings.data_root / "open-motion"
         self.model = model or getattr(service, "open_motion_model", None) or PlanningModel(service.settings)
+        self.execution = ExecutionAuthorization(self)
 
     def directory(self, work_id):
         if not re.fullmatch(r"[0-9a-f]{32}", work_id):
@@ -42,17 +48,25 @@ class OpenMotionWorkspace:
             raise NotFoundError("未找到此作品")
         current = OpenWork.model_validate(read_json(path))
         from .structure_control import verify_structure
+        if current.id != work_id:
+            raise ConflictError('作品记录与路径不匹配')
         verify_structure(current.visual_structure,current.reference_sha256)
         if revision is not None and revision != current.revision:
-            if not isinstance(revision, int) or revision < 1:
-                raise ValidationHarnessError("版本号无效")
-            path = self.directory(work_id) / f"version-{revision}.json"
-            if not path.is_file():
-                raise NotFoundError("未找到此版本")
-            historical = OpenWork.model_validate(read_json(path))
-            verify_structure(historical.visual_structure,historical.reference_sha256)
-            return historical
+            return self.historical(work_id, revision)
         return current
+
+    def historical(self, work_id, revision):
+        if not isinstance(revision, int) or revision < 1:
+            raise ValidationHarnessError('版本号无效')
+        path = self.directory(work_id) / f'version-{revision}.json'
+        if not path.is_file():
+            raise NotFoundError('未找到此版本')
+        work = OpenWork.model_validate(read_json(path))
+        if work.id != work_id or work.revision != revision:
+            raise ConflictError('历史版本记录与路径不匹配')
+        from .structure_control import verify_structure
+        verify_structure(work.visual_structure, work.reference_sha256)
+        return work
 
     def save(self, work):
         work.updated_at = now()
@@ -63,7 +77,10 @@ class OpenMotionWorkspace:
         return self.store.global_lock("open-work-" + work_id, timeout_seconds=timeout)
 
     def reference(self, work):
-        data = (self.directory(work.id) / f"reference-{work.revision}.png").read_bytes()
+        try:
+            data = (self.directory(work.id) / f"reference-{work.revision}.png").read_bytes()
+        except FileNotFoundError as exc:
+            raise ConflictError('作品参考图缺失，已停止执行') from exc
         if hashlib.sha256(data).hexdigest() != work.reference_sha256:
             raise ConflictError("作品参考图已改变，已停止执行")
         return data
@@ -88,20 +105,44 @@ class OpenMotionWorkspace:
             raise ConflictError('原始规划作品与请求回执不一致')
         return work
 
-    def listing(self):
+    def revision_request(self, work_id, request_key, *, current=None):
+        self.request_path(request_key)
+        current = current or self.load(work_id)
+        if current.request_key == request_key:
+            return current
+        for revision in range(current.revision - 1, 0, -1):
+            try:
+                historical = self.historical(work_id, revision)
+            except NotFoundError as exc:
+                raise ConflictError('作品历史不完整，无法核对原请求标识') from exc
+            if historical.request_key == request_key:
+                return historical
+        raise NotFoundError('未找到此作品的请求')
+
+    def records(self, errors, *, stopping=lambda: False):
+        for path in self.root.glob('*/work.json'):
+            if stopping():
+                break
+            work_id = path.parent.name
+            try:
+                yield self.load(work_id)
+            except (HarnessError, OSError, ValueError, KeyError, TypeError) as exc:
+                errors.append(record_error(exc, work_id=work_id, phase='read'))
+
+    def listing(self, *, errors=None):
+        errors = [] if errors is None else errors
         rows = []
         jobs = {j['job_id']: j for j in self.store.list_jobs()}
-        for path in self.root.glob("*/work.json"):
+        for w in self.records(errors):
             try:
-                w = self.load(path.parent.name)
                 job = jobs.get(w.job_id, {})
                 rows.append({"id": w.id, "revision": w.revision, "title": w.plan.title if w.plan else w.spec.description[:60],
                              "status": w.status, "job_id": w.job_id, "job_status": job.get("status"),
                              "updated_at": max(w.updated_at, job.get("updated_at", "")),
                              "object_id": w.spec.object_id, "object_type": w.spec.object_type, "object_name": w.character["display_name"],
                              "character_name": w.character["display_name"], "diagnostic_only": w.spec.provider == "fixture"})
-            except (ValueError, OSError, KeyError):
-                continue
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                errors.append(record_error(exc, work_id=w.id, phase='summary'))
         return sorted(rows, key=lambda row: row["updated_at"], reverse=True)
 
     def create(self, spec, request_key, *, planning_authorized=False, auto_execute=False, planning_models=None):
@@ -188,10 +229,14 @@ class OpenMotionWorkspace:
         with self.lock(work_id):
             work = self.load(work_id)
             fingerprint = digest({"spec": spec.model_dump(mode="json"), "auto_execute": False})
-            if work.request_key == request_key:
-                if work.request_sha256 != fingerprint:
+            try:
+                previous = self.revision_request(work_id, request_key, current=work)
+            except NotFoundError:
+                previous = None
+            if previous:
+                if previous.request_sha256 != fingerprint or previous.revision != expected_revision + 1:
                     raise ConflictError("同一请求标识已用于其他需求")
-                return work
+                return previous
             # Revising an older task does not silently upgrade its policy/cost.
             if spec.review_protocol is None:
                 spec = spec.model_copy(update={'review_protocol': work.spec.review_protocol or 'baseline'})
@@ -222,6 +267,7 @@ class OpenMotionWorkspace:
             work.version = 3
             work.character = self.service.presets.object_snapshot(character); work.reference_sha256 = hashlib.sha256(data).hexdigest()
             work.plan = None; work.plan_sha256 = None; work.job_id = None
+            work.execution_intent = None
             work.end_targets = []
             work.frame_budget = None
             work.planning_calls = []; work.messages = []; work.status = "planning"
@@ -263,6 +309,8 @@ class OpenMotionWorkspace:
             work = self.load(work_id)
             if work.status != "planning":
                 return work
+            if not work.planning_authorized:
+                raise ConflictError('作品缺少已保存的规划授权')
             if work.planning_calls:
                 work.status = "planning_failed"
                 work.message = "规划曾被中断，已保留调用记录；请明确重新制定方案，不会自动重发"
@@ -426,17 +474,21 @@ class OpenMotionWorkspace:
                             work.message = "起始图前提未满足，请核对原图：" + "；".join(blockers)
                         elif unsupported and work.status == "ready":
                             work.message = "当前生成器不适合带遮挡的刚体平移，请决定是否仍要尝试"
+                        if can_auto_start(work):
+                            work.execution_intent = self.execution.intent(work, 'automatic')
+                            work.message = '制作授权已保存，正在绑定原任务'
                         self.save(work)
-                        if work.auto_execute and work.status == "ready" and not unsupported and not stopping():
-                            return self.start(work.id, work.revision, work.plan_sha256)
-                        return work
+                        break
                     else:
                         contributed.add(role)
                         if role == "coordinator" and not queue:
                             queue.append((role, "Finalize a plan, or publish a plan with explicit questions if user input is required.", None))
                     self.save(work)
-                raise ValidationHarnessError("专家未形成可执行方案；已有提案保留")
+                else:
+                    raise ValidationHarnessError("专家未形成可执行方案；已有提案保留")
             except Exception as exc:
+                if work.status == 'ready' and work.plan is not None:
+                    raise  # A finalized plan is not a failed model call.
                 if work.planning_calls and work.planning_calls[-1]["state"] == "submitting":
                     work.planning_calls[-1].update(state='outcome_unknown', finished_at=now())
                     if isinstance(exc, ValidationHarnessError) and exc.details.get("model_receipt"):
@@ -447,20 +499,43 @@ class OpenMotionWorkspace:
                 work.message = str(exc) if isinstance(exc, (ConflictError, ValidationHarnessError)) else "规划未完成，已保留记录；不会自动重复调用模型"
                 self.save(work)
                 return work
+            if work.execution_intent and not stopping():
+                return self.start(work.id, work.revision, work.plan_sha256)
+            return work
 
     def recover_planning(self, *, stopping=lambda: False):
+        summary = {'checked_at': now(), 'checked': 0, 'advanced': [], 'errors': []}
         if not stopping():
-            self._recover_creations(stopping)
-        for row in self.listing():
-            if stopping():
-                break
-            if row["status"] == "planning":
-                try:
-                    self.plan(row["id"], stopping=stopping)
-                except ConflictError:
-                    pass  # Another process owns this planning request.
+            self._recover_creations(stopping, summary['errors'])
+        jobs = None
+        for work in self.records(summary['errors'], stopping=stopping):
+            summary['checked'] += 1
+            try:
+                if work.status == 'planning':
+                    updated = self.plan(work.id, stopping=stopping)
+                elif work.execution_intent:
+                    if work.execution_intent.phase != 'authorized':
+                        continue
+                    updated, _ = self.execution.recover(work)
+                elif work.job_id:
+                    if jobs is None:
+                        jobs = {row['job_id']: row for row in self.store.list_jobs()}
+                    if jobs.get(work.job_id, {}).get('generation_requested'):
+                        continue
+                    updated, _ = self.execution.recover(work)
+                elif can_auto_start(work):
+                    updated, _ = self.execution.recover(work)
+                else:
+                    continue
+                if updated.updated_at != work.updated_at:
+                    summary['advanced'].append({'work_id': work.id, 'revision': updated.revision, 'status': updated.status})
+            except (HarnessError, OSError, ValueError, KeyError, TypeError) as exc:
+                if not isinstance(exc, ConflictError) or not exc.details.get('operation'):
+                    phase = 'planning' if work.status == 'planning' else 'execution'
+                    summary['errors'].append(record_error(exc, work_id=work.id, phase=phase))
+        return summary
 
-    def _recover_creations(self, stopping):
+    def _recover_creations(self, stopping, errors):
         requests = self.root / 'requests'
         prepared_paths = list((requests / 'pending').glob('*.json'))
         if not prepared_paths:
@@ -475,112 +550,64 @@ class OpenMotionWorkspace:
                         continue
                     try:
                         key = read_json(prepared)['request_key']
-                        if isinstance(key, str) and self.request_path(key) == receipt:
-                            self._publish_creation(prepared, key, read_json(receipt))
-                    except (HarnessError, OSError, ValueError, KeyError):
-                        # Other work remains dispatchable. Direct lookup/retry reports this record's error.
-                        continue
+                        if not isinstance(key, str) or self.request_path(key) != receipt:
+                            raise ConflictError('准备记录与原始请求标识不一致')
+                        self._publish_creation(prepared, key, read_json(receipt))
+                    except (HarnessError, OSError, ValueError, KeyError, TypeError) as exc:
+                        errors.append(record_error(exc, request_sha256=prepared.stem, phase='creation'))
         except ConflictError:
             pass  # A foreground create owns the publication lock.
 
     def start(self, work_id, expected_revision, plan_sha256, *, allow_unsupported_motion=False, expected_targets=None):
-        from ..models import GenerationRequest, utc_now
-        from ..providers.account import account_key
-        with self.lock(work_id):
-            work = self.load(work_id)
-            settings = self.service.settings
-            account = account_key(settings) if work.spec.provider == 'pixellab' and settings.pixellab_api_key else None
-            if work.revision != expected_revision or work.plan_sha256 != plan_sha256:
-                raise ConflictError("方案版本已改变，请查看最新方案")
-            from .targets import check_target_set, verified_target
-            check_target_set(work.end_targets, expected_targets)
-            if work.job_id:
-                # Repair a crash between binding the job and enabling it. A
-                # previously started/paused job must never be re-enabled here.
-                from .targets import freeze_targets
-                freeze_targets(self, work, work.job_id)
-                with self.store.locked_job(work.job_id) as current:
-                    if current.generation_requested_at is None:
-                        current.plan_control.enabled = True
-                        current.generation_account = current.generation_account or account
-                        current.generation_requested_at = utc_now()
-                        current.touch("open_plan_authorized", plan_sha256=work.plan_sha256)
-                return work  # An ambiguous client response never submits twice.
-            if work.status != "ready" or work.plan is None:
-                raise ConflictError("方案尚未就绪")
-            from .structure_control import require_current_structure
-            require_current_structure(self.service,work.visual_structure,work.reference_sha256)
-            from .quality import compiled_prompt
-            from .contracts import prop_contract
-            prop = prop_contract(work.plan)
-            unsupported = prop and prop.motion_type == 'occluded_rigid_translation'
-            if unsupported and not allow_unsupported_motion:
-                raise ValidationHarnessError('当前生成器不适合带遮挡的刚体平移，请确认是否仍要尝试')
-            for target in work.end_targets:
-                verified_target(self.directory(work_id) / target.filename, target.sha256)
-            binding = PlanBinding(prop_structure_policy=1 if prop and work.frame_budget is not None else None,
-                                  unsupported_motion_acknowledged=True if unsupported else None, work_id=work.id, revision=work.revision, plan_sha256=work.plan_sha256,
-                                  reference_sha256=work.reference_sha256, spec=work.spec, plan=work.plan,
-                                  model_snapshot=work.planning_config,
-                                  visual_structure=work.visual_structure,
-                                  generation_policy_version=work.generation_policy_version,
-                                  visibility_review_version=work.visibility_review_version,
-                                  end_targets=work.end_targets,
-                                  compiled_prompts=[compiled_prompt(work.plan, self.service.presets.load_object(work.spec.object_id, object_type=work.spec.object_type)[0], i,
-                                                                   policy_version=work.generation_policy_version) for i in range(len(work.plan.stages))])
-            request = GenerationRequest(**work.spec.identity_fields(), action_id="motion_" + work.id[:12],
-                                        provider=work.spec.provider, candidate_count=work.spec.candidate_count,
-                                        seed=work.spec.seed, request_key=f"open-motion-{work.id}-{work.revision}", open_plan=binding)
-            job = self.service.create_job(request)
-            if account and not job.generation_account:
-                with self.store.locked_job(job.job_id) as current:
-                    current.generation_account = current.generation_account or account
-            work.job_id = job.job_id; work.status = "executing"; work.message = "正在按方案制作"
-            # Persist the binding before enabling any provider work.
-            self.save(work)
-            from .targets import freeze_targets
-            freeze_targets(self, work, job.job_id)
-            with self.store.locked_job(job.job_id) as current:
-                current.plan_control.enabled = True
-                current.plan_control.message = "等待执行计划"
-                current.generation_requested_at = current.generation_requested_at or utc_now()
-                current.touch("open_plan_authorized", plan_sha256=work.plan_sha256)
-            return work
+        work, _ = self.execution.start(work_id, expected_revision, plan_sha256,
+                                       allow_unsupported_motion=allow_unsupported_motion, expected_targets=expected_targets)
+        return work
 
     def pause(self, work_id, expected_revision, *, resume=False):
-        with self.lock(work_id):
-            work = self.load(work_id)
-            if work.revision != expected_revision or not work.job_id:
-                raise ConflictError("当前版本没有可暂停的生成")
-            with self.store.locked_job(work.job_id) as job:
-                if resume and any(r.state in {'reviewing', 'awaiting_review', 'rejected'} for c in job.candidates for r in c.plan_execution.stages):
-                    raise ConflictError('请先检查当前片段并确认实际姿势；继续按钮不能绕过分段验收')
-                if resume and any(c.status.value in {"submission_unknown", "failed"} and not c.frames for c in job.candidates):
-                    raise ConflictError("请先查询原请求解决异常；无法取回时可修改需求建立新版本，不会重发原片段")
-                job.plan_control.enabled = resume
-                job.plan_control.message = "继续按已授权方案制作" if resume else "已暂停后续提交，已发出的请求仍会取回"
-                job.touch("open_plan_resumed" if resume else "open_plan_paused")
-            return work
+        work, _ = self.execution.pause(work_id, expected_revision, resume=resume)
+        return work
 
     def view(self, work_id, revision=None):
-        work = self.load(work_id)
-        latest_revision = work.revision
-        if revision is not None and revision != work.revision:
-            work = self.load(work_id, revision)
+        current = self.load(work_id)
+        work = self.historical(work_id, revision) if revision is not None and revision != current.revision else current
+        job = self.store.load(work.job_id) if work.job_id else None
+        return self.render(work, job, current_revision=current.revision)
+
+    def command_view(self, operation, work, job):
+        result = self.render(work, job, current_revision=self.load(work.id).revision)
+        result['command_receipt'] = {'version': 1, 'operation': operation, 'work_id': work.id,
+            'work_revision': work.revision, 'job_id': job.job_id if job else None,
+            'job_revision': job.revision if job else None, 'current_revision': result['current_revision']}
+        return result
+
+    def render(self, work, job, *, current_revision):
         result = work.model_dump(mode="json")
         from .targets import target_set_hash
         result["target_set_sha256"] = target_set_hash(work.end_targets)
-        result["latest_revision"] = latest_revision
-        job = self.store.load(work.job_id) if work.job_id else None
+        result["latest_revision"] = current_revision
+        result["current_revision"] = current_revision
+        if job:
+            binding = job.request.open_plan
+            if (job.job_id != work.job_id or not binding or binding.work_id != work.id
+                    or binding.revision != work.revision or binding.plan_sha256 != work.plan_sha256):
+                raise ConflictError('作品和 Job 快照来源不匹配')
         result["job"] = job.model_dump(mode="json") if job else None
-        if job and work.spec.object_type == 'interactable':
+        if job:
             from .state_chain import state_images
+            from .visual_review import frame_digest, review_state
             for candidate, view in zip(job.candidates, result["job"]["candidates"], strict=True):
-                view["state_chain"] = state_images(job, candidate)
+                view["review_token"] = frame_digest(candidate)
+                if work.plan.quality:
+                    view["quality_review"] = review_state(candidate)
+                if work.spec.object_type == 'interactable':
+                    view["state_chain"] = state_images(job, candidate)
         result["view_path"] = ("/tools/interactable-motion?work=" if work.spec.object_type == "interactable" else "/tools/sprite-generator?work=") + work.id
         result["diagnostic_only"] = work.spec.provider == "fixture" or bool(result["job"] and any(c["diagnostic_only"] for c in result["job"]["candidates"]))
         from .adjustments import Adjustments
-        adjustments=Adjustments(self.service).listing(work.id)
+        errors = []
+        adjustments = Adjustments(self.service).listing(work.id, errors=errors)
+        if errors:
+            result['adjustment_record_errors'] = errors
         if adjustments:
             result['adjustment_usage']={k:sum(len(t[k+'_calls']) for t in adjustments) for k in ('planning','generation','review')}
             result['adjustment_usage']['tasks']=[{k:t[k] for k in ('id','revision','candidate','stage','state')} for t in adjustments]

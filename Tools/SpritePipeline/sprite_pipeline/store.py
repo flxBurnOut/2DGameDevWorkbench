@@ -377,6 +377,18 @@ class JobStore:
         except (ConflictError, OSError):
             return self._summary_from_job(self.load(directory.name))
 
+    def load_revision(self, job_id: str, revision: int | None = None) -> JobRecord:
+        current = self.load(job_id)
+        if revision is None or current.revision == revision:
+            return current
+        history = self.resolve_job_path(job_id, f'history/job_{revision:08d}.json')
+        if not history.is_file():
+            raise NotFoundError('requested job revision not found', details={'job_id': job_id, 'revision': revision})
+        previous = JobRecord.model_validate(read_json(history))
+        if previous.job_id != job_id or previous.revision != revision:
+            raise ConflictError('job revision identity does not match its record')
+        return previous
+
     def find_by_request_key(self, request_key: str) -> JobRecord | None:
         if not request_key:
             return None
@@ -407,6 +419,15 @@ class JobStore:
     def resolve_job_path(self, job_id: str, relative: str) -> Path:
         return inside(self.job_dir(job_id), self.job_dir(job_id) / Path(relative))
 
+    def job_summary(self, job_id: str) -> dict[str, Any]:
+        directory = self.job_dir(job_id)
+        if not directory.is_dir():
+            raise NotFoundError("job not found", details={"job_id": job_id})
+        try:
+            return self._read_summary(directory)
+        except (OSError, ValueError, KeyError):
+            return self._repair_summary(directory)
+
     def list_jobs(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         if not self.settings.work_dir.exists():
@@ -418,12 +439,9 @@ class JobStore:
         ]
         for directory in sorted(directories, key=lambda item: item.name, reverse=True):
             try:
-                result.append(self._read_summary(directory))
+                result.append(self.job_summary(directory.name))
             except Exception:
-                try:
-                    result.append(self._repair_summary(directory))
-                except Exception:
-                    result.append({"job_id": directory.name, "status": "invalid", "updated_at": ""})
+                result.append({"job_id": directory.name, "status": "invalid", "updated_at": ""})
         return sorted(
             result,
             key=lambda row: (str(row.get("updated_at", "")), str(row.get("job_id", ""))),

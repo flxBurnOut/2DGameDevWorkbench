@@ -175,13 +175,14 @@ try {
     assert.deepEqual(graph.pendingDraftTargets({ ...work, end_targets: [{ stage: 0 }] }, draft), []);
   });
 
-  test('historical state and target URLs are tied to their exact work revision', () => {
+  test('historical state and target URLs carry their exact work revision and pixel hash', () => {
     const work = { id: 'w', revision: 2, latest_revision: 3 };
+    const sha256 = 'a'.repeat(64);
     for (const path of ['candidates/1/stages/0/state-image', 'targets/1']) {
-      const url = new URL(graph.nodeImageUrl({ index: 1, image: { path, v: 'hash' } }, work, ''), 'http://example.test');
+      const url = new URL(graph.nodeImageUrl({ index: 1, image: { path, sha256 } }, work, ''), 'http://example.test');
       assert.equal(url.searchParams.get('path'), `open-motion/w/${path}`);
       assert.equal(url.searchParams.get('revision'), '2');
-      assert.equal(url.searchParams.get('v'), 'hash');
+      assert.equal(url.searchParams.get('expected_sha256'), sha256);
     }
   });
 

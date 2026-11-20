@@ -1150,7 +1150,7 @@ function OpenMotionStudio({
                           {
                             candidate: String(candidateIndex),
                             revision: String(work.revision),
-                            v: String(work.job.revision),
+                            job_revision: String(work.job.revision),
                           },
                         )}
                         alt="原图或已保存片段的最后一帧"
@@ -1644,7 +1644,7 @@ function StateImages({work, candidate}: {work: MotionWork; candidate: MotionCand
       const path = state.stage === null ? 'reference' : `candidates/${candidate.candidate_index}/stages/${state.stage}/state-image`;
       return <li key={state.stage ?? 'reference'}>
         <img width={64} height={64} loading="lazy" alt={state.name} src={motionUrl(`open-motion/${work.id}/${path}`, {
-          revision: String(work.revision), v: state.sha256,
+          revision: String(work.revision), expected_sha256: state.sha256,
         })} />
         {state.name} · {state.stage === null ? '参考原图' : `第 ${state.stage + 1} 段，提供方第 ${(state.raw_index ?? 0) + 1} 帧`}
       </li>;
@@ -1692,7 +1692,7 @@ function FramePlayer({
   const current = candidate.frames[Math.min(frame, count - 1)];
   const url = motionUrl(
     `jobs/${job.job_id}/candidates/${candidate.candidate_index}/frames/${current.index}/image`,
-    { v: current.sha256 },
+    { revision: String(job.revision), expected_sha256: current.sha256 },
   );
   const stage = candidate.plan_execution.timeline.find(
     (s) => current.index >= s.start && current.index < s.start + s.count,

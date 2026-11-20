@@ -13,6 +13,7 @@ import type { ReactNode } from 'react';
 
 type Evidence = {
   token: string;
+  job_revision?: number;
   state: string;
   fps: number;
   frames: { sha256: string; raw_index: number }[];
@@ -45,7 +46,7 @@ export function MotionStageReview({work, candidate, stage, readOnly, onSaved, ex
     void motionRequest<Evidence>(route,undefined,{revision:String(work.revision)},abort.signal).then(next=>{
       if(abort.signal.aborted)return;
       setData(previous=>previous?.token===next.token&&previous?.state===next.state&&previous?.state_checkpoint?.sha256===next.state_checkpoint?.sha256&&JSON.stringify(previous?.review)===JSON.stringify(next.review)&&JSON.stringify(previous?.repairs)===JSON.stringify(next.repairs)?previous:next);
-      setEvidenceRevision(work.job?.revision??null);
+      setEvidenceRevision(next.job_revision??work.job?.revision??null);
     }).catch(e=>{if(!abort.signal.aborted)setError(e.message);});
     return ()=>abort.abort();
   },[route,work.revision,work.job?.revision]);
@@ -55,7 +56,7 @@ export function MotionStageReview({work, candidate, stage, readOnly, onSaved, ex
     let live=true;
     void Promise.all(Array.from({length:frameCount},(_,i)=>new Promise<void>((resolve,reject)=>{
       const img=new Image();img.onload=()=>resolve();img.onerror=()=>reject(new Error('片段图片未完整加载，请刷新后检查。'));
-      img.src=motionUrl(`${route}/frames/${i}`,{revision:String(work.revision),v:evidenceToken});
+      img.src=motionUrl(`${route}/frames/${i}`,{revision:String(work.revision),token:evidenceToken});
     }))).then(()=>{if(live){setLoadedToken(evidenceToken);setPlayed(false);setWatched(false);setFrame(0);setPlaying(false);}}).catch(e=>{if(live)setError(e.message);});
     return ()=>{live=false;};
   },[evidenceToken,frameCount,frameFps,route,work.revision]);
@@ -86,7 +87,7 @@ export function MotionStageReview({work, candidate, stage, readOnly, onSaved, ex
     {data.transition && <p>{data.transition.from_state} → {data.transition.to_state}</p>}
     <p>候选 {candidate} · 本段 {data.frames.length} 帧。检查完整片段后，末帧将锁定为下一段的实际姿势锚点。</p>
     <div className="motion-canvas motion-large">
-      <img src={motionUrl(`${route}/frames/${frame}`,{...query,v:data.token})} alt={`当前片段第 ${frame+1} 帧`} onError={()=>{setLoadedToken('');setError('图片读取失败，不能确认此段。');}} />
+      <img src={motionUrl(`${route}/frames/${frame}`,{...query,token:data.token})} alt={`当前片段第 ${frame+1} 帧`} onError={()=>{setLoadedToken('');setError('图片读取失败，不能确认此段。');}} />
     </div>
     <div className="motion-card-title">
       <label>人工检查用时（秒，可留空）<input aria-label="人工检查用时" type="number" min={0} max={86400} step={1} value={reviewSeconds} onChange={e=>setReviewSeconds(e.target.value)}/></label>
@@ -108,11 +109,11 @@ export function MotionStageReview({work, candidate, stage, readOnly, onSaved, ex
     <MotionPanel title="高级工具">
     <MotionTemporalStructure work={work} candidate={candidate} stage={stage} frame={frame} frameSha={data.frames[frame]?.sha256||''}
       playing={false} readOnly={readOnly} onFrame={value=>setFrame(Math.max(0,Math.min(data.frames.length-1,value)))} onStop={()=>setPlaying(false)}>
-      <img src={motionUrl(`${route}/frames/${frame}`,{...query,v:data.token})} alt={`结构观察第 ${frame+1} 帧`} decoding="async" />
+      <img src={motionUrl(`${route}/frames/${frame}`,{...query,token:data.token})} alt={`结构观察第 ${frame+1} 帧`} decoding="async" />
     </MotionTemporalStructure>
     <input aria-label="工具逐帧查看" type="range" min={0} max={data.frames.length-1} value={frame} onChange={e=>{setPlaying(false);setFrame(Number(e.target.value));}} />
     <div className="motion-small-reference">
-      <img src={motionUrl(`${route}/frames/${endpoint}`,{...query,v:data.token})} alt="待确认的实际末姿势" decoding="async" />
+      <img src={motionUrl(`${route}/frames/${endpoint}`,{...query,token:data.token})} alt="待确认的实际末姿势" decoding="async" />
       <div><b>目标末姿势</b><p>{data.definition.checkpoint?.endpoint}</p><p>{data.definition.checkpoint?.rhythm}</p></div>
     </div>
     <details><summary>目标姿势提前到达时，选择实际锚点</summary>

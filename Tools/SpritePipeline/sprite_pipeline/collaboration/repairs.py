@@ -53,7 +53,7 @@ class LocalRepairs:
             result.append(data)
         return result
 
-    def create(self,job_id,index,stage,*,token,start,end,note,mode,request_key,authorized,provider):
+    def create(self,job_id,index,stage,*,token,start,end,note,mode,request_key,authorized,provider,with_job=False):
         from .checkpoints import Checkpoints,review_call_count
         if not authorized:raise ValidationHarnessError('局部修复会增加一次 PixelLab 请求，须明确授权')
         if mode not in {'appearance','transition'} or not 4 <= len(note.strip()) <= 700:
@@ -64,7 +64,7 @@ class LocalRepairs:
             for attempt in run.repairs:
                 if attempt['request_key']==request_key:
                     if attempt['identity']!=identity:raise ConflictError('同一修复请求编号的内容不同')
-                    return attempt
+                    return (attempt, job) if with_job else attempt
             candidate=self.s._candidate(job,index)
             from .experiment_policy import require_tool
             require_tool(self.s,job,REPAIR_LEVELS[mode])
@@ -130,7 +130,7 @@ class LocalRepairs:
             with self.store.locked_job(job_id) as current:
                 a=self.run(current,index,stage).repairs[number];a.update(state='pending',provider_job_id=submitted.provider_job_id)
             atomic_write_json(folder/'request.json',submitted.request_record);atomic_write_json(folder/'response.json',submitted.raw_response)
-            return self.run(self.store.load(job_id),index,stage).repairs[number]
+            return (a, current) if with_job else a
 
     def poll(self,job_id,index,stage,provider):
         job=self.store.load(job_id);run=self.run(job,index,stage);a=run.repairs[-1]
@@ -180,9 +180,9 @@ class LocalRepairs:
             if a['state'] in {'unknown','failed'} and decision=='reject' and token==a['base_token']:
                 with self.store.locked_job(job_id) as current:
                     self.run(current,index,stage).repairs[number].update(state='rejected',human_note=note.strip(),unresolved_request_preserved=True)
-                return
+                return current
             if a.get('token')!=token:raise ConflictError('修复预览已改变')
-            if a['state']==('accepted' if decision=='accept' else 'rejected'):return
+            if a['state']==('accepted' if decision=='accept' else 'rejected'):return job
             if a['state']!='awaiting_review' or run.state!='awaiting_review':raise ConflictError('此修复当前不可采用')
             if Checkpoints(self.s).evidence(job,index,stage)['token']!=a['base_token']:raise ConflictError('修复所依据的原片段已改变')
             self.read_frames(job_id,a['proposed_frames'])
@@ -194,3 +194,4 @@ class LocalRepairs:
                 current.plan_control.enabled=False;self.s._candidate(current,index).status=CandidateStatus.created
                 current.plan_control.message='采用修复版本，重新检查整段；仍须确认本段' if decision=='accept' else '保留原片段，失败修复已留存'
                 self.s._refresh_job_status(current);current.touch('motion_local_repair_decided',stage=stage,candidate_index=index)
+            return current

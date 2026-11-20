@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import re
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,8 +20,7 @@ from .errors import (
     ValidationHarnessError,
 )
 from .motion_constraints import Phase
-from .jsonio import read_json
-from .models import ExportOptions, FrameReviewRequest, GenerationRequest, JobRecord
+from .models import ExportOptions, FrameReviewRequest, GenerationRequest
 from .service import QA_ALGORITHM_VERSION, SpritePipelineService
 
 
@@ -392,17 +392,14 @@ def create_api(
     def get_job(job_id: str) -> dict[str, Any]:
         return {"schema_version": 1, "ok": True, "data": {"job": _job(service.get_job(job_id))}}
 
-    def job_at_revision(job_id: str, revision: int | None) -> JobRecord:
-        current = service.get_job(job_id)
-        if revision is None or current.revision == revision:
-            return current
-        history = service.store.resolve_job_path(job_id, f"history/job_{revision:08d}.json")
-        if not history.is_file():
-            raise NotFoundError("requested job revision not found", details={"job_id": job_id, "revision": revision})
-        previous = JobRecord.model_validate(read_json(history))
-        if previous.job_id != job_id or previous.revision != revision:
-            raise ConflictError("job revision identity does not match its record")
-        return previous
+    @app.get('/v1/jobs/requests/{request_key}')
+    def get_job_request(request_key: str) -> dict[str, Any]:
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{7,127}', request_key):
+            raise ValidationHarnessError('invalid job request key')
+        job = service.store.find_by_request_key(request_key)
+        if job is None:
+            raise NotFoundError('generation request not found')
+        return {'schema_version': 1, 'ok': True, 'data': {'job': _job(job)}}
 
     def bound_artifact(artifact: Path, media_type: str, digest: str | None, expected: str | None):
         if expected is not None and expected != digest:
@@ -419,7 +416,7 @@ def create_api(
     def frame_image(job_id: str, candidate_index: int, frame_index: int,
                     revision: int | None = Query(None, ge=0),
                     expected_sha256: str | None = Query(None, pattern=r"^[0-9a-f]{64}$")):
-        job = job_at_revision(job_id, revision)
+        job = service.store.load_revision(job_id, revision)
         candidate = next(
             (item for item in job.candidates if item.candidate_index == candidate_index),
             None,
@@ -455,7 +452,7 @@ def create_api(
     def export_artifact(job_id: str, artifact_name: str,
                         revision: int | None = Query(None, ge=0),
                         expected_sha256: str | None = Query(None, pattern=r"^[0-9a-f]{64}$")):
-        job = job_at_revision(job_id, revision)
+        job = service.store.load_revision(job_id, revision)
         if job.export is None:
             raise NotFoundError("job has not been exported", details={"job_id": job_id})
         fields = {

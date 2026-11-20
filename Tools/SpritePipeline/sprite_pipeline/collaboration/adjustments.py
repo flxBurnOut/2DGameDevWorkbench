@@ -7,14 +7,14 @@ import uuid
 from pathlib import Path
 from typing import Literal
 from pydantic import Field, create_model
-from .contracts import Contract, digest, review_calls_per_check
+from .contracts import Contract, adjustment_source_token, digest, review_calls_per_check
 from .model_config import ModelRegistry
-from .workspace import OpenMotionWorkspace, now
+from .workspace import OpenMotionWorkspace, now, record_error
 from .repairs import LocalRepairs, edit_window_limit
 from .review_evaluation import ReviewEvidence
 from .visual_review import frame_digest, evidence_panels
 from .checkpoints import Checkpoints
-from ..errors import ConflictError, NotFoundError, ValidationHarnessError, ProviderError
+from ..errors import ConflictError, HarnessError, NotFoundError, ValidationHarnessError, ProviderError
 from ..jsonio import atomic_write_json, read_json, inside
 from ..providers.account import AccountSlotBusy, PixelLabSlot
 from ..providers.base import ProviderRequest, PollStatus
@@ -103,14 +103,28 @@ class Adjustments:
         path=self.root(work_id)/task_id/'task.json'
         if not path.is_file():raise NotFoundError('未找到修改任务')
         task=read_json(path)
-        if task['id']!=task_id or task['work_id']!=work_id:raise ConflictError('修改任务来源不匹配')
+        if not isinstance(task, dict) or task.get('id')!=task_id or task.get('work_id')!=work_id:
+            raise ConflictError('修改任务来源不匹配')
+        if (task.get('state') not in ACTIVE | {'adopted', 'rejected', 'failed', 'needs_input'}
+                or not isinstance(task.get('created_at'), str) or type(task.get('revision')) is not int
+                or type(task.get('candidate')) is not int or 'stage' not in task
+                or any(not isinstance(task.get(key), list) for key in ('planning_calls','generation_calls','review_calls'))):
+            raise ValidationHarnessError('修改任务记录缺少状态或调用账本')
         return task
 
     def save(self, task):
         task['updated_at']=now();atomic_write_json(self.folder(task)/'task.json',task)
 
-    def listing(self, work_id):
-        return sorted([read_json(p) for p in self.root(work_id).glob('*/task.json')],key=lambda t:t['created_at'])
+    def listing(self, work_id, *, errors=None):
+        tasks = []
+        for path in self.root(work_id).glob('*/task.json'):
+            try:
+                tasks.append(self.load(work_id, path.parent.name))
+            except (HarnessError, OSError, ValueError, KeyError, TypeError) as exc:
+                if errors is None:
+                    raise
+                errors.append(record_error(exc, work_id=work_id, adjustment_id=path.parent.name, phase='read'))
+        return sorted(tasks, key=lambda task: task['created_at'])
 
     def source(self, work_id, revision, index, stage):
         work=self.ws.load(work_id)
@@ -122,7 +136,7 @@ class Adjustments:
             if run.state not in {'awaiting_review','rejected'} or c.frames or any(r.submission_attempts for r in c.plan_execution.stages[stage+1:]):
                 raise ConflictError('此片段已锁定或后段已执行；请在完整候选中另建修改版本')
             if any(a['state'] in {'submitting','pending','unknown','awaiting_review'} for a in run.repairs):raise ConflictError('先处理已有的局部修复')
-            v=Checkpoints(self.s).view(job.job_id,index,stage);frames=v['frames'];report=v['review'] or {};token=v['token']
+            v=Checkpoints(self.s).view(job.job_id,index,stage,job=job);frames=v['frames'];report=v['review'] or {};token=v['token']
         else:
             if not c.frames or c.status not in {CandidateStatus.review_ready,CandidateStatus.approved}:raise ConflictError('请等待完整动画保存并检查完成')
             if job.request.open_plan.plan.quality and job.request.open_plan.plan.quality.version>=3 and any(r.state!='accepted' for r in c.plan_execution.stages):raise ConflictError('完整动画的原片段尚未确认')
@@ -132,8 +146,7 @@ class Adjustments:
         reference=(self.store.job_dir(job.job_id)/'input/reference.png').read_bytes()
         if hashlib.sha256(reference).hexdigest()!=job.reference_sha256:raise ConflictError('原图已改变')
         # Prevent reusing observations at a different playback speed or contract.
-        identity=digest({'token':token,'fps':job.action.fps,'loop':job.action.loop,'reference':job.reference_sha256,
-                         'plan':job.request.open_plan.plan_sha256,'revision':revision})
+        identity=adjustment_source_token(job, revision, token)
         return work,job,c,frames,data,reference,report,identity
 
     def context(self, work_id, revision, index, stage=None):
@@ -160,7 +173,7 @@ class Adjustments:
         tasks=[t for t in self.listing(work_id) if t['revision']==revision and t['candidate']==index and t['stage']==stage]
         legacy=frame_attempts(len(frames),c.plan_execution.stages[stage].repairs if stage is not None else [],legacy=True)
         drawings=frame_attempts(len(frames),tasks)
-        return {'token':token,'frames':frames,'fps':job.action.fps,'locked_frames':sorted(locked),
+        return {'token':token,'frames':frames,'job_revision':job.revision,'fps':job.action.fps,'locked_frames':sorted(locked),
                 'width':job.character.cell_width,'height':job.character.cell_height,
                 'editable_stage_end':editable_end,
                 'attempt_scope':'selected_frames','attempt_limit':ATTEMPT_LIMIT,
@@ -506,15 +519,28 @@ class Adjustments:
             return task
 
     def recover(self, stopping=lambda:False):
+        summary = {'checked_at': now(), 'checked': 0, 'advanced': [], 'errors': []}
         for path in self.ws.root.glob('*/adjustments/*/task.json'):
-            if stopping():break
+            if stopping():
+                break
+            work_id, task_id = path.parents[2].name, path.parent.name
             try:
-                task=read_json(path)
-                if task['state'] in {'queued','planning','submitting','pending','reviewing'}:self.advance(task['work_id'],task['id'])
-            except (ConflictError,ValueError,OSError):continue
+                task = self.load(work_id, task_id)
+                summary['checked'] += 1
+                if task['state'] in {'queued','planning','submitting','pending','reviewing'}:
+                    updated = self.advance(work_id, task_id)
+                    if updated['updated_at'] != task['updated_at']:
+                        summary['advanced'].append({'work_id': work_id, 'adjustment_id': task_id, 'state': updated['state']})
+            except (HarnessError, OSError, ValueError, KeyError, TypeError) as exc:
+                if not isinstance(exc, ConflictError) or not exc.details.get('operation'):
+                    summary['errors'].append(record_error(exc, work_id=work_id, adjustment_id=task_id, phase='recovery'))
+        return summary
 
-    def image(self, work_id, task_id, kind, index):
-        task=self.load(work_id,task_id);self.verify(task)
+    def image(self, work_id, task_id, kind, index, *, token=None):
+        task = self.load(work_id, task_id)
+        if token is not None and token != task.get('preview_token'):
+            raise ConflictError('备选媒体版本已改变')
+        self.verify(task)
         if kind not in {'source','proposed'} or not 0<=index<len(task['source_frames']):raise ValidationHarnessError('帧不存在')
         if kind=='proposed' and not task.get('proposed_frames'):raise NotFoundError('备选尚未保存')
         return (self.folder(task)/kind/f'{index:03d}.png').read_bytes()

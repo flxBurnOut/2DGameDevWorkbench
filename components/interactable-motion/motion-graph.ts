@@ -19,8 +19,7 @@ export type GraphNode = {
   index: number;
   name: string;
   source: NodeSource;
-  /** open-motion relative path plus cache key for its exact image. */
-  image?: { path: string; v: string };
+  image?: { path: string; sha256?: string };
   /** Plan stage that ends in this node; null for the reference state. */
   stage: number | null;
   /** Index in the candidate's state chain (asset id suffix), when confirmed. */
@@ -174,18 +173,17 @@ export function workGraph(work: MotionWork | null, candidateIndex = 1, draft?: I
   }
   const candidate = work.job?.candidates.find(c => c.candidate_index === candidateIndex);
   const names = stateNames(work);
-  const revision = String(work.revision);
   const nodes: GraphNode[] = names.map((name, index) => {
-    if (index === 0) return { index, name, stage: null, source: 'reference', image: { path: 'reference', v: revision }, chainIndex: 0 };
+    if (index === 0) return { index, name, stage: null, source: 'reference', image: { path: 'reference' }, chainIndex: 0 };
     const stage = index - 1;
     const chain = candidate?.state_chain?.findIndex(s => s.stage === stage) ?? -1;
     if (candidate && chain >= 0) {
       const state = candidate.state_chain![chain];
       return { index, name, stage, source: 'confirmed', chainIndex: chain,
-        image: { path: `candidates/${candidate.candidate_index}/stages/${stage}/state-image`, v: state.sha256 } };
+        image: { path: `candidates/${candidate.candidate_index}/stages/${stage}/state-image`, sha256: state.sha256 } };
     }
     const target = work.end_targets?.find(t => t.stage === stage);
-    if (target) return { index, name, stage, source: 'target', image: { path: `targets/${stage}`, v: target.sha256 } };
+    if (target) return { index, name, stage, source: 'target', image: { path: `targets/${stage}`, sha256: target.sha256 } };
     return { index, name, stage, source: 'text' };
   });
   const edges: GraphEdge[] = work.plan.stages.map((s, stage) => {
@@ -207,7 +205,9 @@ export type Selection = { kind: 'node'; index: number } | { kind: 'edge'; stage:
 export function nodeImageUrl(node: GraphNode, work: Pick<MotionWork, 'id' | 'revision'> | null, referenceUrl: string) {
   if (node.index === 0 && referenceUrl) return referenceUrl;
   return node.image && work
-    ? motionUrl(`open-motion/${work.id}/${node.image.path}`, { revision: String(work.revision), v: node.image.v })
+    ? motionUrl(`open-motion/${work.id}/${node.image.path}`, {
+      revision: String(work.revision), ...(node.image.sha256 ? { expected_sha256: node.image.sha256 } : {}),
+    })
     : '';
 }
 

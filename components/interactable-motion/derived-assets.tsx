@@ -41,7 +41,7 @@ export function DerivedAssets({ work, candidate, focus, readOnly, onSaved, rotat
   // The state image a palette variant starts from: the confirmed image, or the reference before production.
   const baseUrl = focus.kind !== 'state' ? '' : chainIndex >= 0 && c?.state_chain
     ? (c.state_chain[chainIndex].stage === null ? motionUrl(`open-motion/${work.id}/reference`, { revision: String(work.revision) })
-      : motionUrl(`open-motion/${work.id}/candidates/${candidate}/stages/${c.state_chain[chainIndex].stage}/state-image`, { revision: String(work.revision), v: c.state_chain[chainIndex].sha256 }))
+      : motionUrl(`open-motion/${work.id}/candidates/${candidate}/stages/${c.state_chain[chainIndex].stage}/state-image`, { revision: String(work.revision), expected_sha256: c.state_chain[chainIndex].sha256 }))
     : focus.node === 0 ? motionUrl(`open-motion/${work.id}/reference`, { revision: String(work.revision) }) : '';
   useEffect(() => {
     if (!baseUrl) return;
@@ -135,7 +135,7 @@ function DerivedReview({ work, record, readOnly, onDecided }: { work: MotionWork
     }, 1000 / record.fps);
     return () => clearTimeout(timer);
   }, [playing, frame, record]);
-  const url = (i: number) => motionUrl(`open-motion/${work.id}/derived/${record.id}/frames/${i}`, { v: record.frames[i].sha256 });
+  const url = (i: number) => motionUrl(`open-motion/${work.id}/derived/${record.id}/frames/${i}`, { expected_sha256: record.frames[i].sha256 });
   const decide = async (decision: 'accept' | 'reject') => {
     setBusy(true); setError('');
     try { await motionRequest(`open-motion/${work.id}/derived/${record.id}/decision`, { token: record.token, decision, note, played }); onDecided(); }

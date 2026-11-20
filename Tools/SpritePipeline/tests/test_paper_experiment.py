@@ -1,21 +1,26 @@
 import json
 import shutil
+import io
 from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from sprite_pipeline.api_app import create_api
-from sprite_pipeline.collaboration.checkpoints import review_call_count
+from sprite_pipeline.collaboration.checkpoints import Checkpoints, review_call_count
+from sprite_pipeline.collaboration.contracts import digest
 from sprite_pipeline.collaboration.experiment import (
     ARMS, MODEL_ONLY_REVIEWER, blind_pack, clone_for_arm, collect_clips, counterfactual_verdicts,
     drive_model_only, freeze_protocol, inventory, legacy_export, load_protocol, main, repair_window,
     retrospective, run_arm, sha)
 from sprite_pipeline.collaboration.execution import stage_seed
 from sprite_pipeline.collaboration.experiment_policy import REFUSAL
+from sprite_pipeline.collaboration.experiment_requests import freeze_drawing
 from sprite_pipeline.collaboration.repairs import LocalRepairs, generation_calls
 from sprite_pipeline.collaboration.workspace import OpenMotionWorkspace
-from sprite_pipeline.errors import ValidationHarnessError
+from sprite_pipeline.errors import ProviderConfigurationError, ValidationHarnessError
+from sprite_pipeline.providers.base import PollStatus
 from sprite_pipeline.providers.fixture import FixtureProvider
 from test_interactable_state_chain import ARCHIVE, ArchiveProvider, chain, decide  # noqa: F401
 
@@ -28,6 +33,29 @@ class Recording(FixtureProvider):
     def submit(self, request):
         self.requests.append(request)
         return super().submit(request)
+
+
+class ReturnedFrames(Recording):
+    def __init__(self, shape):
+        super().__init__()
+        self.shape = shape
+
+    def wait(self, identity):
+        result = super().wait(identity)
+        usage = {'type': 'generations', 'generations': 2}
+        if self.shape == 'provider_failed':
+            return replace(result, status=PollStatus.failed, images=[], usage=usage,
+                           error={'code': 'provider_job_failed', 'message': 'fixture failure'})
+        images = result.images
+        if self.shape == 'extra_context':
+            images = [self.requests[-1].reference_image, *images]
+        if self.shape == 'extra_pose':
+            with Image.open(io.BytesIO(images[0])) as frame:
+                extra = Image.new('RGBA', frame.size, '#ff00ff')
+            encoded = io.BytesIO()
+            extra.save(encoded, format='PNG')
+            images = [encoded.getvalue(), *images]
+        return replace(result, images=images, usage=usage)
 
 
 class UntrimmedArchive(ArchiveProvider):
@@ -72,7 +100,7 @@ def test_four_offline_arms_and_anonymous_playback(tmp_path):
     # A run the reviewer stopped has no clip, yet stays in the denominator.
     clips, excluded = collect_clips([*roots, tmp_path / 'stopped'])
     assert len(clips) == 4 and excluded == [{'source': str(tmp_path / 'stopped'), 'arm': 'model_only',
-                                             'status': 'stopped_by_review'}]
+                                             'status': 'stopped_by_review', 'protocol': 3, 'outcome': stopped['outcome']}]
     pack = tmp_path / 'blind-public'
     blind_pack(clips, pack, excluded=excluded)
     assert len(list(pack.glob('*/*.png'))) == 32
@@ -91,8 +119,15 @@ def test_control_arms_send_the_pipeline_requests(chain, tmp_path):
     frozen, reference, last_frames = load_protocol(tmp_path / 'protocol')
     recorder = Recording()
     run = run_arm('blind', reference, frozen['stages'], frozen['seed'], recorder, None, tmp_path / 'blind',
-                  frozen['fps'], last_frames=last_frames, origin={'kind': 'frozen_plan', **frozen['source']})
+                  frozen['fps'], last_frames=last_frames, protocol=frozen)
     assert run['fps'] == job.action.fps and run['origin']['plan_sha256'] == work.plan_sha256
+    assert run['protocol_sha256'] == frozen['protocol_sha256'] and run['protocol'] == 3
+    assert run['requests'] == frozen['drawing']['arms']['blind']['requests']
+    drawing = frozen['drawing']['arms']
+    assert drawing['single']['requests'][0]['prompt'] == ' '.join(stage['prompt'] for stage in frozen['stages'])
+    assert drawing['keyframe_first']['requests'][0]['prompt'] == 'Hold ending pose: ' + frozen['stages'][0]['prompt']
+    for arm in ('model_only', 'human_verified'):
+        assert drawing[arm]['requests'][1]['first']['kind'] == 'accepted_endpoint'
 
     finish(chain)
     for stage, request in enumerate(recorder.requests):
@@ -104,9 +139,133 @@ def test_control_arms_send_the_pipeline_requests(chain, tmp_path):
     assert sha(recorder.requests[0].reference_image) == first['first_sha256']
     assert sha(recorder.requests[1].reference_image) == run['frames'][3]['sha256']
 
+    frozen['drawing']['arms']['blind']['requests'][0]['prompt'] = 'Changed after freezing'
+    (tmp_path / 'protocol/protocol.json').write_text(json.dumps(frozen), encoding='utf8')
+    with pytest.raises(ValueError, match='drawing requests changed'):
+        load_protocol(tmp_path / 'protocol')
+    (tmp_path / 'protocol/protocol.json').write_text(json.dumps(protocol), encoding='utf8')
     (tmp_path / 'protocol/reference.png').write_bytes(b'changed')
     with pytest.raises(ValueError):
         load_protocol(tmp_path / 'protocol')
+
+
+@pytest.mark.parametrize(('shape', 'indices'), [('exact', [0, 1, 2, 3]), ('extra_context', [1, 2, 3, 4]), ('extra_pose', None)])
+def test_same_raw_frames_get_same_interpretation_in_production_and_controls(chain, tmp_path, shape, indices):
+    service, work, engine, _, _ = chain
+    copy = clone_for_arm(service, work.id, None, 'human_verified', 'paper-shape-' + shape)
+    workspace = OpenMotionWorkspace(service)
+    started = workspace.start(copy.id, copy.revision, copy.plan_sha256)
+    provider = ReturnedFrames(shape)
+    reference = workspace.reference(copy)
+    stages = [{'prompt': copy.experiment['frozen_drawing']['requests'][0]['prompt'], 'frames': 4}]
+    replay = tmp_path / ('replay-' + shape)
+    if indices is None:
+        with pytest.raises(ValidationHarnessError) as production_error:
+            engine.advance(started.job_id, provider, wait=True)
+        with pytest.raises(ValidationHarnessError) as control_error:
+            run_arm('blind', reference, stages, copy.spec.seed, ReturnedFrames(shape), None, replay)
+        assert production_error.value.details == control_error.value.details == {
+            'reason': 'unexpected_extra_frame', 'raw_count': 5, 'requested_count': 4, 'normalization': 'input_pose_v1',
+        }
+    else:
+        engine.advance(started.job_id, provider, wait=True)
+        run_arm('blind', reference, stages, copy.spec.seed, ReturnedFrames(shape), None, replay)
+        view = Checkpoints(service).view(started.job_id, 1, 0)
+        assert [frame['raw_index'] for frame in view['frames']] == indices
+
+    run = json.loads((replay / 'run.json').read_bytes())
+    call = run['calls'][0]
+    assert call['id'] and call['submission_receipt'] and call['poll_receipt']
+    assert call['usage'] == {'type': 'generations', 'generations': 2}
+    assert call['raw_count'] == len(call['frames']) == (4 if shape == 'exact' else 5)
+    assert all(sha((replay / frame['file']).read_bytes()) == frame['sha256'] for frame in call['frames'])
+    manifest = json.loads((engine.directory(started.job_id, 1, 0) / 'frames.json').read_bytes())
+    assert manifest['usage'] == call['usage']
+    assert [f['sha256'] for f in manifest['frames']] == [f['sha256'] for f in call['frames']]
+    if indices is None:
+        assert run['outcome']['kind'] == 'provider_failure' and not run['frames']
+        assert run['outcome']['reason'] == 'unexpected_extra_frame'
+    else:
+        assert call['playback_raw_indices'] == indices
+        assert [f['sha256'] for f in run['frames']] == [call['frames'][i]['sha256'] for i in indices]
+
+
+@pytest.mark.parametrize(('arm', 'sizes'), [('single', (500, 499)), ('keyframe_first', (982,))])
+def test_final_prompt_at_provider_boundary_is_frozen_or_excluded_before_any_draw(tmp_path, arm, sizes):
+    source = (ARCHIVE / 'lamp/A.png').read_bytes()
+    for delta in (0, 1):
+        prompts = ['a' * (size + (delta if i == 0 else 0)) for i, size in enumerate(sizes)]
+        stages = [{'prompt': prompt, 'frames': 4} for prompt in prompts]
+        recorder = Recording()
+        out = tmp_path / str(delta)
+        run = run_arm(arm, source, stages, 42, recorder, None, out)
+        assert len(run['requests'][0]['prompt']) == 1000 + delta
+        if not delta:
+            assert run['status'] == 'complete' and recorder.requests[0].prompt == run['requests'][0]['prompt']
+        else:
+            assert run['status'] == 'blocked_preflight' and run['outcome']['kind'] == 'local_preflight'
+            assert run['outcome']['reason'] == 'prompt_length' and recorder.requests == run['calls'] == []
+            clips, excluded = collect_clips([out])
+            assert not clips and excluded[0]['outcome'] == run['outcome']
+            blind_pack(clips, tmp_path / 'excluded-only', excluded=excluded)
+            key = json.loads((tmp_path / 'excluded-only-private-key.json').read_bytes())
+            assert key['runs'] == 1 and key['excluded'] == excluded
+
+
+def test_v2_frozen_protocol_keeps_legacy_frame_policy_and_exclusion_format(tmp_path):
+    folder = tmp_path / 'protocol-v2'
+    folder.mkdir()
+    source = (ARCHIVE / 'lamp/A.png').read_bytes()
+    (folder / 'reference.png').write_bytes(source)
+    protocol = {'protocol': 2, 'seed': 7, 'fps': 8, 'stages': [{'prompt': 'Light the lens', 'frames': 4}],
+                'reference_sha256': sha(source), 'source': {'work_id': 'legacy', 'revision': 1}}
+    (folder / 'protocol.json').write_text(json.dumps(protocol), encoding='utf8')
+    loaded, reference, last = load_protocol(folder)
+    assert loaded == protocol
+    replay = tmp_path / 'legacy'
+    with pytest.raises(ValueError, match='unexpected provider result'):
+        run_arm('blind', reference, loaded['stages'], 7, ReturnedFrames('extra_context'), None, replay,
+                last_frames=last, protocol=loaded)
+    run = json.loads((replay / 'run.json').read_bytes())
+    assert run['protocol'] == 2 and not run['frames'] and not run['calls'][0]['frames']
+    assert collect_clips([replay]) == ([], [{'source': str(replay), 'arm': 'blind', 'status': 'interrupted'}])
+
+
+def test_experiment_keeps_usage_on_provider_failure_and_classifies_pre_post_rejection(tmp_path):
+    source = (ARCHIVE / 'lamp/A.png').read_bytes()
+    stages = [{'prompt': 'Light the lens', 'frames': 4}]
+    failed = tmp_path / 'provider-failed'
+    with pytest.raises(ValueError, match='unexpected provider result'):
+        run_arm('blind', source, stages, 7, ReturnedFrames('provider_failed'), None, failed)
+    run = json.loads((failed / 'run.json').read_bytes())
+    assert run['outcome'] == {'kind': 'provider_failure', 'reason': 'provider_job_failed', 'stage': 0}
+    assert run['calls'][0]['id'] and run['calls'][0]['usage']['generations'] == 2
+
+    class Unconfigured(Recording):
+        def submit(self, request):
+            raise ProviderConfigurationError('Offline configuration gate before POST')
+
+    unsubmitted = tmp_path / 'unsubmitted'
+    with pytest.raises(ProviderConfigurationError):
+        run_arm('blind', source, stages, 7, Unconfigured(), None, unsubmitted)
+    run = json.loads((unsubmitted / 'run.json').read_bytes())
+    assert run['outcome']['kind'] == 'not_submitted' and run['calls'][0]['id'] is None
+
+
+def test_optional_diagnostic_redraw_respects_budget_reserved_for_later_stages(tmp_path):
+    source = (ARCHIVE / 'lamp/A.png').read_bytes()
+    with Image.open(io.BytesIO(source)) as reference:
+        size = reference.size
+    stages = [{'prompt': 'Activate the light', 'frames': 4}, {'prompt': 'Hold the light', 'frames': 4}]
+    protocol = {'protocol': 3, 'seed': 7, 'fps': 8, 'stages': stages, 'reference_sha256': sha(source), 'source': {},
+                'drawing': freeze_drawing(stages, 7, sha(source), size, [None, None], budget={'max_generation_calls': 2})}
+    protocol['protocol_sha256'] = digest(protocol)
+    provider = Recording()
+    run = run_arm('model_only', source, stages, 7, provider, lambda *_: 'uncertain', tmp_path / 'reserved',
+                  protocol=protocol)
+    assert run['status'] == 'blocked_preflight' and run['outcome']['reason'] == 'max_generation_calls'
+    assert len(provider.requests) == 1
+    assert run['calls'][1]['kind'] == 'repair' and run['calls'][1]['state'] == 'not_submitted'
 
 
 def test_model_only_copy_runs_the_same_plan_without_a_person(chain):

@@ -3,18 +3,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import Response
 from pydantic import Field
 
 from ..errors import ConflictError, ValidationHarnessError
 from ..models import ExportOptions
-from ..vision_review import VisionReviewer, PROVIDERS
-from .contracts import Contract, Role, TaskSpec, digest
+from ..vision_review import PROVIDERS
+from .contracts import Contract, Role, TaskSpec
 from .workspace import OpenMotionWorkspace
 from .model_config import ModelRegistry, ModelConfiguration, PlanningModelChoice
 from .adjustments import Adjustments, AdjustmentInput
@@ -22,6 +23,10 @@ from .local_frame_edits import LocalFrameEdit, create_local
 from .derived_assets import DerivedAssets, DerivedCreate, DerivedDecision
 from .structure_contracts import StructureProposal
 from .tracking_corrections import TrackingCorrection
+from .visual_review import frame_digest as candidate_digest
+from .stage_media import StageMedia
+
+ArtHash = Annotated[str | None, Query(pattern=r'^[0-9a-f]{64}$')]
 
 
 class PlanRequest(Contract):
@@ -167,29 +172,22 @@ class TemporalReview(Contract):
     authorized: bool = False
 
 
-def candidate_digest(candidate):
-    return digest([{k: frame.model_dump(mode="json")[k] for k in ("index", "sha256", "active_path")} for frame in candidate.frames])
-
-
 def create_router(service):
     router = APIRouter(prefix="/v1/open-motion", tags=["Open motion"])
     workspace = OpenMotionWorkspace(service)
     adjustments = Adjustments(service)
+    stage_media = StageMedia(service)
     from .structures import VisualStructures
     structures = VisualStructures(service)
     from .tracking import TemporalStructures
     tracks = TemporalStructures(service)
 
-    def view(work_id, revision=None):
-        result = workspace.view(work_id, revision)
-        if result["job"]:
-            from .visual_review import review_state
-            native = service.store.load(result['job']['job_id'])
-            for candidate in result["job"]["candidates"]:
-                candidate["review_token"] = digest([{k: f[k] for k in ("index", "sha256", "active_path")} for f in candidate["frames"]])
-                if result['plan'].get('quality'):
-                    candidate['quality_review'] = review_state(service._candidate(native,candidate['candidate_index']))
-        return result
+    view = workspace.view
+
+    def command(operation, work, *, job=None):
+        if work.job_id and job is None:
+            job = service.store.load(work.job_id)
+        return workspace.command_view(operation, work, job)
 
     def current(work_id, revision):
         work = workspace.load(work_id)
@@ -197,9 +195,22 @@ def create_router(service):
             raise ConflictError("当前作品版本已改变，请刷新后继续")
         return work
 
+    def selected_job(work_id, revision):
+        work = workspace.load(work_id, revision)
+        if not work.job_id:
+            raise ConflictError('尚无生成片段')
+        return work, service.store.load(work.job_id)
+
+    def png(data, expected_sha256=None):
+        if expected_sha256 is not None and hashlib.sha256(data).hexdigest() != expected_sha256:
+            raise ConflictError('图片内容与请求的哈希不一致')
+        return Response(data, media_type='image/png', headers={'Cache-Control': 'no-store'})
+
     @router.get("")
     def listing():
-        return {"works": workspace.listing()}
+        invalid = []
+        works = workspace.listing(errors=invalid)
+        return {'works': works, **({'invalid_works': invalid} if invalid else {})}
 
     @router.get("/settings")
     def settings():
@@ -307,12 +318,17 @@ def create_router(service):
     def create(body: Create):
         work = workspace.create(body.spec, body.request_key, planning_authorized=body.planning_authorized,
                                 auto_execute=body.auto_execute, planning_models=body.planning_models)
-        return view(work.id, work.revision)
+        return command('create', work)
 
     @router.get('/requests/{request_key}')
     def get_request(request_key: str):
         work = workspace.original_request(request_key)
-        return view(work.id, work.revision)
+        return command('create', work)
+
+    @router.get('/{work_id}/requests/{request_key}')
+    def get_revision_request(work_id: str, request_key: str):
+        work = workspace.revision_request(work_id, request_key)
+        return command('revise' if work.revision > 1 else 'create', work)
 
     @router.get("/{work_id}")
     def get(work_id: str, revision: int | None = None):
@@ -332,18 +348,19 @@ def create_router(service):
             stage=body.stage_index,authorized=body.authorized,use_semantic=body.use_semantic)
 
     @router.get("/{work_id}/reference")
-    def original(work_id: str, revision: int | None = None):
-        return Response(workspace.reference(workspace.load(work_id, revision)), media_type="image/png", headers={"Cache-Control": "no-store"})
+    def original(work_id: str, revision: int | None = None, expected_sha256: ArtHash = None):
+        return png(workspace.reference(workspace.load(work_id, revision)), expected_sha256)
 
     @router.post("/{work_id}/revise")
     def revise(work_id: str, body: Revise):
-        workspace.revise(work_id, body.expected_revision, body.spec, body.request_key, planning_authorized=body.planning_authorized)
-        return view(work_id)
+        work = workspace.revise(work_id, body.expected_revision, body.spec, body.request_key, planning_authorized=body.planning_authorized)
+        return command('revise', work)
 
     @router.post("/{work_id}/generate")
     def generate(work_id: str, body: Generate):
-        workspace.start(work_id, body.expected_revision, body.plan_sha256, allow_unsupported_motion=body.allow_unsupported_motion, expected_targets=body.expected_targets)
-        return view(work_id)
+        work, job = workspace.execution.start(work_id, body.expected_revision, body.plan_sha256,
+            allow_unsupported_motion=body.allow_unsupported_motion, expected_targets=body.expected_targets)
+        return command('generate', work, job=job)
 
     @router.post('/{work_id}/target')
     def target(work_id: str, body: Target):
@@ -351,69 +368,63 @@ def create_router(service):
         try:
             data = base64.b64decode(body.png_base64,validate=True) if body.png_base64 is not None else None
         except (ValueError,binascii.Error): raise ValidationHarnessError('目标图片编码无效') from None
-        save_target(workspace,work_id,body.expected_revision,body.stage_index,data,body.note,expected_targets=body.expected_targets)
-        return view(work_id)
+        work = save_target(workspace,work_id,body.expected_revision,body.stage_index,data,body.note,expected_targets=body.expected_targets)
+        return command('target', work)
 
     @router.get('/{work_id}/targets/{stage}')
-    def target_image(work_id: str, stage: int, revision: int | None = None):
+    def target_image(work_id: str, stage: int, revision: int | None = None, expected_sha256: ArtHash = None):
         work = workspace.load(work_id,revision)
         item = next((t for t in work.end_targets if t.stage == stage),None)
         if not item: raise ValidationHarnessError('尚未绑定目标姿势图片')
         from .targets import verified_target
         data = verified_target(workspace.directory(work_id) / item.filename, item.sha256)
-        return Response(data,media_type='image/png',headers={'Cache-Control':'no-store'})
+        return png(data, expected_sha256)
 
     @router.post("/{work_id}/pause")
     def pause(work_id: str, body: Revision):
-        workspace.pause(work_id, body.expected_revision)
-        return view(work_id)
+        work, job = workspace.execution.pause(work_id, body.expected_revision)
+        return command('pause', work, job=job)
 
     @router.post("/{work_id}/resume")
     def resume(work_id: str, body: Revision):
-        workspace.pause(work_id, body.expected_revision, resume=True)
-        return view(work_id)
+        work, job = workspace.execution.pause(work_id, body.expected_revision, resume=True)
+        return command('resume', work, job=job)
 
     @router.post("/{work_id}/review")
     def review(work_id: str, body: Review):
         with workspace.lock(work_id):
             work = current(work_id, body.expected_revision)
-            service.approve_candidate(work.job_id, body.candidate_index, reviewer="open-motion-user",
+            job = service.approve_candidate(work.job_id, body.candidate_index, reviewer="open-motion-user",
                 acknowledge_warnings=body.acknowledge_warnings, expected_frames=body.candidate_sha256, review_note=body.note,human_seconds=body.human_seconds)
-        return view(work_id)
+        return command('review', work, job=job)
 
     @router.get('/{work_id}/candidates/{candidate}/stages/{stage}')
     def stage_view(work_id: str, candidate: int, stage: int, revision: int | None = None):
-        from .checkpoints import Checkpoints
-        work = workspace.load(work_id,revision)
-        if not work.job_id: raise ConflictError('尚无生成片段')
-        return {**Checkpoints(service).view(work.job_id,candidate,stage), 'work_revision': work.revision}
+        work, job = selected_job(work_id, revision)
+        return stage_media.view(work, job, candidate, stage)
 
     @router.get('/{work_id}/candidates/{candidate}/stages/{stage}/frames/{frame}')
-    def stage_image(work_id: str, candidate: int, stage: int, frame: int, revision: int | None = None):
-        data = stage_view(work_id,candidate,stage,revision)
-        work = workspace.load(work_id,revision)
-        if not 0 <= frame < len(data['frames']): raise ValidationHarnessError('帧索引无效')
-        path = service.store.resolve_job_path(work.job_id,data['frames'][frame]['path'])
-        return Response(path.read_bytes(),media_type='image/png',headers={'Cache-Control':'no-store'})
+    def stage_image(work_id: str, candidate: int, stage: int, frame: int, revision: int | None = None,
+                    token: ArtHash = None, legacy_token: ArtHash = None, expected_sha256: ArtHash = None):
+        work, job = selected_job(work_id, revision)
+        return png(stage_media.image(work, job, candidate, stage, frame,
+            token=token, legacy_token=legacy_token, expected_sha256=expected_sha256))
 
     @router.post('/{work_id}/review-stage')
     def review_stage(work_id: str, body: StageReview):
         from .checkpoints import Checkpoints
         with workspace.lock(work_id):
             work = current(work_id,body.expected_revision)
-            Checkpoints(service).decide(work.job_id,body.candidate_index,body.stage_index,
+            job = Checkpoints(service).decide(work.job_id,body.candidate_index,body.stage_index,
                 token=body.token,note=body.note,decision=body.decision,acknowledge=body.acknowledge_warnings,
                 anchor_frame=body.anchor_frame,acknowledge_trim=body.acknowledge_trim,human_seconds=body.human_seconds)
-        return view(work_id)
+        return command('review-stage', work, job=job)
 
     @router.get('/{work_id}/candidates/{candidate}/stages/{stage}/state-image')
-    def state_image(work_id: str, candidate: int, stage: int, revision: int | None = None):
+    def state_image(work_id: str, candidate: int, stage: int, revision: int | None = None, expected_sha256: ArtHash = None):
         from .checkpoints import Checkpoints
-        work = workspace.load(work_id, revision)
-        if not work.job_id:
-            raise ConflictError('尚无生成片段')
-        data = Checkpoints(service).state_image(service.store.load(work.job_id), candidate, stage)
-        return Response(data, media_type='image/png', headers={'Cache-Control': 'no-store'})
+        _, job = selected_job(work_id, revision)
+        return png(Checkpoints(service).state_image(job, candidate, stage), expected_sha256)
 
     @router.post('/{work_id}/repair-stage')
     def repair_stage(work_id: str, body: Repair):
@@ -421,30 +432,34 @@ def create_router(service):
         from ..providers import get_provider
         with workspace.lock(work_id):
             work=current(work_id,body.expected_revision)
-            LocalRepairs(service).create(work.job_id,body.candidate_index,body.stage_index,token=body.token,
+            _, job = LocalRepairs(service).create(work.job_id,body.candidate_index,body.stage_index,token=body.token,
                 start=body.start,end=body.end,note=body.note,mode=body.mode,request_key=body.request_key,
-                authorized=body.generation_authorized,provider=get_provider(work.spec.provider,service.settings))
-        return view(work_id)
+                authorized=body.generation_authorized,provider=get_provider(work.spec.provider,service.settings),with_job=True)
+        return command('repair-stage', work, job=job)
 
     @router.post('/{work_id}/review-repair')
     def review_repair(work_id: str, body: RepairReview):
         from .repairs import LocalRepairs
         with workspace.lock(work_id):
             work=current(work_id,body.expected_revision)
-            LocalRepairs(service).decide(work.job_id,body.candidate_index,body.stage_index,body.attempt,body.token,body.note,body.decision)
-        return view(work_id)
+            job = LocalRepairs(service).decide(work.job_id,body.candidate_index,body.stage_index,body.attempt,body.token,body.note,body.decision)
+        return command('review-repair', work, job=job)
 
     @router.get('/{work_id}/candidates/{candidate}/stages/{stage}/repairs/{attempt}/frames/{frame}')
-    def repair_image(work_id: str,candidate: int,stage: int,attempt: int,frame: int,revision: int | None=None):
+    def repair_image(work_id: str,candidate: int,stage: int,attempt: int,frame: int,revision: int | None=None,
+                     token: ArtHash = None, expected_sha256: ArtHash = None):
         from .repairs import LocalRepairs
         work=workspace.load(work_id,revision)
         if not work.job_id:raise ConflictError('尚无片段')
         job=service.store.load(work.job_id);repairs=LocalRepairs(service);run=repairs.run(job,candidate,stage)
         if not 0<=attempt<len(run.repairs):raise ValidationHarnessError('修复记录不存在')
-        frames=run.repairs[attempt].get('proposed_frames',[])
+        repair = run.repairs[attempt]
+        if token is not None and token != repair.get('token'):
+            raise ConflictError('修复媒体版本已改变')
+        frames=repair.get('proposed_frames',[])
         if not 0<=frame<len(frames):raise ValidationHarnessError('修复预览帧无效')
         data=repairs.read_frames(job.job_id,[frames[frame]])[0]
-        return Response(data,media_type='image/png',headers={'Cache-Control':'no-store'})
+        return png(data, expected_sha256)
 
     @router.post("/{work_id}/recover")
     def recover(work_id: str, body: Recover):
@@ -452,8 +467,8 @@ def create_router(service):
             work = current(work_id, body.expected_revision)
             if body.provider_job_id:
                 service.attach_provider_job_id(work.job_id, body.candidate_index, body.provider_job_id)
-            service.recover_completed_candidate(work.job_id, body.candidate_index)
-        return view(work_id)
+            job = service.recover_completed_candidate(work.job_id, body.candidate_index)
+        return command('recover', work, job=job)
 
     @router.get('/{work_id}/edit-source/{frame}')
     def edit_source(work_id: str, frame: int, revision: int, candidate: int, token: str, stage: int | None = None):
@@ -477,8 +492,8 @@ def create_router(service):
         return {'derived': derived.create(work_id, body)}
 
     @router.get('/{work_id}/derived/{derived_id}/frames/{frame}')
-    def derived_frame(work_id: str, derived_id: str, frame: int):
-        return Response(derived.frame_bytes(derived.load(work_id, derived_id), frame), media_type='image/png', headers={'Cache-Control': 'no-store'})
+    def derived_frame(work_id: str, derived_id: str, frame: int, expected_sha256: ArtHash = None):
+        return png(derived.frame_bytes(derived.load(work_id, derived_id), frame), expected_sha256)
 
     @router.post('/{work_id}/derived/{derived_id}/decision')
     def derived_decide(work_id: str, derived_id: str, body: DerivedDecision):
@@ -497,8 +512,9 @@ def create_router(service):
         return {'adjustment':adjustments.load(work_id,adjustment_id),'work':view(work_id)}
 
     @router.get('/{work_id}/adjustments/{adjustment_id}/{kind}/{frame}')
-    def adjustment_image(work_id: str, adjustment_id: str, kind: str, frame: int):
-        return Response(adjustments.image(work_id,adjustment_id,kind,frame),media_type='image/png',headers={'Cache-Control':'no-store'})
+    def adjustment_image(work_id: str, adjustment_id: str, kind: str, frame: int,
+                         token: ArtHash = None, expected_sha256: ArtHash = None):
+        return png(adjustments.image(work_id,adjustment_id,kind,frame, token=token), expected_sha256)
 
     @router.post('/{work_id}/adjustments/{adjustment_id}/decision')
     def decide_adjustment(work_id: str, adjustment_id: str, body: AdjustmentDecision):
@@ -506,12 +522,13 @@ def create_router(service):
         return {'adjustment':task,'work':view(work_id)}
 
     @router.get("/{work_id}/progress-image")
-    def progress(work_id: str, candidate: int = 1, revision: int | None = None):
+    def progress(work_id: str, candidate: int = 1, revision: int | None = None,
+                 job_revision: Annotated[int | None, Query(ge=0)] = None):
         from .execution import PlanGeneration
         from .checkpoints import Checkpoints
         work = workspace.load(work_id, revision)
         if work.job_id:
-            job = service.store.load(work.job_id)
+            job = service.store.load_revision(work.job_id, job_revision)
             current_candidate = service._candidate(job, candidate)
             for index in reversed(range(len(current_candidate.plan_execution.stages))):
                 run = current_candidate.plan_execution.stages[index]
@@ -519,7 +536,8 @@ def create_router(service):
                     if work.spec.object_type == 'interactable' and (run.accepted or run.state_checkpoint):
                         data = Checkpoints(service).state_image(job, candidate, index)
                     else:
-                        data = PlanGeneration(service).saved_frames(work.job_id, candidate, index)[-1]
+                        data = PlanGeneration(service).saved_frames(work.job_id, candidate, index,
+                            expected_manifest_sha256=run.frames_manifest_sha256)[-1]
                     return Response(data, media_type="image/png", headers={"Cache-Control": "no-store"})
         return Response(workspace.reference(work), media_type="image/png", headers={"Cache-Control": "no-store"})
 
@@ -528,7 +546,7 @@ def create_router(service):
         with workspace.lock(work_id):
             work = current(work_id, body.expected_revision)
             # Native exporter allows repeated delivery of the same approved clip.
-            service.export_candidate(work.job_id, body.candidate_index, ExportOptions(overwrite=True))
-        return view(work_id)
+            job = service.export_candidate(work.job_id, body.candidate_index, ExportOptions(overwrite=True))
+        return command('export', work, job=job)
 
     return router

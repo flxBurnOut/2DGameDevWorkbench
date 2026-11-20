@@ -42,7 +42,7 @@ def verified_target(path, expected):
 def save_target(workspace, work_id, revision, stage, data, note, *, expected_targets=None):
     with workspace.lock(work_id):
         work = workspace.load(work_id)
-        if work.revision != revision or work.status != 'ready' or work.job_id or not work.plan:
+        if work.revision != revision or work.status != 'ready' or work.job_id or work.execution_intent or not work.plan:
             raise ConflictError('只能在当前方案开始制作前设置目标图片；已执行的输入保持冻结')
         if not 0 <= stage < len(work.plan.stages) or len(note.strip()) < 4:
             raise ValidationHarnessError('请选择有效片段并写明实际检查依据')

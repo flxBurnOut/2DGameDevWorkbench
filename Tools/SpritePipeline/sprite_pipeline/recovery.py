@@ -25,6 +25,8 @@ class RecoveryWorker:
         self._last_scan: dict[str, Any] | None = None
         self._last_error: dict[str, Any] | None = None
         self._reference_error: dict[str, str] | None = None
+        self._motion_scans = {phase: {'last_scan': None, 'last_error': None, 'last_success_at': None}
+                              for phase in ('planning', 'adjustments')}
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -64,20 +66,30 @@ class RecoveryWorker:
                 break
 
     def _run_planning(self) -> None:
+        from .collaboration.adjustments import Adjustments
         from .collaboration.workspace import OpenMotionWorkspace
         workspace = OpenMotionWorkspace(self.service)
+        adjustments = Adjustments(self.service)
         while not self._stop.is_set():
-            try:
-                workspace.recover_planning(stopping=self._stop.is_set)
-                if not self._stop.is_set():
-                    from .collaboration.adjustments import Adjustments
-                    Adjustments(self.service).recover(stopping=self._stop.is_set)
-            except Exception:
-                # Individual requests retain their safe failure receipts. A
-                # broken file must not terminate recovery for existing jobs.
-                pass
+            self._scan_motion('planning', workspace.recover_planning)
+            if not self._stop.is_set():
+                self._scan_motion('adjustments', adjustments.recover)
             if self._stop.wait(self.interval_seconds):
                 break
+
+    def _scan_motion(self, phase, scan) -> None:
+        from .collaboration.workspace import now, record_error
+        try:
+            result = scan(stopping=self._stop.is_set)
+        except Exception as exc:
+            with self._state_lock:
+                self._motion_scans[phase]['last_error'] = record_error(exc, at=now())
+        else:
+            with self._state_lock:
+                state = self._motion_scans[phase]
+                state.update(last_scan=result, last_error=None)
+                if not self._stop.is_set():
+                    state['last_success_at'] = now()
 
     def _run_structures(self) -> None:
         from .collaboration.structures import VisualStructures
@@ -102,6 +114,7 @@ class RecoveryWorker:
                 "last_scan": self._last_scan,
                 "last_error": self._last_error,
                 "reference_error": self._reference_error,
+                **{phase: dict(scan) for phase, scan in self._motion_scans.items()},
             }
 
     def _run(self) -> None:

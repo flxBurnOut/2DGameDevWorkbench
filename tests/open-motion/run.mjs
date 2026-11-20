@@ -264,6 +264,29 @@ try {
   assert.equal(proxied.status,200); assert.equal((await proxied.json()).id,workId);
   const checkpointImage=await proxy.GET(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/candidates/1/stages/0/frames/3`));
   assert.equal(checkpointImage.status,200);assert.match(checkpointImage.headers.get('content-type'),/image\/png/);
+  const checkpoint = await request(`/v1/open-motion/${workId}/candidates/1/stages/0`);
+  const stageFrameUrl = `http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/candidates/1/stages/0/frames/3&revision=1`;
+  const exactStage = await proxy.GET(new Request(`${stageFrameUrl}&token=${checkpoint.token}&expected_sha256=${checkpoint.frames[3].sha256}`));
+  assert.equal(exactStage.status, 200);
+  assert.equal(createHash('sha256').update(Buffer.from(await exactStage.arrayBuffer())).digest('hex'), checkpoint.frames[3].sha256);
+  const wrongHash = 'f'.repeat(64);
+  assert.equal((await proxy.GET(new Request(`${stageFrameUrl}&token=${wrongHash}`))).status, 409);
+  assert.equal((await proxy.GET(new Request(`${stageFrameUrl}&v=${checkpoint.token}`))).status, 200);
+  assert.equal((await proxy.GET(new Request(`${stageFrameUrl}&v=${wrongHash}`))).status, 409);
+  assert.equal((await proxy.GET(new Request(`${stageFrameUrl}&v=${checkpoint.token}&token=${wrongHash}`))).status, 400);
+  const repairFrameUrl = `http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/candidates/1/stages/0/repairs/0/frames/1&revision=1`;
+  assert.equal((await proxy.GET(new Request(`${repairFrameUrl}&v=${checkpoint.repairs[0].token}`))).status, 200);
+  assert.equal((await proxy.GET(new Request(`${repairFrameUrl}&v=${wrongHash}`))).status, 409);
+  const targetUrl = `http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/targets/0&revision=1`;
+  assert.equal((await proxy.GET(new Request(`${targetUrl}&v=${withTarget.end_targets[0].sha256}`))).status, 200);
+  assert.equal((await proxy.GET(new Request(`${targetUrl}&v=${wrongHash}`))).status, 409);
+  const jobFrame = `http://localhost:3000/api/workbench/open-motion?path=jobs/${complete.job.job_id}/candidates/1/frames/0/image`;
+  const frameHash = complete.job.candidates[0].frames[0].sha256;
+  const exactFrame = await proxy.GET(new Request(`${jobFrame}&revision=${complete.job.revision}&expected_sha256=${frameHash}`));
+  assert.equal(exactFrame.status, 200);
+  assert.equal(createHash('sha256').update(Buffer.from(await exactFrame.arrayBuffer())).digest('hex'), frameHash);
+  assert.equal((await proxy.GET(new Request(`${jobFrame}&v=${wrongHash}`))).status, 409);
+  assert.equal((await proxy.GET(new Request(`${jobFrame}&revision=0&expected_sha256=${frameHash}`))).status, 404);
   // Independent preference alternative: read context, submit once, poll same receipt,
   // compare exact files and adopt a derived version without touching source bytes.
   const contextRun=await runConnector(manifest,capability,{operation:'get-motion-adjustment',openWorkId:workId,expectedRevision:1,candidateIndex:2});
@@ -299,8 +322,10 @@ try {
   assert.equal(alternative.adjustment.planning_calls.length,1);assert.equal(alternative.adjustment.review_calls.length,5);
   assert.equal(alternative.originalFrames.length,8);assert.equal(alternative.alternativeFrames.length,8);
   for(const i of [0,3,4,5,6,7])assert.deepEqual(await readFile(alternative.originalFrames[i]),await readFile(alternative.alternativeFrames[i]));
-  const imageProxy=await proxy.GET(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/adjustments/${alternative.adjustmentId}/proposed/1`));
+  const adjustmentFrameUrl = `http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}/adjustments/${alternative.adjustmentId}/proposed/1`;
+  const imageProxy=await proxy.GET(new Request(`${adjustmentFrameUrl}&v=${alternative.adjustment.preview_token}`));
   assert.equal(imageProxy.status,200);
+  assert.equal((await proxy.GET(new Request(`${adjustmentFrameUrl}&v=${wrongHash}`))).status, 409);
   const before=await request(`/v1/open-motion/${workId}`);
   const adopted=await runConnector(manifest,capability,{operation:'review-motion-adjustment',openWorkId:workId,expectedRevision:1,
     adjustmentId:alternative.adjustmentId,adjustmentToken:alternative.adjustment.preview_token,stageDecision:'accept',

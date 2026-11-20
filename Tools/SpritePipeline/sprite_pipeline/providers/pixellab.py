@@ -45,6 +45,7 @@ from .base import (
 from .account import AccountSlotBusy, safe_usage
 
 
+PIXELLAB_ACTION_MAX_CHARACTERS = 1000
 PIXELLAB_TOTAL_PIXEL_BUDGET = 524_288
 """Documented ``width * height * frame_count`` limit for animation v3."""
 
@@ -258,7 +259,7 @@ class PixelLabProvider(SpriteProvider):
         remote service may already have accepted and charged for the job.
         """
 
-        if len(request.prompt) > 1000:
+        if len(request.prompt) > PIXELLAB_ACTION_MAX_CHARACTERS:
             raise ProviderPermanentError(
                 "PixelLab animation action exceeds 1000 characters",
                 details={"action_length": len(request.prompt)},

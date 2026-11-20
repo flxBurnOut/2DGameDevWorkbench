@@ -26,8 +26,8 @@ async function git(game, ...args) {
   const { stdout } = await exec('git', ['-C', game, '-c', 'core.excludesFile=', ...args]);
   return stdout;
 }
-async function gitChanges(game) {
-  const status = await git(game, 'status', '--porcelain=v1', '-z', '--untracked-files=all');
+async function gitChanges(game, ...gitOptions) {
+  const status = await git(game, ...gitOptions, 'status', '--porcelain=v1', '-z', '--untracked-files=all');
   return new Set(status.split('\0').filter(Boolean).map((entry) => entry.slice(3)));
 }
 
@@ -582,10 +582,18 @@ if (process.argv[2] === '--child') {
     const [digest] = await fs.readdir(backups);
     assert.deepEqual(await fs.readFile(path.join(backups, digest, scene)), nextBytes);
     await git(update.game, 'init', '--quiet', '--template=');
-    const changes = await gitChanges(update.game);
     const inbox = `forge_imports/${delivery.deliveryId}`;
+    const versionedBackup = `${inbox}/backups-by-sha256/${digest}/${scene}`;
+    // This nested backup may exceed the Windows runner's default Git path limit.
+    // Keep Git's long-path setting local to this invocation.
+    if (process.platform === 'win32') {
+      const defaults = await gitChanges(update.game);
+      console.log('Windows versioned backup:', path.join(update.game, versionedBackup).length,
+        'path characters, visible with default Git settings:', defaults.has(versionedBackup));
+    }
+    const changes = await gitChanges(update.game, '-c', 'core.longpaths=true');
     assert.ok(changes.has(`${inbox}/backups/${scene}`));
-    assert.ok(changes.has(`${inbox}/backups-by-sha256/${digest}/${scene}`));
+    assert.ok(changes.has(versionedBackup), `Git status omitted ${versionedBackup}`);
   });
   async function evidenceFor(f) {
     await fs.writeFile(path.join(f.game, 'Proof.gd'), 'extends Node2D\n');

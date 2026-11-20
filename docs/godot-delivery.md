@@ -67,6 +67,8 @@ CLI 对应 `npm run workbench -- agent <共享操作> --input <输入文件> --j
 
 仓库本机索引目录来自 `workspace.gameExportDirectory`，默认 `work/game-exports/`；游戏中的原始交付、备份、安装索引在 `forge_imports/`。该目录带 `.gdignore`，不会重复注册运行时类。不要删除它来“清理导出”，否则会丢失接入记录和备份。首次替换保留 `backups/` 中的原文件；同一份交付再次替换不同的 Forge 管理版本时，按原文件的 SHA-256 另存备份。ZIP 与新增资源先完整写入临时文件，再用同目录硬链接一次发布。测试目录与正式目录隔离。
 
+在 Windows 上，如果磁盘上已有深层备份，普通 `git status` 却没有列出，可以在游戏仓库运行 `git -c core.longpaths=true status --untracked-files=all` 核对。这个开关只对本次 Git 命令生效。
+
 导出、安装和完成接入共用工程内的操作系统锁。运行时持有 `forge_imports/.install-gate.sqlite` 的写锁，并在 `forge_imports/install.lock` 原子发布完整的持有者记录，与使用该路径安装资源的旧版互斥。对于 v2 记录，新进程取得同一 SQLite 库的写锁并核对 `gateId` 后可恢复遗留记录，工程所在主机改名也能重试。v1 目录锁仍须核对本机主机名及原 PID 已退出。旧版留下的空目录、坏记录或来源不明的锁需要人工核验。先停止涉及该工程的旧版和新版写入进程，确认锁没有持有者后再处理该锁路径，保留包、安装账本和备份。
 
 工程写入时，如果 `forge_imports/.gitignore` 中没有独立一行 `# Forge delivery locks`，Forge 会在文件末尾追加锁文件、SQLite 日志与锁恢复临时文件的忽略规则。保留这行标记即可自行修改或移除其下的规则。交付包、回执、安装账本和备份仍按工程自身的 Git 规则管理。已经被 Git 跟踪的锁文件需按工程的版本管理流程移出索引。

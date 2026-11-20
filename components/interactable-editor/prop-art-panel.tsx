@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
 import { referenceProgress, type StoredTask } from '@/lib/workbench/work-items';
+import { usePaidTask } from '@/features/workbench/use-paid-task';
 import { propProvenanceLabel } from './prop-reference-tools';
 import type { Asset } from '@/features/interactable-editor/contract.mjs';
 import {
@@ -56,6 +57,7 @@ export function PropArtPanel({
   onBusy: (busy: boolean) => void;
 }) {
   const { tasks, refresh } = useWorkbench();
+  const paid = usePaidTask('reference-prop');
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -168,9 +170,7 @@ export function PropArtPanel({
     if (
       actionLock.current ||
       disabled ||
-      !prompt.trim() ||
-      configured !== true ||
-      selected?.status === 'running'
+      (!paid.pending && (!prompt.trim() || configured !== true || selected?.status === 'running'))
     )
       return;
     actionLock.current = true;
@@ -178,23 +178,11 @@ export function PropArtPanel({
     onBusy(true);
     setMessage('');
     try {
-      await beforeGenerate();
-      const result = await propArtJson<{ taskId: string; status: string }>(
-        '/api/workbench/tasks',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            capabilityId: 'reference-art',
-            input: {
-              operation: 'generate',
-              subject: 'prop',
-              prompt: prompt.trim(),
-              name: objectName.slice(0, 80) || '物品原图',
-            },
-          }),
-        },
-      );
+      if (!paid.pending) await beforeGenerate();
+      const result = await paid.run(paid.pending ? undefined : { capabilityId: 'reference-art', input: {
+        operation: 'generate', subject: 'prop', prompt: prompt.trim(), name: objectName.slice(0, 80) || '物品原图',
+      } });
+      if (!result) return;
       if (alive.current) await selectTask(result.taskId);
       void refresh();
     } catch (e) {
@@ -311,9 +299,7 @@ export function PropArtPanel({
             disabled={
               disabled ||
               busy ||
-              !prompt.trim() ||
-              configured !== true ||
-              selected?.status === 'running'
+              (!paid.pending && (!prompt.trim() || configured !== true || selected?.status === 'running'))
             }
             onClick={() => void generate()}
           >
@@ -322,7 +308,7 @@ export function PropArtPanel({
             ) : (
               <Paintbrush size={16} />
             )}
-            {selected?.status === 'running'
+            {paid.pending ? '恢复原生成请求' : selected?.status === 'running'
               ? referenceProgress(selected) || '正在生成物品原图'
               : '生成一张物品原图'}
           </button>

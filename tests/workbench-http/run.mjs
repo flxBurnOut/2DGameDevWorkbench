@@ -33,6 +33,9 @@ try {
   const health = await jsonFetch(`${baseUrl}/health`);
   assert.equal(health.ok, true);
   assert.equal(health.service, '2d-game-workbench-runtime');
+  assert.equal((await fetch(baseUrl + '/v1/tasks', { headers: { 'x-forge-workspace': 'another-checkout' } })).status, 409);
+  assert.equal((await fetch(baseUrl + '/v1/tasks?limit=0')).status, 400);
+  assert.equal((await fetch(baseUrl + '/v1/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' })).status, 400);
   const created = await jsonFetch(`${baseUrl}/v1/documents`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'interactable', name: 'HTTP object', commandId: 'http-create' }) });
   const documentUrl = `${baseUrl}/v1/documents/${created.document.id}`;
   const apply = expectedRevision => fetch(`${documentUrl}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision, commandId: `http-rename-${expectedRevision}`, commands: [{ type: 'rename', name: 'Updated object' }] }) });

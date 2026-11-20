@@ -39,7 +39,7 @@ async function freeze() {
     await mkdir(path.dirname(path.join(out, 'baseline', file)), { recursive: true });
     await writeFile(path.join(out, 'baseline', file), bytes, { flag: 'wx' });
   }
-  const { loadManifest, findCapability } = await import('../lib/workbench/runtime.mjs');
+  const { loadManifest, findCapability } = await import('../lib/workbench/task-runtime.mjs');
   const { getPublicImageGenerationSettings } = await import('../lib/workbench/image-generation-settings.mjs');
   const service = getPublicImageGenerationSettings(findCapability(await loadManifest(), 'image-assets').connector);
   const baseline = { schemaVersion: 1, createdAt: new Date().toISOString(), commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(), files: fileHashes, service, quality: 'auto (quality field omitted)', seed: null, environment: { node: process.version, sharp: sharp.versions, platform: os.platform(), release: os.release(), cpu: os.cpus()[0]?.model, logicalCpus: os.cpus().length, memoryBytes: os.totalmem() }, batchSha256: sha(JSON.stringify(batch)), formalHoldout: 'Every source family and derivative in this batch is excluded from formal evaluation.' };
@@ -81,7 +81,7 @@ async function run() {
   await verifyFrozen(out, batch);
   // Read the configured credential before switching to isolated task/document storage.
   // Keep it only in this process; never copy the protected settings file into a batch.
-  const { loadManifest, readTask, findCapability } = await import('../lib/workbench/runtime.mjs');
+  const { loadManifest, readTask, findCapability } = await import('../lib/workbench/task-runtime.mjs');
   if (batch.execution === 'fixture') {
     process.env.OPENAI_API_KEY = 'p0-fixture-only';
     process.env.MAP_STITCHER_OPENAI_API_URL = batch.service.endpoint;

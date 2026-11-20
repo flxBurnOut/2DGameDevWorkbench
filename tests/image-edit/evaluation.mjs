@@ -61,7 +61,7 @@ delete fixtureEnv.MAP_STITCHER_OPENAI_API_URL;
 const child = (...args) => execFileSync(process.execPath, ['scripts/image-edit-evaluation.mjs', ...args], { cwd: root, env: fixtureEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 90_000, windowsHide: true });
 child('freeze', inputFile, output);
 const baselineFile=path.join(output,'baseline.json'),baseline=await json(baselineFile);
-for(const file of ['lib/workbench/runtime.mjs','lib/workbench/image-edit-store.mjs','lib/workbench/atomic-snapshot.mjs','features/image-edit/color-map.mjs'])
+for(const file of ['lib/workbench/task-runtime.mjs','lib/workbench/image-edit-store.mjs','lib/workbench/atomic-snapshot.mjs','features/image-edit/color-map.mjs'])
   equal(typeof baseline.files[file],'string');
 const incomplete=structuredClone(baseline);
 delete incomplete.files['lib/workbench/image-edit-store.mjs'];

@@ -131,6 +131,32 @@ try {
   await assert.rejects(client.verifiedImagePixels({ ...value, rgbaSha256: '0'.repeat(64) }), /SHA/); checks++;
   await assert.rejects(client.verifiedImagePixels({ ...value, rgbaByteLength: source.length - 4 }), /描述/); checks++;
   await assert.rejects(client.verifiedImagePixels({ ...value, pixelFormat: 'premultiplied' }), /描述/); checks++;
+  const previousFetch = globalThis.fetch;
+  let coldReads = 0, corrupt = false;
+  try {
+    globalThis.fetch = async (input, options) => {
+      coldReads++;
+      if (input.endsWith('/session-get')) {
+        assert.equal(JSON.parse(options.body).includePixels, false);
+        return Response.json({ edit: { mediaProtocol: 1, editId: 'binary-test', target: { width, height },
+          source: { sha256: savedImage.sha256, rgbaSha256: hash }, candidates: [] } });
+      }
+      const selected = new URL(input, 'http://fixture').searchParams;
+      assert.equal(selected.get('sha256'), savedImage.sha256);
+      const preview = selected.get('representation') === 'preview';
+      const data = preview ? previewPng : Buffer.from(source);
+      if (!preview && corrupt) data[0] ^= 1;
+      return new Response(data, { headers: { 'content-type': preview ? 'image/png' : 'application/octet-stream', ...(preview ? {} : { 'content-encoding': 'gzip', 'content-length': String(data.length + 11) }) } });
+    };
+    const binaryCache = new ImageVersionCache();
+    const binary = await binaryCache.load('binary-test', 'source');
+    check(binary.pixels, source);
+    check(binary.previewSource, 'data:image/png;base64,' + savedImage.imageBase64);
+    await binaryCache.load('binary-test', 'source');
+    check(coldReads, 3);
+    corrupt = true;
+    await assert.rejects(new ImageVersionCache().load('binary-test', 'source'), /SHA-256/);
+  } finally { globalThis.fetch = previousFetch; }
   const wire = client.encodePixelPatch(patch, hash);
   check(wire.baseRgbaSha256, hash); check(Buffer.from(wire.spans[0].beforeRgbaBase64, 'base64'), Buffer.from(patch[0].before));
   assert.throws(() => client.encodePixelPatch([{ startPixel: 0, before: new Uint8Array(262148), after: new Uint8Array(262148) }], hash), /512/); checks++;

@@ -13,22 +13,19 @@ import { guidanceTopics } from '../lib/workbench/agent-guidance.mjs';
 import { queuePresentation } from '../lib/workbench/preview-follow.mjs';
 import { KINDS } from '../features/interactable-editor/contract.mjs';
 
+import { repositoryRoot, findAgentCapability, agentCapabilities, loadManifest } from '../lib/workbench/workbench-manifest.mjs';
+import { agentRequest } from '../lib/workbench/agent-api.mjs';
 import {
-  repositoryRoot,
-  agentRequest,
-  findAgentCapability,
-  agentCapabilities,
   commandIdPattern,
   commandTaskId,
   currentTaskPresentation,
-  loadManifest,
   prepareAgentTask,
   publicTaskRecord,
   publicCapability,
   refreshTask,
   runConnector,
   summarizeTask,
-} from '../lib/workbench/runtime.mjs';
+} from '../lib/workbench/task-runtime.mjs';
 
 import {gameExportInputs,gameExportTools} from '../lib/workbench/game-export-contract.mjs';
 
@@ -128,7 +125,8 @@ async function followResult(value) {
   }
 }
 function registerTool(name, options, handler) {
-  server.registerTool(name, options, async (input) => {
+  const inputSchema = typeof options.inputSchema.safeParse === 'function' ? options.inputSchema : z.strictObject(options.inputSchema);
+  server.registerTool(name, { ...options, inputSchema }, async (input) => {
     try {
       if (name === 'workbench_run_task' && workbuddyPreview.enabled) {
         workbuddyPreview.configure(input.previewPolicy);
@@ -330,6 +328,7 @@ registerTool(
     return {
       presentation: currentTaskPresentation(manifest, refreshed.task),
       task: publicTaskRecord(refreshed.task, detail),
+      ...(detail ? { detailIncluded: true } : {}),
       ...(refreshed.refreshError
         ? { refreshError: refreshed.refreshError }
         : {}),
@@ -412,17 +411,17 @@ const discoveryTools = [
   ],
 ];
 for (const [name,operation,description] of gameExportTools) {
-  registerTool(name,{description,inputSchema:gameExportInputs[operation].shape,annotations:{readOnlyHint:['game-exports','game-export'].includes(operation),destructiveHint:false,idempotentHint:true,openWorldHint:false}},async input=>agentRequest(await loadManifest(),operation,input));
+  registerTool(name,{description,inputSchema:gameExportInputs[operation],annotations:{readOnlyHint:['game-exports','game-export'].includes(operation),destructiveHint:false,idempotentHint:true,openWorldHint:false}},async input=>agentRequest(await loadManifest(),operation,input));
 }
 for (const [name, operation, description] of documentTools) {
-  registerTool(name, { description, inputSchema: documentInputs[operation].shape, annotations: { readOnlyHint: ['documents', 'document-get', 'document-validate', 'document-simulate', 'document-motion-bindings'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async input => agentRequest(await loadManifest(), operation, input));
+  registerTool(name, { description, inputSchema: documentInputs[operation], annotations: { readOnlyHint: ['documents', 'document-get', 'document-validate', 'document-simulate', 'document-motion-bindings'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of imageEditTools) {
-  registerTool(name, { description, inputSchema: imageEditInputs[operation].shape, annotations: { readOnlyHint: ['image-inspect', 'image-session-get', 'image-plan-get', 'image-part-get', 'image-critic-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: ['image-edit', 'image-part-suggest', 'image-critic-run'].includes(operation) } }, async input => agentRequest(await loadManifest(), operation, input));
+  registerTool(name, { description, inputSchema: imageEditInputs[operation], annotations: { readOnlyHint: ['image-inspect', 'image-session-get', 'image-plan-get', 'image-part-get', 'image-critic-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: ['image-edit', 'image-part-suggest', 'image-critic-run'].includes(operation) } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of previewTools) {
   registerTool(name, {
-    description, inputSchema: previewInputs[operation].shape,
+    description, inputSchema: previewInputs[operation],
     annotations: { readOnlyHint: operation !== 'present', destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => {
     const result = await agentRequest(await loadManifest(), operation, input, { previewSessionId: workbuddyPreview.enabled ? workbuddyPreview.sessionId : undefined });
@@ -435,7 +434,7 @@ for (const [name, operation, description] of assetTools) {
     name,
     {
       description,
-      inputSchema: assetInputs[operation].shape,
+      inputSchema: assetInputs[operation],
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -452,7 +451,7 @@ for (const [name, operation, description, inputSchema] of discoveryTools) {
     name,
     {
       description,
-      inputSchema,
+      inputSchema: z.strictObject(inputSchema),
       annotations: {
         readOnlyHint: !['start', 'frontend'].includes(operation),
         destructiveHint: false,

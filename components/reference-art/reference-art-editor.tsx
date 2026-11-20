@@ -17,6 +17,7 @@ import { clearImportQuery, type ImportBundle } from '@/lib/workbench/asset-impor
 import { CharacterIdentityField } from '@/components/sprite-generator/character-identity-field';
 import { referenceIdentityDescription, referenceIdentityLimit, referenceTransferInput } from '@/components/sprite-generator/character-identity';
 import { referenceProgress, type StoredTask } from '@/lib/workbench/work-items';
+import { usePaidTask } from '@/features/workbench/use-paid-task';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -59,6 +60,7 @@ const taskLabels: Record<string, string> = {
 
 export function ReferenceArtEditor() {
   const { tasks, modules, refresh, navigate } = useWorkbench();
+  const paid = usePaidTask('reference-character');
   const [name, setName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [facing, setFacing] = useState('right');
@@ -238,7 +240,7 @@ export function ReferenceArtEditor() {
 
   const run = async (operation: 'generate' | 'transfer') => {
     if (busyRef.current || selectionLoadingRef.current) return;
-    if (operation === 'generate' && !prompt.trim()) {
+    if (operation === 'generate' && !paid.pending && !prompt.trim()) {
       setMessage('请先描述角色外观。');
       return;
     }
@@ -249,29 +251,23 @@ export function ReferenceArtEditor() {
     setMessage('');
     setReadyHref('');
     try {
-      const result = await json<Result>('/api/workbench/tasks', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          capabilityId: 'reference-art',
-          input:
-            operation === 'generate'
-              ? {
-                  operation,
-                  prompt: prompt.trim(),
-                  facing,
-                  size,
-                  ...(checkOrientation ? { checkOrientation: true } : {}),
-                  ...(name.trim() ? { name: name.trim() } : {}),
-                }
-              : { ...referenceTransferInput(selected!.id, identityDescription), ...(needsObservation ? { confirmation: { note: observation } } : {}) },
-        }),
-      });
       if (operation === 'generate') {
-        await selectTask(result.taskId, false);
+        const result = await paid.run(paid.pending ? undefined : { capabilityId: 'reference-art', input: {
+          operation, prompt: prompt.trim(), facing, size,
+          ...(checkOrientation ? { checkOrientation: true } : {}),
+          ...(name.trim() ? { name: name.trim() } : {}),
+        } });
+        if (!result) return;
+        await selectTask(result.taskId, paid.pending);
         if (result.status === 'awaiting_configuration')
           setMessage('请先连接序列帧服务并保存 PixelLab Key，再点击生成。');
       } else {
+        const result = await json<Result>('/api/workbench/tasks', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ capabilityId: 'reference-art', input: {
+            ...referenceTransferInput(selected!.id, identityDescription), ...(needsObservation ? { confirmation: { note: observation } } : {}),
+          } }),
+        });
         if (result.status !== 'completed')
           throw new Error('参考图尚未移送完成。');
         const resultPath = result.outputs.find((path) =>
@@ -308,7 +304,7 @@ export function ReferenceArtEditor() {
   // Why the generate button is unavailable, shown under it instead of a silent grey button.
   const generateBlocker = selectionLoading
     ? '正在读取所选原图，请稍候…'
-    : busy || selected?.status === 'running'
+    : busy || paid.pending || selected?.status === 'running'
     ? ''
     : configured === false
       ? '先在下方“PixelLab 设置”中保存 Key。'
@@ -389,9 +385,7 @@ export function ReferenceArtEditor() {
             disabled={
               busy ||
               selectionLoading ||
-              selected?.status === 'running' ||
-              !prompt.trim() ||
-              configured !== true
+              (!paid.pending && (selected?.status === 'running' || !prompt.trim() || configured !== true))
             }
             onClick={() => void run('generate')}
           >
@@ -400,7 +394,7 @@ export function ReferenceArtEditor() {
             ) : (
               <Paintbrush size={18} />
             )}
-            生成一张原图
+            {paid.pending ? '恢复原生成请求' : '生成一张原图'}
           </button>
           {generateBlocker && <p className="wb-disabled-reason">{generateBlocker}</p>}
           <p className="ra-note">

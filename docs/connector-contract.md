@@ -13,7 +13,9 @@
 | `sprite-generator` | `sprite-pipeline` | 连接本地或自管 SpritePipeline；其生成提供方由该工具配置 |
 | `interactable-editor` | `interactable-editor` | 完全本地导出 |
 
-`lib/workbench/runtime.mjs` 负责统一校验、任务记录、调度、状态和输出验证；适配器只负责能力协议转换。
+`lib/workbench/task-runtime.mjs` 负责统一校验、任务记录、调度、状态和输出验证；适配器只负责能力协议转换。
+
+CLI、HTTP、MCP 对共享操作校验完整对象。MCP 纯文本任务列表带续页位置、快照和覆盖信息。错误的分页或 JSON 返回 400，过期分页快照返回 409。任务精确查询支持已归档身份。
 
 ## 2. 公共任务模型
 

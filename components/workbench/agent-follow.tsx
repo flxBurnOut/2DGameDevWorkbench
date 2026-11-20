@@ -68,6 +68,7 @@ export function AgentFollow() {
       inFlight = true;
       try {
         const { request } = await send(ack);
+        ack = undefined;
         pending = Boolean(request && request.expiresAt >= Date.now());
         if (!request || stopped || document.visibilityState !== 'visible' || request.expiresAt < Date.now()) return;
         const target = new URL(request.viewPath, location.origin);
@@ -108,6 +109,7 @@ export function AgentFollow() {
           }
         }
         await send(ack);
+        ack = undefined;
       } catch {
         if (!stopped) setMessage('页面跟随暂未连接，正在重连');
       } finally {

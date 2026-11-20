@@ -4,19 +4,17 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
+import { agentRequest } from '../lib/workbench/agent-api.mjs';
 import {
-  agentRequest,
   commandTaskId,
-  findCapability,
-  loadManifest,
   prepareAgentTask,
   publicTaskRecord,
   publicCapability,
   refreshTask,
-  repositoryRoot,
   runConnector,
   summarizeTask,
-} from '../lib/workbench/runtime.mjs';
+} from '../lib/workbench/task-runtime.mjs';
+import { findCapability, loadManifest, repositoryRoot } from '../lib/workbench/workbench-manifest.mjs';
 
 function parseArguments(values) {
   const positional = [];

@@ -13,6 +13,9 @@ import { workbenchModules, productionLines } from '@/lib/workbench/modules';
 import { readTaskHistoryRevision, type TaskHistory } from '@/lib/workbench/task-history';
 import { AgentFollow } from './agent-follow';
 import { GodotExportHost } from './godot-export-host';
+import { browserRequestJournal } from '@/features/editor-documents/browser-journal';
+import { isPaidTask, submitPaidTask } from '@/features/workbench/paid-task.mjs';
+import { storeInlineTaskImages } from '@/features/image-assets/browser-client.mjs';
 import {
   listWorkItems,
   subscribeWorkItems,
@@ -61,6 +64,7 @@ function useWorkbenchState() {
   const [tasks, setTasks] = useState<StoredTask[]>([]);
   const [sprites, setSprites] = useState<WorkItem[]>([]);
   const [runtimeOnline, setRuntimeOnline] = useState<boolean | null>(null);
+  const [taskHistoryIncomplete, setTaskHistoryIncomplete] = useState(false);
   const [spriteOnline, setSpriteOnline] = useState<boolean | null>(null);
   const [storageError, setStorageError] = useState('');
   const [navigationError, setNavigationError] = useState('');
@@ -107,6 +111,7 @@ function useWorkbenchState() {
         snapshot?: string;
         revision?: string;
         unchanged?: boolean;
+        coverage?: { complete: boolean };
       }>;
     };
     let tasksRunning = generating.current;
@@ -119,6 +124,7 @@ function useWorkbenchState() {
           if (mounted.current) {
             if (next !== history.current) setTasks(next.tasks);
             history.current = next;
+            setTaskHistoryIncomplete(next.incomplete === true);
             setRuntimeOnline(true);
           }
         })
@@ -283,6 +289,7 @@ function useWorkbenchState() {
     localItems,
     sessions,
     runtimeOnline,
+    taskHistoryIncomplete,
     spriteOnline,
     storageError,
     navigationError,
@@ -378,7 +385,7 @@ function AgentBridge() {
       {
         name: 'start_workbench_task',
         title: '启动 2D 工作台任务',
-        description: '执行用户已授权的工作台能力，并在制作记录中显示真实状态。',
+        description: '执行用户已授权的工作台能力，并在制作记录中显示真实状态。付费操作需要 commandId，恢复同一次请求请使用原命令号与原参数。',
         inputSchema: {
           type: 'object',
           required: ['capabilityId', 'input'],
@@ -392,6 +399,11 @@ function AgentBridge() {
               type: 'object',
               description: '符合该能力 Manifest 中的 inputSchema。',
             },
+            commandId: {
+              type: 'string',
+              pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$',
+              description: '付费操作必填。仅当用户明确授权新一次生成时，使用新的命令号。',
+            },
           },
         },
         annotations: { readOnlyHint: false, untrustedContentHint: false },
@@ -399,6 +411,7 @@ function AgentBridge() {
           const value = raw as {
             capabilityId?: string;
             input?: unknown;
+            commandId?: string;
           } | null;
           if (
             !value ||
@@ -408,6 +421,18 @@ function AgentBridge() {
             Array.isArray(value.input)
           )
             throw new Error('capabilityId 或 input 无效。');
+          const capabilityId = value.capabilityId!;
+          const input = value.input as Record<string, unknown>;
+          if (isPaidTask(capabilityId, input.operation)) {
+            if (typeof value.commandId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/.test(value.commandId))
+              throw new Error('付费操作需要稳定的 commandId。恢复同一次操作请复用原命令号。');
+            const result = await submitPaidTask(browserRequestJournal('paid-task', `webmcp:${value.commandId}`), {
+              capabilityId, input: capabilityId === 'image-assets' ? await storeInlineTaskImages(input) : input,
+            }, { commandId: value.commandId });
+            setQueueOpen(true);
+            await refresh();
+            return result;
+          }
           const response = await fetch('/api/workbench/tasks', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

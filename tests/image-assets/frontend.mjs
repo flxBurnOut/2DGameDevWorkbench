@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import sharp from 'sharp';
 import { createHash } from 'node:crypto';
 import {
-  imageAssetKind, imageAssetPath, imageReferenceUpload, readImageAsset,
+  imageAssetKind, imageAssetPath, imageReferenceUpload, readImageAsset, storeTaskImageReference, storeInlineTaskImages,
 } from '../../features/image-assets/browser-client.mjs';
 import { readImagePropAsset, applyPropArt } from '../../features/interactable-editor/prop-art.mjs';
 import { createProject } from '../../features/interactable-editor/contract.mjs';
@@ -65,6 +65,22 @@ await assert.rejects(readImageAsset(taskId, 'background', request), /已完成/)
 assert(calls.every(([, method]) => method === 'GET'), 'adoption never submits generation');
 assert.match(await imageReferenceUpload(new File([png], 'ref.png', { type: 'image/png' })), /^data:image\/png;base64,/);
 await assert.rejects(imageReferenceUpload(new File(['no'], 'ref.svg', { type: 'image/svg+xml' })), /PNG/);
+const mediaRef = `/api/workbench/document-media/${sha256}.png`;
+let imageUploads = 0;
+const upload = async (url, init) => {
+  assert.equal(url, mediaRef);
+  assert.equal(init.method, 'PUT');
+  assert.equal(init.headers['content-type'], 'image/png');
+  assert.deepEqual(Buffer.from(init.body), png);
+  imageUploads++;
+  return Response.json({ media: { reference: url } });
+};
+assert.equal(await storeTaskImageReference(new File([png], 'ref.png', { type: 'image/png' }), upload), mediaRef);
+const inline = `data:image/png;base64,${png.toString('base64')}`;
+assert.deepEqual(await storeInlineTaskImages({ operation: 'generate-prop', references: [inline, mediaRef] }, upload), {
+  operation: 'generate-prop', references: [mediaRef, mediaRef],
+});
+assert.equal(imageUploads, 2, 'An existing media reference does not upload the image again.');
 const archive = await buildGodotPackage({ project: adopted });
 const restored = await readSourcePackage(archive.bytes);
 assert.deepEqual(restored.assets.find(item => item.id === asset.id).generation, image.generation);

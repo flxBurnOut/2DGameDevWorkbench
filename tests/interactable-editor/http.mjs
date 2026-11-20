@@ -76,6 +76,8 @@ try {
         '0',
         '--var',
         `WORKBENCH_RUNTIME_URL:${base}`,
+        '--var',
+        `WORKBENCH_FRONTEND_URL:${webUrl}`,
       ],
       {
         cwd: process.cwd(),

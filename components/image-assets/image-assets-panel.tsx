@@ -8,8 +8,9 @@ import { ImageEditWorkspace } from '@/components/image-edit/lazy-image-edit-work
 import { PropReferenceTools } from '@/components/interactable-editor/prop-reference-tools';
 import type { StoredTask } from '@/lib/workbench/work-items';
 import { validateImageAssetDimensions } from '@/lib/workbench/image-dimensions.mjs';
+import { usePaidTask } from '@/features/workbench/use-paid-task';
 import {
-  imageArtifactUrl, imageAssetJson, imageAssetKind, imageAssetPath, imageReferenceUpload, readImageAsset,
+  imageArtifactUrl, imageAssetJson, imageAssetKind, imageAssetPath, readImageAsset, storeTaskImageReference,
 } from '@/features/image-assets/browser-client.mjs';
 import './image-assets.css';
 
@@ -18,7 +19,7 @@ const statusLabels: Record<string, string> = {
   attention_required: '需要处理', awaiting_configuration: '等待配置', prepared: '尚未生成',
 };
 type Settings = { active: boolean; provider: string | null; providers: { id: string; configured: boolean; name: string; model: string }[] };
-type Reference = { name: string; data: string; bytes: number };
+type Reference = { name: string; source: string; bytes: number };
 const taskName = (task: StoredTask) => typeof task.input?.name === 'string' ? task.input.name : '图片';
 const presetSizes = ['1024x1024', '1536x1024', '1024x1536'];
 type OutputSize = { preset: string; width: string; height: string };
@@ -41,6 +42,7 @@ export function ImageAssetsPanel({
   adoptionLabel: string;
 }) {
   const { tasks, refresh } = useWorkbench();
+  const paid = usePaidTask('image-asset-prop');
   const [prompt, setPrompt] = useState('');
   const [size, setSize] = useState(() => outputSize());
   const [references, setReferences] = useState<Reference[]>([]);
@@ -149,18 +151,16 @@ export function ImageAssetsPanel({
     }
   };
   const generate = () => withAction(async () => {
-    if (!prompt.trim() || !configured || running || loadingTask) return;
-    const { width, height } = validateImageAssetDimensions(Number(size.width), Number(size.height));
-    await beforeGenerate?.();
-    const result = await imageAssetJson<{ taskId: string }>('/api/workbench/tasks', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ capabilityId: 'image-assets', input: {
+    if (!paid.pending && (!prompt.trim() || !configured || running || loadingTask)) return;
+    if (!paid.pending) await beforeGenerate?.();
+    const dimensions = paid.pending ? null : validateImageAssetDimensions(Number(size.width), Number(size.height));
+    const result = await paid.run(paid.pending ? undefined : { capabilityId: 'image-assets', input: {
         operation: 'generate-prop',
-        provider: 'gpt-image-2.6', name: name.slice(0, 80), prompt: prompt.trim(), width, height,
-        ...(references.length ? { references: references.map((reference) => reference.data) } : {}),
-      } }),
-    });
-    if (!result.taskId) throw new Error('未收到任务编号，请从制作记录检查本次提交；不要直接重复生成。');
+        provider: 'gpt-image-2.6', name: name.slice(0, 80), prompt: prompt.trim(),
+        width: dimensions?.width, height: dimensions?.height,
+        ...(references.length ? { references: references.map((reference) => reference.source) } : {}),
+      } });
+    if (!result) return;
     if (alive.current) await selectTask(result.taskId);
     void refresh();
   });
@@ -188,7 +188,7 @@ export function ImageAssetsPanel({
     if (references.reduce((sum, reference) => sum + reference.bytes, 0) + files.reduce((sum, file) => sum + file.size, 0) > 80 * 1024 * 1024)
       throw new Error('参考图总计不能超过 80 MB。');
     const incoming: Reference[] = [];
-    for (const file of files) incoming.push({ name: file.name, data: await imageReferenceUpload(file), bytes: file.size });
+    for (const file of files) incoming.push({ name: file.name, source: await storeTaskImageReference(file), bytes: file.size });
     if (alive.current) setReferences((current) => [...current, ...incoming]);
   });
   const saveKey = async () => {
@@ -231,7 +231,7 @@ export function ImageAssetsPanel({
       <input ref={input} hidden type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={(event) => { const files = Array.from(event.target.files || []); event.target.value = ''; void upload(files); }} />
       <button disabled={disabled || busy || running || references.length >= 8} onClick={() => input.current?.click()}>添加参考图 · {references.length}/8</button>
       {references.map((reference, index) => <div className="image-assets-reference" key={`${reference.name}-${index}`}>
-        <img src={reference.data} alt={`参考图 ${index + 1}`} /><span title={reference.name}>{reference.name}</span>
+        <img src={reference.source} alt={`参考图 ${index + 1}`} /><span title={reference.name}>{reference.name}</span>
         <button aria-label={`移除参考图 ${index + 1}`} disabled={busy || running} onClick={() => setReferences((current) => current.filter((_, item) => item !== index))}><X size={14} /></button>
       </div>)}
       <small>PNG / JPEG / WebP，每张最多 30 MB，总计 80 MB。参考图会随任务保留。</small>
@@ -243,8 +243,8 @@ export function ImageAssetsPanel({
       <small>自动复用本机已保存的 GPT Image 2.6 密钥。</small>
     </details>
     {settingsMessage && <output>{settingsMessage}</output>}
-    <button className="image-assets-primary" disabled={disabled || busy || running || loadingTask || !!sizeError || !configured || !prompt.trim()} onClick={() => void generate()}>
-      {busy || running ? <LoaderCircle size={16} className="image-assets-spin" /> : <Sparkles size={16} />}{running ? '正在生成，等待原任务' : '生成一张图片'}
+    <button className="image-assets-primary" disabled={disabled || busy || loadingTask || (!paid.pending && (running || !!sizeError || !configured || !prompt.trim()))} onClick={() => void generate()}>
+      {busy || running ? <LoaderCircle size={16} className="image-assets-spin" /> : <Sparkles size={16} />}{paid.pending ? '恢复原生成请求' : running ? '正在生成，等待原任务' : '生成一张图片'}
     </button>
     <small>每次生成会使用图片 API 额度。只查询原任务，断线后不会自动重新生成。</small>
     {selected && <output aria-live="polite">{statusLabels[selected.status] || selected.status}</output>}

@@ -8,7 +8,8 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { access, readFile, readdir } from 'node:fs/promises';
-import { loadManifest, agentRequest } from '../lib/workbench/runtime.mjs';
+import { loadManifest } from '../lib/workbench/workbench-manifest.mjs';
+import { agentRequest } from '../lib/workbench/agent-api.mjs';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '..');
@@ -151,7 +152,12 @@ try {
     throw new Error('Prepared task could not be read back.');
   }
 
+  const detailedTask = await client.callTool({ name: 'workbench_get_task', arguments: { taskId: prepared.structuredContent.taskId, detail: true } });
+  assert.equal(JSON.parse(detailedTask.content[0].text).task.input.characterId, 'diagnostic_dummy');
+
   const beforeUnknown = await client.callTool({ name: 'workbench_list_tasks', arguments: {} });
+  assert.equal(JSON.parse(beforeUnknown.content[0].text).snapshot, beforeUnknown.structuredContent.snapshot);
+  assert.equal(JSON.parse(beforeUnknown.content[0].text).nextOffset, beforeUnknown.structuredContent.nextOffset);
   assert(!capabilities.structuredContent.capabilities.some((c) => c.id === 'map-stitcher'));
   for (const name of ['workbench_prepare_task', 'workbench_run_task', 'workbench_describe_capability']) {
     const blocked = await client.callTool({ name, arguments: { capabilityId: 'map-stitcher', ...(name === 'workbench_describe_capability' ? {} : { input: { operation: 'compose' } }) } });

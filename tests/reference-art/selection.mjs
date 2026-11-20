@@ -65,6 +65,9 @@ function fixture(initial = a) {
     '@/components/sprite-generator/character-identity-field': { CharacterIdentityField: 'CharacterIdentityField' },
     '@/components/sprite-generator/character-identity': identity.exports,
     '@/lib/workbench/work-items': workItems.exports,
+    '@/features/workbench/use-paid-task': { usePaidTask: () => ({ pending: false, run: payload => sandbox.fetch('/api/workbench/tasks', {
+      method: 'POST', signal: AbortSignal.timeout(600000), body: JSON.stringify({ ...payload, commandId: 'fixture-issued-command' }),
+    }).then(response => response.json()) }) },
     '@/components/ui/input': { Input: 'Input' },
     '@/components/ui/textarea': { Textarea: 'Textarea' },
     '@/components/ui/native-select': { NativeSelect: 'NativeSelect', NativeSelectOption: 'NativeSelectOption' },

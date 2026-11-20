@@ -214,6 +214,7 @@ export function WorkbenchManagement() {
                 </button>
               ))}
             </fieldset>
+            {wb.taskHistoryIncomplete && <p className="wb-notice">部分本地任务记录无法读取。这里只显示可读取的记录。</p>}
             {(wb.runtimeOnline === false || wb.spriteOnline === false) && (
               <p className="wb-notice">
                 部分服务未连接，记录可能不是最新状态。

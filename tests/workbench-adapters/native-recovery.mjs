@@ -173,5 +173,117 @@ if (process.argv[2] === '--worker') {
   assert.deepEqual(status.input, input);
   const redacted = publicTaskRecord({ input: { operation: 'process-image', image: 'data:image/png;base64,AAAA', references: ['data:image/png;base64,BBBB'] } });
   assert.deepEqual(redacted.input, { operation: 'process-image' });
+
+  const nativeCalls = [];
+  const nativeJobs = new Map();
+  let boundary = 'generate', offline = false;
+  globalThis.fetch = async (url, options) => {
+    const route = new URL(url).pathname;
+    const method = options.method || 'GET';
+    nativeCalls.push([method, route]);
+    if (offline) throw new TypeError('fixture native offline');
+    const body = job => Response.json({ data: { job } });
+    if (method === 'POST' && route === '/v1/jobs') {
+      const request = JSON.parse(options.body);
+      const job = { job_id: `job-for-${request.request_key}`, status: 'created', revision: 1, request,
+        candidates: [{ candidate_index: 1, status: 'created', submission_attempts: 0 }] };
+      nativeJobs.set(job.job_id, job);
+      if (boundary === 'create') throw new TypeError('response closed after creating native job');
+      return body(job);
+    }
+    if (method === 'GET' && route.startsWith('/v1/jobs/requests/')) {
+      const key = route.split('/').at(-1);
+      return body([...nativeJobs.values()].find(job => job.request.request_key === key));
+    }
+    if (route.startsWith('/v1/jobs/')) {
+      const job = nativeJobs.get(route.split('/')[3]);
+      assert(job);
+      if (method === 'GET') return body(job);
+      if (route.endsWith('/generate')) {
+        job.status = 'provider_pending';
+        job.revision += 1;
+        job.candidates[0] = { candidate_index: 1, status: 'provider_pending', submission_attempts: 1, provider_job_id: 'provider-fixture' };
+        throw new TypeError('response closed after paid acceptance');
+      }
+    }
+    assert.fail(`Unexpected request ${method} ${route}`);
+  };
+  const createAndGenerate = { operation: 'create-and-generate', characterId: 'test_fixture', actionId: 'idle', provider: 'fixture' };
+  const nativeClaim = await runConnector(manifest, capability, createAndGenerate, { commandId: 'job-after-acceptance' });
+  assert.equal(nativeClaim.task.status, 'attention_required');
+  assert.equal(nativeClaim.task.execution.phase, 'awaiting_receipt');
+  const remoteId = nativeClaim.task.adapter.remoteJobId;
+  offline = true;
+  const offlineRefresh = await refreshTask(manifest, nativeClaim.task.id);
+  assert.match(offlineRefresh.refreshError, /offline/);
+  offline = false;
+  const nativeReplay = await runConnector(manifest, capability, createAndGenerate, { commandId: 'job-after-acceptance' });
+  assert.equal(nativeReplay.task.id, nativeClaim.task.id);
+  assert.equal(nativeReplay.task.adapter.remoteJobId, remoteId);
+  assert.equal(nativeReplay.task.status, 'running');
+  assert.equal(nativeCalls.filter(([method]) => method === 'POST').length, 2);
+
+  boundary = 'create';
+  const lostFirst = await runConnector(manifest, capability, createAndGenerate, { commandId: 'job-created-reply-lost' });
+  const firstReplay = await runConnector(manifest, capability, createAndGenerate, { commandId: 'job-created-reply-lost' });
+  assert.equal(firstReplay.task.id, lostFirst.task.id);
+  assert.equal(firstReplay.task.adapter.remoteJobId, `job-for-${lostFirst.task.id}`);
+  assert.equal(firstReplay.task.status, 'attention_required');
+  assert.match(firstReplay.task.error, /无法确认/);
+  assert.equal(nativeCalls.filter(([method]) => method === 'POST').length, 3, 'Read-only lookup cannot begin generation for a merely created job');
+
+  const resume = { operation: 'generate-existing', jobId: firstReplay.task.adapter.remoteJobId, candidateIndex: 1 };
+  const existing = await runConnector(manifest, capability, resume, { commandId: 'existing-job-acceptance' });
+  assert.equal(existing.task.status, 'attention_required');
+  const existingRestored = await refreshTask(manifest, existing.task.id);
+  assert.equal(existingRestored.task.adapter.remoteJobId, resume.jobId);
+  assert.equal(existingRestored.task.status, 'running');
+  assert.equal(nativeCalls.filter(([method]) => method === 'POST').length, 4);
+
+  let revisionPosts = 0;
+  globalThis.fetch = async (url, options) => {
+    const target = new URL(url);
+    if (options.method === 'POST') {
+      revisionPosts++;
+      throw new TypeError('response closed after revision acceptance');
+    }
+    const key = target.pathname.split('/').at(-1);
+    assert.equal(target.pathname, `/v1/open-motion/${workId}/requests/${key}`);
+    return Response.json({ id: workId, revision: 2, current_revision: 3, request_key: key, status: 'ready',
+      command_receipt: { version: 1, operation: 'revise', work_id: workId, work_revision: 2, current_revision: 3 } });
+  };
+  const revise = { ...plan, operation: 'revise-motion', openWorkId: workId, expectedRevision: 1 };
+  const revised = await runConnector(manifest, capability, revise, { commandId: 'native-revise-lost' });
+  assert.equal(revised.task.status, 'attention_required');
+  const originalRevision = await runConnector(manifest, capability, revise, { commandId: 'native-revise-lost' });
+  assert.equal(originalRevision.task.adapter.openWorkRevision, 2);
+  assert.equal(originalRevision.task.adapter.commandReceipt.current_revision, 3);
+  assert.equal(revisionPosts, 1);
+
+  const targets = 'a'.repeat(64);
+  let activationError = '';
+  let generationPosts = 0;
+  globalThis.fetch = async (url, options) => {
+    const target = new URL(url);
+    if (options.method === 'POST') {
+      generationPosts++;
+      throw new TypeError('response closed after authorization');
+    }
+    assert.equal(target.pathname, `/v1/open-motion/${workId}`);
+    assert.equal(target.searchParams.get('revision'), '1');
+    return Response.json({ id: workId, revision: 1, status: 'ready', plan_sha256: input.planSha256, target_set_sha256: targets,
+      execution_intent: { version: 1, revision: 1, phase: 'authorized', authorization: 'explicit', plan_sha256: input.planSha256,
+        targets_sha256: targets, ...(activationError ? { activation_error: activationError } : {}) } });
+  };
+  const openGeneration = { ...input, targetSetSha256: targets };
+  const openClaim = await runConnector(manifest, capability, openGeneration, { commandId: 'open-authorization-response-lost' });
+  const openReceipt = await refreshTask(manifest, openClaim.task.id);
+  assert.equal(openReceipt.task.status, 'running', 'An exact version with persisted authorization may wait for its original Job binding.');
+  const openResult = JSON.parse(await readFile(path.join(repositoryRoot, openReceipt.task.outputs[0]), 'utf8'));
+  assert.deepEqual(openResult.nextActions, ['get-motion']);
+  activationError = 'fixture account mismatch';
+  const blocked = await refreshTask(manifest, openClaim.task.id);
+  assert.equal(blocked.task.status, 'attention_required');
+  assert.equal(generationPosts, 1);
   console.log('Native receipts, hash-bound bundle retries, unchanged polls, separate-process ordering, strict validation and durable command recovery passed.');
 }

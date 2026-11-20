@@ -5,6 +5,7 @@ import { LoaderCircle } from 'lucide-react';
 import { referenceProgress, type StoredTask } from '@/lib/workbench/work-items';
 import { isPropArtTask, propArtJson, propImagePath } from '@/features/interactable-editor/prop-art.mjs';
 import { PropReferenceTools } from '@/components/interactable-editor/prop-reference-tools';
+import { usePaidTask } from '@/features/workbench/use-paid-task';
 
 const artifact = (path: string) => `/api/workbench/artifacts?path=${encodeURIComponent(path)}`;
 
@@ -14,6 +15,7 @@ const artifact = (path: string) => `/api/workbench/artifacts?path=${encodeURICom
  * operations as the interactable editor, plus local import/conversion.
  */
 export function PropReferenceGenerator({ objectName, onTransferred }: { objectName: string; onTransferred: (objectId: string) => Promise<void> }) {
+  const paid = usePaidTask('reference-prop');
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [task, setTask] = useState<StoredTask | null>(null);
@@ -39,10 +41,10 @@ export function PropReferenceGenerator({ objectName, onTransferred }: { objectNa
   const generate = async () => {
     setBusy(true); setMessage('');
     try {
-      const result = await propArtJson<{ taskId: string }>('/api/workbench/tasks', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ capabilityId: 'reference-art', input: { operation: 'generate', subject: 'prop', prompt: prompt.trim(), name: objectName.slice(0, 80) || '物品原图' } }),
-      });
+      const result = await paid.run(paid.pending ? undefined : { capabilityId: 'reference-art', input: {
+        operation: 'generate', subject: 'prop', prompt: prompt.trim(), name: objectName.slice(0, 80) || '物品原图',
+      } });
+      if (!result) return;
       const { task: created } = await propArtJson<{ task: StoredTask }>(`/api/workbench/tasks/${encodeURIComponent(result.taskId)}`);
       if (!isPropArtTask(created)) throw new Error('生成记录无效。');
       setTask(created);
@@ -70,7 +72,7 @@ export function PropReferenceGenerator({ objectName, onTransferred }: { objectNa
     <p className="motion-muted">也可用 PixelLab 生成 128 × 128 透明物品原图，按实际调用计费。大图需先经本地转换。</p>
     {configured === false && <p className="motion-notice">请先在交互物编辑器或角色原图页配置 PixelLab API Key。</p>}
     <label>物品外观描述<textarea rows={3} maxLength={1000} value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="例如：木制底座的金属拉杆，侧视，拉杆在左侧" /></label>
-    <button disabled={busy || running || configured !== true || prompt.trim().length < 4} onClick={() => void generate()}>生成物品原图（计费一次）</button>
+    <button disabled={busy || (!paid.pending && (running || configured !== true || prompt.trim().length < 4))} onClick={() => void generate()}>{paid.pending ? '恢复原生成请求' : '生成物品原图（计费一次）'}</button>
     {running && <p><LoaderCircle size={14} className="animate-spin" />{referenceProgress(task) || '正在生成…'}</p>}
     {task?.error && <p className="motion-danger">{task.error}</p>}
     {png && <><img src={artifact(png)} alt="物品原图" width={128} height={128} style={{ imageRendering: 'pixelated' }} />

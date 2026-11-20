@@ -47,6 +47,7 @@ assert.equal((await present({ capabilityId: 'reference-art' })).requestId, queue
 await beat({ ...page, following: false });
 const paused = await present({ capabilityId: 'interactable-editor' });
 assert.equal(paused.state, 'paused');
+assert.equal((await beat({ ...page, ack: { requestId: queued.requestId, state: 'displayed' } })).request.id, paused.requestId);
 assert.equal((await context(queued.requestId)).presentation.state, 'displayed');
 await beat({ ...page, following: true, ack: { requestId: paused.requestId, state: 'blocked', reason: 'save-failed' } });
 assert.equal((await context()).presentation.reason, 'save-failed');

@@ -10,12 +10,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import sharp from 'sharp';
-import {
-  loadManifest,
-  findCapability,
-  readTask,
-  repositoryRoot as root,
-} from '../../lib/workbench/runtime.mjs';
+import { loadManifest, findCapability } from '../../lib/workbench/workbench-manifest.mjs';
+import { readTask, repositoryRoot as root } from '../../lib/workbench/task-runtime.mjs';
 import { imageEditRequest } from '../../lib/workbench/image-edits.mjs';
 import { resolveImageGenerationProvider } from '../../lib/workbench/image-generation-settings.mjs';
 import {

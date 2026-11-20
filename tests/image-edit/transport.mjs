@@ -73,6 +73,18 @@ try {
   const tools = await client.listTools();
   for (const name of ['workbench_prepare_part_context','workbench_request_part_suggestion','workbench_get_part_suggestion'])
     check(tools.tools.some(tool=>tool.name===name),true);
+  const misspelled = { kind: 'interactable', nmae: 'typo', commandId: 'never-created' };
+  check((await post('document-create', misspelled)).status, 400);
+  check((await cli('document-create', misspelled)).code, 1);
+  check((await client.callTool({ name: 'workbench_create_document', arguments: misspelled })).isError, true);
+  const mediaParams = new URLSearchParams({ editId: edited.edit.editId, version: 'source', sha256: target.sha256 });
+  for (const [representation, bytes] of [['preview', png], ['rgba', rgba]]) {
+    const media = await fetch(base + '/v1/image-edit/media?' + mediaParams + '&representation=' + representation);
+    check(media.status, 200);
+    check(Buffer.from(await media.arrayBuffer()), bytes);
+  }
+  mediaParams.set('sha256', '0'.repeat(64));
+  check((await fetch(base + '/v1/image-edit/media?' + mediaParams + '&representation=rgba')).status, 409);
   const context = await client.callTool({name:'workbench_prepare_part_context',arguments:{...guard,editId:edited.edit.editId,
     expectedEditRevision:edited.edit.revision,baseCandidateVersion:'source',regionRef:region.body.regionRef,commandId:'transport-part-context',instruction:'Inspect this part',preserveAlpha:true}});
   check(context.isError,undefined);check(context.content.filter(block=>block.type==='image').length,3);

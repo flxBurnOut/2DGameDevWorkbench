@@ -1,10 +1,12 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import sharp from 'sharp';
 import { spawn } from 'node:child_process';
-import { findCapability, loadManifest, persistTask, readTask, refreshTask, repositoryRoot, runConnector, validateInput } from '../../lib/workbench/runtime.mjs';
+import { commandTaskId, findCapability, loadManifest, persistTask, readTask, refreshTask, repositoryRoot, runConnector, validateInput } from '../../lib/workbench/runtime.mjs';
+import { uploadDocumentMedia } from '../../lib/workbench/editor-documents.mjs';
 import { getPublicImageGenerationSettings, resolveImageGenerationProvider } from '../../lib/workbench/image-generation-settings.mjs';
 import { imageSha256, inspectImageBytes, readImageAssetSource, validateImageAssetDimensions } from '../../lib/workbench/adapters/image-assets-source.mjs';
 import { validateImageAssetsInput } from '../../lib/workbench/adapters/image-assets.mjs';
@@ -29,6 +31,20 @@ const source = await rgba(1024, 1024, true);
 const reference = await rgba(32, 32);
 const dataUrl = bytes => `data:image/png;base64,${bytes.toString('base64')}`;
 const artifact = (task, filename) => path.resolve(repositoryRoot, task.outputs.find(file => file.endsWith(`/${filename}`)) ?? 'missing-artifact');
+function recoverInNewProcess(taskId) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+      import {loadManifest,refreshTask} from './lib/workbench/runtime.mjs';
+      globalThis.fetch = () => { throw new Error('Recovery attempted an external request'); };
+      console.log(JSON.stringify(await refreshTask(await loadManifest(), process.argv[1])));
+    `, taskId], { cwd: repositoryRoot, env: process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', code => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr)));
+  });
+}
 async function finish(task) {
   for (let i = 0; i < 500; i++) {
     const current = (await refreshTask(manifest, task.id)).task;
@@ -247,10 +263,63 @@ try {
     await persistTask(manifest, orphan);
     assert.equal((await refreshTask(manifest, orphan.id)).task.status, 'attention_required', fault);
   }
+  const id = `${submitted.task.id}-live-preflight`;
+  const expired = { ...submitted.task, id, adapter: { ...submitted.task.adapter, backgroundExpiresAt: 0 },
+    execution: { ...submitted.task.execution, taskId: id } };
+  assert.equal(expired.execution.phase, 'preparing');
+  await persistTask(manifest, expired);
+  assert.equal((await refreshTask(manifest, id)).task.status, 'attention_required');
+  assert.equal((await readTask(manifest, id)).execution.phase, 'preparing', 'A stale heartbeat does not release a still-living preflight executor.');
+  await persistTask(manifest, { ...expired, adapter: { ...expired.adapter, backgroundPid: 2147483647 } });
+  assert.equal((await refreshTask(manifest, id)).task.status, 'prepared', 'After owner exit, the proven pre-submit task can be reclaimed.');
+  assert.equal(calls.length, beforeRecovery);
+
+  const shared = await uploadDocumentMedia(repositoryRoot, manifest, `${imageSha256(reference)}.png`, 'image/png', reference);
+  const frozen = await run({ references: [shared.reference] });
+  assert.equal(frozen.status, 'completed');
+  const frozenMeta = JSON.parse(await readFile(artifact(frozen, 'image-metadata.json'), 'utf8'));
+  assert.deepEqual(frozenMeta.inputs[0].source, { type: 'shared-media', reference: shared.reference });
+  assert.equal(frozenMeta.inputs[0].sha256, imageSha256(reference));
+
+  const fs = createRequire(import.meta.url)('node:fs/promises');
+  const rename = fs.rename;
+  for (const tamper of [false, true]) {
+    const commandId = `publication:${tamper}`;
+    const taskId = commandTaskId(commandId);
+    const taskFile = path.join(repositoryRoot, manifest.workspace.taskDirectory, `${taskId}.json`);
+    const output = path.join(repositoryRoot, manifest.workspace.outputDirectory, taskId);
+    const before = calls.length;
+    let failed = false;
+    fs.rename = async (old, target) => {
+      if (!failed && target === taskFile && JSON.parse(await readFile(old, 'utf8')).status === 'completed') {
+        failed = true;
+        throw Object.assign(new Error('fixture final task publication EIO'), { code: 'EIO' });
+      }
+      return rename(old, target);
+    };
+    syncBuiltinESMExports();
+    try {
+      await runConnector(manifest, capability, { operation: 'generate-prop', prompt: 'publication fixture' }, { commandId });
+      for (let i = 0; !failed && i < 500; i++) await new Promise(resolve => setTimeout(resolve, 10));
+      assert(failed, 'The fault is injected after the local publication ledger exists.');
+      assert.equal((await readTask(manifest, taskId)).status, 'running');
+      if (tamper) await writeFile(path.join(output, 'image.png'), Buffer.from('changed'));
+      const recovered = await recoverInNewProcess(taskId);
+      assert.equal(recovered.task.status, tamper ? 'attention_required' : 'completed');
+      if (tamper) assert.match(recovered.refreshError, /任务产物已变化/);
+      else {
+        assert.deepEqual(await readFile(artifact(recovered.task, 'image.png')), await readFile(artifact(recovered.task, 'provider-response.png')));
+        assert.equal(JSON.parse(await readFile(artifact(recovered.task, 'provider-usage.json'), 'utf8')).requestId, 'req_test_usage');
+      }
+      assert.equal(calls.length, before + 1);
+    } finally { fs.rename = rename; syncBuiltinESMExports(); }
+  }
+
+  const beforeMissing = calls.length;
   delete process.env.OPENAI_API_KEY;
   const missing = await run({});
   assert.equal(missing.status, 'awaiting_configuration');
-  assert.equal(calls.length, beforeRecovery);
+  assert.equal(calls.length, beforeMissing);
   console.log('image-assets: passed (mock provider only; isolated runtime data)');
 } finally {
   globalThis.fetch = originalFetch;

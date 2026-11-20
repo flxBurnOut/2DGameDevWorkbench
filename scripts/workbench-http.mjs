@@ -17,21 +17,19 @@ import {
   readInteractableAsset,
 } from '../lib/workbench/interactable-assets.mjs';
 
+import { agentRequest } from '../lib/workbench/agent-api.mjs';
 import {
-  agentRequest,
   archiveTaskHistory,
   commandTaskId,
-  findCapability,
   listTaskPage,
-  loadManifest,
   prepareAgentTask,
   publicTaskRecord,
-  repositoryRoot,
   runConnector,
   refreshTask,
   readTask,
   summarizeTask,
-} from '../lib/workbench/runtime.mjs';
+} from '../lib/workbench/task-runtime.mjs';
+import { findCapability, loadManifest, repositoryRoot } from '../lib/workbench/workbench-manifest.mjs';
 import {
   getPublicImageGenerationSettings,
   updateImageGenerationSettings,
@@ -40,16 +38,20 @@ import {
 import { previewPropConversion, referenceServiceRequest } from '../lib/workbench/adapters/reference-art.mjs';
 import { frontendHeartbeat } from '../lib/workbench/preview-follow.mjs';
 
+import { workspaceIdentity } from '../lib/workbench/workspace-identity.mjs';
+import { bridgeProtocolVersion, pairedBridgePrefix } from '../lib/workbench/service-endpoints.mjs';
 import {randomUUID} from 'node:crypto';
 import {selectedGameProject,selectGameProject,deliverGodotPackage,listGameExports,readGameExportSummary,readGamePackageRequest} from '../lib/workbench/game-export.mjs';
 import {gameExportInputs} from '../lib/workbench/game-export-contract.mjs';
 import {browseGameProjects} from '../lib/workbench/game-project-browser.mjs';
 import {prepareGodotPackage} from '../features/godot-export/package.mjs';
 import {requestBinary, endpointUrl, bearerHeaders} from '../lib/workbench/adapters/http.mjs';
+const workspaceId = workspaceIdentity(repositoryRoot);
 const gameExportToken=randomUUID();
 const requireGameToken=request=>{if(request.headers['x-forge-game-token']!==gameExportToken)throw new Error('项目导出会话已失效，请关闭导出窗口后重试。');};
 
 import { documentRequest, readDocumentMedia, uploadDocumentMedia } from '../lib/workbench/editor-documents.mjs';
+import { sessionMedia } from '../lib/workbench/image-edits.mjs';
 import { MAX_DOCUMENT_MEDIA_BYTES } from '../lib/workbench/document-media.mjs';
 import { inspectAssetPackage, commitAssetPackages, readAssetPackageCommit, readAssetPackagePreview } from '../lib/workbench/asset-packages.mjs';
 import { ASSET_PACKAGE_LIMITS } from '../lib/workbench/asset-package-contract.mjs';
@@ -67,16 +69,35 @@ const server = http.createServer(async (request, response) => {
   try {
     const failure = runtimeRequestFailure(request, requestPolicy);
     if (failure) { sendJson(response, failure.status, { error: failure.error }); return; }
+    if (request.headers['x-forge-workspace'] && request.headers['x-forge-workspace'] !== workspaceId) {
+      sendJson(response, 409, { code: 'WORKSPACE_MISMATCH', error: 'Bridge 正在服务另一份工作区。请核对连接地址。' });
+      return;
+    }
     const url = new URL(
       request.url ?? '/',
       `http://${request.headers.host ?? `${host}:${port}`}`,
     );
+    if (url.pathname.startsWith(pairedBridgePrefix + '/')) {
+      if (request.headers['x-forge-workspace'] !== workspaceId) {
+        sendJson(response, 409, { code: 'WORKSPACE_MISMATCH', error: '请求缺少匹配的工作区指纹。' });
+        return;
+      }
+      url.pathname = url.pathname.slice(pairedBridgePrefix.length);
+    }
     if (request.method === 'GET' && url.pathname === '/health') {
       sendJson(response, 200, {
         ok: true,
-        version: 1,
+        version: bridgeProtocolVersion,
+        workspaceId,
         service: '2d-game-workbench-runtime',
       });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/v1/image-edit/media') {
+      const media = await sessionMedia(repositoryRoot, await loadManifest(), Object.fromEntries(url.searchParams));
+      response.writeHead(200, { 'content-type': media.mime, 'content-length': media.bytes.length,
+        'cache-control': 'private, no-store', etag: '"' + media.sha256 + '"', 'x-content-type-options': 'nosniff' });
+      response.end(media.bytes);
       return;
     }
     if (url.pathname.startsWith('/v1/document-media/')) {
@@ -249,7 +270,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/v1/assets/preview') {
       const assetId = url.searchParams.get('assetId');
       if (!assetId || assetId.length > 500) throw new Error('Invalid assetId.');
-      const preview = await readAssetPreview(await loadManifest(), assetId);
+      const preview = await readAssetPreview(await loadManifest(), assetId, { task: url.searchParams.get('task'), batch: url.searchParams.get('batch') });
       response.writeHead(200, {
         'Content-Type': preview.mime,
         'Cache-Control': 'no-store',
@@ -401,6 +422,7 @@ const server = http.createServer(async (request, response) => {
       const manifest = await loadManifest();
       const limit = Number(url.searchParams.get('limit') ?? 30);
       const refresh = url.searchParams.get('refresh') === 'true';
+      const detail = url.searchParams.get('detail') === 'true';
       const page = await listTaskPage(manifest, {
         limit,
         offset: Number(url.searchParams.get('offset') ?? 0),
@@ -410,8 +432,8 @@ const server = http.createServer(async (request, response) => {
         snapshot: url.searchParams.get('snapshot') || undefined,
         since: url.searchParams.get('since') || undefined,
         refresh,
+        detail,
       });
-      const detail = url.searchParams.get('detail') === 'true';
       sendJson(response, 200, { ...page, tasks: page.tasks.map(task => publicTaskRecord(task, detail)) });
       return;
     }
@@ -496,7 +518,7 @@ async function readJsonBody(request, maximumBytes = maxRequestBytes) {
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } catch {
-    throw new Error('Request body must be valid JSON.');
+    throw Object.assign(new Error('Request body must be valid JSON.'), { status: 400, code: 'INVALID_JSON' });
   }
 }
 

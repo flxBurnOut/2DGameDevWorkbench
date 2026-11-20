@@ -36,6 +36,7 @@ export interface ImageCandidate {
 }
 export interface ImageCandidateDiff { changedPixelCount: number; changedOutsideRegion: number; alphaChangedPixelCount: number }
 export interface ImageEditSession {
+  mediaProtocol?: number;
   partContexts?: {partRef:string;baseCandidateVersion:string;expectedEditRevision:number}[];
   editId: string; revision: number; target: ImageTargetInfo; source: { sha256: string; rgbaSha256: string };
   comparison?: { editId: string; baseCandidateVersion: string; candidateVersion: string; targetRevision: number | string;
@@ -199,7 +200,9 @@ export function base64ToBytes(encoded: string, maximumLength = 45_000_000) {
   return bytes;
 }
 export async function rgbaHash(pixels: Uint8Array | Uint8ClampedArray) {
-  const bytes = new Uint8Array(pixels);
+  const bytes = pixels.buffer instanceof ArrayBuffer
+    ? new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength)
+    : new Uint8Array(pixels);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }

@@ -6,7 +6,7 @@
 | --- | --- |
 | 记录时间 | 2026-11-20T11:18:23-05:00，美东时间 |
 | 基准提交 | `c88329e0dcf0`，`paper-vbyc`。复审范围为 `b9cf677..c88329e` 的 15 个提交。 |
-| 归档提交 | `5bb695567142`（实现、回归测试及本批记录，提交时间 2026-11-20T11:54:20-05:00） |
+| 归档提交 | `5bb695567142`（实现、回归测试及本批记录，提交时间 2026-11-20T11:54:20-05:00）· `ea33a4b1a486`（Windows 备份检查，提交时间 2026-11-20T12:01:14-05:00） |
 | 登记问题 | REC-07、EXP-04、E1-02、REC-08、REC-09、EXP-05、E3-02、PROV-02、DEV-03、API-03、ASSET-01、MEDIA-01 |
 | 跟进问题 | EXP-01、EXP-03、DATA-06、MCP-03、E4-01 |
 
@@ -56,6 +56,8 @@
 **浏览器与原生验证。** 全新 Chrome 会话通过角色动画与交互物规划的丢回包、重载和恢复验收，图片编辑另覆盖了 AI 修改、部件定位和视觉检查的换库重试。模拟请求均在临时数据目录中执行。macOS 使用 Python 3.13 和 Godot 4.7.2 运行两个原生项目的完整测试，912 项通过，另有 57 项子测试通过，1 项 Windows 文件共享专用用例按平台跳过。[角色动画](../../../tests/open-motion/browser.mjs) · [交互物动画](../../../tests/interactable-motion/browser.mjs) · [图片请求绑定](../../../tests/image-edit/workspace-regression.tsx) · [平台用例](../../../Tools/SpritePipeline/tests/test_quota_result_safety.py)
 
 **版本门禁。** 在独立源码副本分别用 Node 22.13.0 和 24.18.0 通过 lint、typecheck、check:public，以及 task-isolation、game-export、assets、http、mcp、adapters、image-edit、open-motion、interactable-motion。Node 24 另通过生产构建、生产 Web 代理、MCP 冷启动和实际引擎验收。Python 3.11 的无 Gradio 安装运行 CI 原生清单，204 项通过，另有 2 项子测试通过，4 项原生 UI 用例及 1 项 Windows 专用用例按环境跳过。[门禁命令](../../../.github/workflows/ci.yml) · [生产 Web 验收](../../../tests/interactable-editor/http.mjs) · [MCP 冷启动](../../../tests/agent-acceptance/run.mjs)
+
+**Windows 复验。** 提交 `344fa7660957` 的平台验收已逐字节读回更新前的两档备份，但 Windows 的默认 `git status` 没有列出较深的哈希备份。安装锁测试增加默认 Git 可见性与绝对路径长度的诊断，并用单次 `core.longpaths=true` 校验两档备份的跟踪资格。[首次平台验收](https://github.com/aaaarthur666-design/2DGameDevWorkbench/actions/runs/44778117483) · [回归用例](../../../tests/game-export/install-lock.mjs)
 
 ## 本目录文档
 

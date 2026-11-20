@@ -13,6 +13,9 @@ import {
   waitForSpritePipeline,
 } from '../lib/workbench/sprite-pipeline-supervisor.mjs';
 
+import { workspaceIdentity } from '../lib/workbench/workspace-identity.mjs';
+import { bridgeProtocolVersion } from '../lib/workbench/service-endpoints.mjs';
+
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '..');
 const projectEnvPath = path.join(repositoryRoot, '.env');
@@ -67,15 +70,16 @@ async function ensureSpritePipeline() {
     return;
   }
 
+  const apiOnly = process.argv.includes('--api-only');
   const token = process.env.SPRITE_PIPELINE_API_TOKEN?.trim();
-  const current = await probeSpritePipeline(target, { token, requireUi: true });
+  const current = await probeSpritePipeline(target, { token, requireUi: !apiOnly });
   if (current.state === 'ready') {
     console.log(`SpritePipeline 已在 ${target.baseUrl} 运行 · v${current.version}`);
     return;
   }
   if (current.state === 'conflict') throw new Error(current.reason);
 
-  const launch = createSpritePipelineLaunch(repositoryRoot, target, process.env);
+  const launch = createSpritePipelineLaunch(repositoryRoot, target, process.env, { apiOnly });
   console.log(`正在启动 SpritePipeline：${target.baseUrl}`);
   const pipeline = start('SpritePipeline', launch.command, launch.args, {
     env: launch.env,
@@ -84,7 +88,7 @@ async function ensureSpritePipeline() {
     child: pipeline,
     token,
     shouldStop: () => stopping,
-    requireUi: true,
+    requireUi: !apiOnly,
   });
   console.log(`SpritePipeline 已就绪 · v${ready.version}`);
 }
@@ -138,7 +142,7 @@ async function probeRuntimeBridge(baseUrl) {
       response.ok &&
       payload?.ok === true &&
       payload.service === '2d-game-workbench-runtime' &&
-      (typeof payload.version === 'number' || typeof payload.version === 'string')
+      payload.workspaceId === workspaceIdentity(repositoryRoot) && payload.version === bridgeProtocolVersion
     ) {
       return { state: 'ready', version: payload.version };
     }

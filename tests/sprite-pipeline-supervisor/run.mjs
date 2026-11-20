@@ -104,6 +104,7 @@ try {
   await fs.writeFile(path.join(pipelineRoot, 'cli.py'), '');
   const launch = createSpritePipelineLaunch(repositoryRoot, defaultTarget, {});
   assert.equal(launch.command, path.join(pythonDirectory, pythonName));
+  assert.equal(createSpritePipelineLaunch(repositoryRoot, defaultTarget, {}, { apiOnly: true }).args[1], 'serve-api');
   assert.equal(launch.args[0], path.join(pipelineRoot, 'cli.py'));
   assert.deepEqual(launch.args.slice(1), [
     'serve-ui',

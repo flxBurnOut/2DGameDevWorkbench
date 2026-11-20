@@ -61,7 +61,10 @@ const server = http.createServer(async (request, response) => {
     response.end(
       JSON.stringify({
         ok: true,
-        data: { job: spriteJob('provider_pending') },
+        data: { job: spriteJob('provider_pending'), generation_receipt: {
+          request_key: body.request_key, candidate_index: body.candidate_index ?? null, wait: body.wait,
+          job_id: 'mock-job', revision: 2, state: 'returned',
+        } },
       }),
     );
     return;

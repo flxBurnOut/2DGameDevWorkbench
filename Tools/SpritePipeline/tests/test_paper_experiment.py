@@ -1,3 +1,4 @@
+import base64
 import json
 import shutil
 import io
@@ -453,7 +454,8 @@ def test_retrospective_budget_and_human_time(chain, tmp_path):
     assert len(clips) == 2 and not excluded
 
 
-@pytest.mark.parametrize('scenario', ['accepted', 'second_non_pass', 'failed', 'unknown_submission'])
+@pytest.mark.parametrize('scenario', ['accepted', 'second_non_pass', 'failed', 'unknown_submission',
+                                      'budget_10', 'first_review_failed'])
 def test_model_only_redraw_preserves_actual_review_and_drawing_outcome(tmp_path, monkeypatch, scenario):
     from sprite_pipeline.collaboration.contracts import TaskSpec
     from test_interactable_motion import workspace_for
@@ -504,18 +506,37 @@ def test_model_only_redraw_preserves_actual_review_and_drawing_outcome(tmp_path,
     provider = Redrawn()
     monkeypatch.setattr('sprite_pipeline.providers.get_provider', lambda *args: provider)
     spec = TaskSpec(object_type='interactable', object_id='lamp', provider='fixture', seed=77,
+                    budget={'max_total_frames': 10 if scenario == 'budget_10' else 14},
                     description='Light the grey lens in two steps, from partly lit to fully green.')
     plan = ws.plan(ws.create(spec, 'offline-lamp-redraw', planning_authorized=True).id)
     assert plan.status == 'ready', plan.message
     copy = clone_for_arm(service, plan.id, None, 'model_only', 'paper-model-only-redraw')
     service.open_motion_review_registry.clean = False
+    if scenario == 'first_review_failed':
+        def unavailable(*args, **kwargs):
+            raise ProviderTemporaryError('offline reviewer unavailable')
+        monkeypatch.setattr(service.open_motion_review_registry, 'send', unavailable)
     summary = drive_model_only(service, copy.id, provider, authorized=True)
     job = service.store.load(summary['job_id'])
     run = job.candidates[0].plan_execution.stages[0]
-    [attempt] = run.repairs
     actions = [(d['stage'], d['action']) for d in summary['decisions']]
-    assert attempt['repair_level'] == 'window_redraw' and summary['decisions'][0]['window'] == [1, 4]
-    assert attempt['seed'] == stage_seed(77, 0) and job.candidates[0].seed == 77
+    if scenario in ('first_review_failed', 'budget_10'):
+        assert not run.repairs and provider.attempts == generation_calls(job) == 1
+        if scenario == 'budget_10':
+            assert run.review['state'] == 'complete' and run.review['verdict'] == 'fail'
+            assert actions == [(0, 'reject')] and summary['status'] == 'stopped_by_review'
+            assert 'max_total_frames' in summary['decisions'][0]['reason']
+        else:
+            assert run.state == 'awaiting_review' and run.review['state'] == 'failed'
+            assert not actions and 'human_decision' not in run.review and summary['status'] == 'interrupted'
+            assert summary['outcome'] == {'kind': 'provider_failure', 'reason': 'initial_review_unavailable',
+                                          'stage': 0, 'review_state': 'failed', 'last_review_verdict': None}
+        assert drive_model_only(service, copy.id, provider, authorized=True)['outcome'] == summary['outcome']
+        assert provider.attempts == 1
+    else:
+        [attempt] = run.repairs
+        assert attempt['repair_level'] == 'window_redraw' and summary['decisions'][0]['window'] == [1, 4]
+        assert attempt['seed'] == stage_seed(77, 0) and job.candidates[0].seed == 77
     if scenario == 'accepted':
         assert actions == [(0, 'redraw'), (0, 'adopt_repair'), (0, 'accept'), (1, 'accept')]
         assert summary['status'] == 'complete' and attempt['state'] == 'accepted' and provider.attempts == 3
@@ -527,7 +548,7 @@ def test_model_only_redraw_preserves_actual_review_and_drawing_outcome(tmp_path,
         assert run.review['token'] != run.review_history[0]['token']
         assert summary['decisions'][-1]['reason'] == 'second non-pass verdict'
         assert summary['decisions'][-1]['verdict'] == run.review['verdict'] == 'fail'
-    else:
+    elif scenario in ('failed', 'unknown_submission'):
         state = 'unknown' if scenario == 'unknown_submission' else 'failed'
         assert actions == [(0, 'redraw')] and summary['status'] == 'interrupted'
         assert provider.attempts == generation_calls(job) == 2
@@ -546,7 +567,10 @@ def test_model_only_redraw_preserves_actual_review_and_drawing_outcome(tmp_path,
     export = tmp_path / 'export'
     retrospective(service.store.job_dir(job.job_id), ws.load(copy.id).model_dump(mode='json'), tmp_path / 'none', export)
     result = json.loads((export / 'retrospective.json').read_bytes())
-    assert result['tool_usage'] == {'window_redraw': 1} and result['experiment']['arm'] == 'model_only'
+    assert result['tool_usage'] == ({'window_redraw': 1} if run.repairs else {})
+    assert result['experiment']['arm'] == 'model_only'
+    if scenario == 'first_review_failed':
+        assert result['stages'][0]['review_ablation'] == [None]
     assert result['outcome'] == summary['outcome']
     if scenario != 'accepted':
         clips, excluded = collect_clips([export])
@@ -554,3 +578,188 @@ def test_model_only_redraw_preserves_actual_review_and_drawing_outcome(tmp_path,
         blind_pack(clips, tmp_path / 'blind', excluded=excluded)
         key = json.loads((tmp_path / 'blind-private-key.json').read_bytes())
         assert key['runs'] == 1 and key['excluded'] == excluded
+    else:
+        assert result['drawing_frame_budget'] == {'max_total_frames': 14, 'requested_frames': 14,
+                                                  'reserved_baseline_frames': 0, 'over_limit': False}
+        check_historical_completed_run(service, ws, copy, job, provider, tmp_path)
+
+
+def check_historical_completed_run(service, ws, copy, job, provider, tmp_path):
+    # Reconstruct two historical faults on the same fully playable fixture.
+    old = ws.load(copy.id)
+    frozen = old.experiment['frozen_drawing']
+    frozen['limits']['max_total_frames'] = 10
+    old.experiment['frozen_drawing_sha256'] = digest(frozen)
+    ws.save(old)
+    for issue in ('max_total_frames', 'initial_review_unavailable'):
+        if issue == 'initial_review_unavailable':
+            with service.store.locked_job(job.job_id) as previous:
+                report = previous.candidates[0].plan_execution.stages[0].review_history[0]
+                report.update(state='failed', verdict='uncertain')
+        output = tmp_path / ('historical-' + issue)
+        retrospective(service.store.job_dir(job.job_id), old.model_dump(mode='json'), tmp_path / 'none', output)
+        exported = json.loads((output / 'retrospective.json').read_bytes())
+        assert exported['drawing_frame_budget'] == {'max_total_frames': 10, 'requested_frames': 14,
+                                                   'reserved_baseline_frames': 0, 'over_limit': True}
+        assert exported['outcome']['reason'] == issue and exported['clips']
+        summary = drive_model_only(service, old.id, provider, authorized=True)
+        assert summary['outcome'] == exported['outcome'] and not summary['decisions'] and provider.attempts == 3
+        clips, excluded = collect_clips([output])
+        assert not clips and len(excluded) == 1 and excluded[0]['status'] == 'interrupted'
+        assert excluded[0]['outcome'] == exported['outcome']
+
+
+@pytest.mark.parametrize('state', ['unknown', 'diagnostic'])
+def test_unavailable_first_review_on_short_stage_is_not_a_visual_rejection(chain, tmp_path, state):
+    service, source, engine, _, _ = chain
+    ws = OpenMotionWorkspace(service)
+    work = clone_for_arm(service, source.id, None, 'model_only', 'short-review-' + state)
+    work = ws.start(work.id, 1, work.plan_sha256)
+    provider = Recording()
+    engine.advance(work.job_id, provider, wait=True)
+    if state == 'unknown':
+        # Recover the same pending visual call after a simulated interruption.
+        with service.store.locked_job(work.job_id) as job:
+            run = job.candidates[0].plan_execution.stages[0]
+            run.state = 'reviewing'
+            run.review['state'] = 'running'
+    summary = drive_model_only(service, work.id, provider, authorized=True)
+    run = service.store.load(work.job_id).candidates[0].plan_execution.stages[0]
+    assert run.review['verdict'] == 'uncertain' and run.review['state'] == state
+    assert run.state == 'awaiting_review' and 'human_decision' not in run.review
+    assert len(provider.requests) == 1 and not run.repairs and summary['decisions'] == []
+    assert summary['status'] == 'interrupted' and summary['outcome']['review_state'] == state
+    # Older model runs may have already persisted the incorrect rejection.
+    with service.store.locked_job(work.job_id) as job:
+        job.candidates[0].plan_execution.stages[0].state = 'rejected'
+    export = tmp_path / 'historical-export'
+    retrospective(service.store.job_dir(work.job_id), work.model_dump(mode='json'), tmp_path / 'none', export)
+    result = json.loads((export / 'retrospective.json').read_bytes())
+    assert not result['clips'] and result['outcome'] == summary['outcome']
+    _, excluded = collect_clips([export])
+    assert excluded[0]['outcome'] == summary['outcome']
+
+
+@pytest.mark.parametrize('source', ['stage', 'pixellab'])
+def test_failed_mixed_stage_preserves_independent_raw_evidence(chain, tmp_path, source):
+    from sprite_pipeline.providers.base import normalize_image_bytes
+    from sprite_pipeline.providers.pixellab import PixelLabProvider
+    from test_harness_integration import FakePixelLabClient, FakeResponse
+
+    service, original, engine, _, _ = chain
+    ws = OpenMotionWorkspace(service)
+    copy = clone_for_arm(service, original.id, None, 'model_only', 'partial-stage-' + source)
+    work = ws.start(copy.id, 1, copy.plan_sha256)
+    fixture = ArchiveProvider()
+    engine.submit(work.job_id, 1, 0, fixture)
+    [identity] = fixture.outputs
+    valid = [fixture.archive[0], fixture.archive[2]]
+    rgb = io.BytesIO()
+    Image.new('RGB', (128, 128)).save(rgb, 'PNG')
+    batch = [b'invalid', valid[0], rgb.getvalue(), valid[1]]
+    usage = {'type': 'usd', 'usd': 1.5}
+    if source == 'pixellab':
+        client = FakePixelLabClient(None, FakeResponse({'id': identity, 'status': 'completed', 'usage': usage,
+            'last_response': {'images': [base64.b64encode(data).decode() for data in batch]}}))
+        provider = PixelLabProvider(api_key='offline', http_client=client)
+        valid = [normalize_image_bytes(data).data for data in valid]
+    else:
+        class Mixed(ArchiveProvider):
+            def wait(self, job_id):
+                return replace(fixture.wait(job_id), images=batch, usage=usage)
+        provider = Mixed()
+    summary = drive_model_only(service, work.id, provider, authorized=True)
+    assert summary['status'] == 'interrupted' and not summary['decisions']
+    assert summary['outcome'] == {'kind': 'provider_failure', 'reason': 'invalid_drawing_frame', 'stage': 0}
+    folder = engine.directory(work.job_id, 1, 0)
+    result = json.loads((folder / 'provider-result.json').read_bytes())
+    assert result['provider_job_id'] == identity and result['usage'] == usage and result['raw_count'] == 4
+    assert result['invalid_frames'] == [0, 2] and not (folder / 'frames.json').exists()
+    assert [f['raw_index'] for f in result['frames']] == [1, 3]
+    assert [(folder / f['file']).read_bytes() for f in result['frames']] == valid
+    run = service.store.load(work.job_id).candidates[0].plan_execution.stages[0]
+    assert run.state == 'failed' and not run.review and not run.accepted and not run.repairs
+    # The committed terminal receipt is enough to replay the validation after a restart.
+    class NoPoll:
+        def wait(self, job_id):
+            pytest.fail('unexpected provider poll')
+    if source == 'stage':
+        with pytest.raises(ValidationHarnessError, match='已保存其余原始帧'):
+            engine.poll(work.job_id, 1, 0, NoPoll(), True)
+    else:
+        assert not engine.poll(work.job_id, 1, 0, NoPoll(), True) and len(client.get_calls) == 1
+    export = tmp_path / 'failed-stage-export'
+    cost = retrospective(service.store.job_dir(work.job_id), work.model_dump(mode='json'), tmp_path / 'none', export)
+    assert cost['calls']['generation'] == 1 and cost['known_drawing_usd'] == 1.5
+    result = json.loads((export / 'retrospective.json').read_bytes())
+    row = result['stages'][0]
+    assert row['provider_job_id'] == identity and row['raw_count'] == 4 and row['invalid_raw_indices'] == [0, 2]
+    assert [f['raw_index'] for f in row['raw']] == [1, 3]
+    assert [(export / f['file']).read_bytes() for f in row['raw']] == valid
+    assert [f['sha256'] for f in row['raw']] == [sha(data) for data in valid]
+    assert not row['accepted'] and not result['clips']
+    assert result['outcome'] == collect_clips([export])[1][0]['outcome'] == summary['outcome']
+
+
+@pytest.mark.parametrize(('field', 'status', 'http'), [
+    ('id', 'completed', 200), ('id', 'failed', 200), ('background_job_id', 'processing', 200),
+    ('job_id', 'failed', 500), ('id', 'failed', 429),
+])
+def test_pixellab_foreign_poll_cannot_provide_usage_images_or_release_slot(tmp_path, field, status, http):
+    from contextlib import nullcontext
+    from sprite_pipeline.providers.pixellab import PixelLabProvider
+    from test_harness_integration import FakePixelLabClient, FakeResponse
+
+    class Slot:
+        def lock(self):
+            return nullcontext()
+
+        def release(self, job_id):
+            pytest.fail('foreign job released the requested account slot')
+
+    source = (ARCHIVE / 'lamp/A.png').read_bytes()
+    client = FakePixelLabClient(FakeResponse({'background_job_id': 'submitted', 'usage': {'type': 'usd', 'usd': .5}}),
+        FakeResponse({field: 'foreign', 'status': status, 'usage': {'type': 'usd', 'usd': 99},
+                      'last_response': {'images': [base64.b64encode(source).decode()] * 4}}, http))
+    provider = PixelLabProvider(api_key='offline', http_client=client, account_slot=Slot())
+    result = provider.wait('submitted')
+    assert result.status == PollStatus.failed and result.error['code'] == 'provider_job_mismatch'
+    assert result.error['details'] == {'requested_job_id': 'submitted', 'response_job_id': 'foreign',
+                                       'response_id_field': field}
+    assert not result.usage and not result.images and 'usage' not in result.raw_response
+    assert provider._active_job_status('submitted') not in {'completed', 'failed', 'expired'}
+    # Normal replay uses the actual adapter and keeps only its own acknowledged charge.
+    replay = tmp_path / 'foreign-poll'
+    with pytest.raises(ValueError, match='unexpected provider result'):
+        run_arm('blind', source, [{'prompt': 'Light the lens', 'frames': 4}], 7,
+                PixelLabProvider(api_key='offline', http_client=client), None, replay)
+    run = json.loads((replay / 'run.json').read_bytes())
+    assert run['status'] == 'interrupted' and run['outcome']['reason'] == 'provider_job_mismatch'
+    assert not run['frames'] and run['cost']['attempts'] == 1 and run['cost']['known_usd'] == .5
+    assert len(client.post_calls) == 1 and len(client.get_calls) == 3
+
+
+@pytest.mark.parametrize('http_error', [False, True])
+def test_retrospective_refuses_historical_receipt_with_foreign_inner_id(chain, tmp_path, http_error):
+    from sprite_pipeline.errors import ConflictError
+
+    service, work, engine, _, _ = chain
+    ws = OpenMotionWorkspace(service)
+    folder = engine.directory(work.job_id, 1, 0)
+    path = folder / 'poll-receipt.json'
+    archived = json.loads(path.read_bytes())
+    if http_error:
+        archived.pop('response')
+        archived.update(status='poll_error', usage={'usd': 99}, error={'details': {
+            'provider_job_id': archived['provider_job_id'], 'http_status': 503,
+            'response': {'id': 'foreign', 'usage': {'usd': 99}},
+        }})
+    else:
+        archived['response'].update(id='foreign', usage={'usd': 99})
+    path.write_text(json.dumps(archived))
+    with pytest.raises(ConflictError) as failure:
+        retrospective(service.store.job_dir(work.job_id), ws.load(work.id).model_dump(mode='json'),
+                      tmp_path / 'none', tmp_path / 'refused')
+    assert failure.value.details['response_job_id'] == 'foreign'
+    assert failure.value.details['requested_job_id'] == archived['provider_job_id']
+    assert not (tmp_path / 'refused' / 'retrospective.json').exists()

@@ -64,6 +64,8 @@ import {
   type MotionReferenceObject,
   motionPlanningProgress,
   motionPlanningRequestKey,
+  motionWorkspace,
+  submitMotionPlan,
   motionRequest,
   motionUrl,
   type MotionSpec,
@@ -236,6 +238,7 @@ function OpenMotionStudio({
   const settingsRef = useRef<HTMLDetailsElement>(null);
   const [settingsShown, setSettingsShown] = useState(false);
   const requestKey = useRef(''),
+    requestWorkspace = useRef<string | undefined>(undefined),
     lastStatus = useRef(-1),
     pollRevision = useRef(0);
   const submittedDraft = useRef(false);
@@ -327,6 +330,7 @@ function OpenMotionStudio({
   useEffect(() => {
     let live = true;
     const initialize = async () => {
+      let draftBlocked = Boolean(workId);
       try {
         let loaded: MotionWork | null = null;
         if (workId) {
@@ -344,6 +348,7 @@ function OpenMotionStudio({
           applyWork(value);
           setSpec(value.spec);
           loaded = value;
+          draftBlocked = false;
         } else if (objectId) {
           setSpec(selectMotionObject(blankSpec, objectId));
         }
@@ -353,8 +358,15 @@ function OpenMotionStudio({
             const saved = JSON.parse(draft) as {
               spec: MotionSpec;
               requestKey?: string;
+              workspaceId?: string;
               revision?: number;
             };
+            if (saved.requestKey && saved.workspaceId && !version) {
+              draftBlocked = true;
+              if (await motionWorkspace() !== saved.workspaceId)
+                throw new Error('这份规划草稿属于另一动画工作区。请切回原工作区后刷新。');
+              draftBlocked = false;
+            }
             if (
               !workId ||
               (loaded &&
@@ -364,11 +376,13 @@ function OpenMotionStudio({
               const restored = motionSpecWithDefaults(saved.spec);
               setSpec(objectId ? selectMotionObject(restored, objectId) : restored);
               requestKey.current = saved.requestKey || '';
+              requestWorkspace.current = saved.workspaceId;
               if (loaded && !motionSpecsEqual(saved.spec, loaded.spec))
                 setStep(0);
             }
           }
-        } catch {
+        } catch (error) {
+          if (draftBlocked) throw error;
           if (live)
             setError('草稿未能读取。服务器中的作品仍可从制作记录打开。');
         }
@@ -384,7 +398,7 @@ function OpenMotionStudio({
       } catch (e) {
         if (live) setError((e as Error).message);
       } finally {
-        if (live) setReady(true);
+        if (live) setReady(!draftBlocked);
       }
     };
     void initialize();
@@ -433,6 +447,7 @@ function OpenMotionStudio({
       JSON.stringify({
         spec,
         requestKey: requestKey.current,
+        workspaceId: requestWorkspace.current,
         revision: work?.revision,
       }),
     );
@@ -502,6 +517,7 @@ function OpenMotionStudio({
   };
   const edit = (value: Partial<MotionSpec>) => {
     requestKey.current = '';
+    requestWorkspace.current = undefined;
     setSpec(previous => {
       if ('object_id' in value || 'character_id' in value) {
         const changes = { ...value };
@@ -533,17 +549,13 @@ function OpenMotionStudio({
           '先配置规划模型，再制定方案。PixelLab 用于后续动画制作。',
         );
       }
-      requestKey.current = motionPlanningRequestKey(work, requestKey.current);
+      const key = motionPlanningRequestKey(work, requestKey.current);
+      if (key !== requestKey.current) requestWorkspace.current = await motionWorkspace();
+      requestKey.current = key;
       await saveDraft();
-      const value = await motionRequest<MotionWork>(
-        work ? `open-motion/${work.id}/revise` : 'open-motion',
-        {
-          spec,
-          request_key: requestKey.current,
-          planning_authorized: true,
-          ...(work ? { expected_revision: work.revision } : {}),
-        },
-      );
+      const value = await submitMotionPlan(work?.id, {
+        spec, requestKey: key, workspaceId: requestWorkspace.current, expectedRevision: work?.revision,
+      });
       if (work) {
         applyWork(value);
         lastStatus.current = 1;
@@ -644,6 +656,7 @@ function OpenMotionStudio({
           <button
             onClick={() =>
               void run(async () => {
+                if (!ready) { location.reload(); return; }
                 await refreshLists();
                 if (workId)
                   applyWork(
@@ -670,8 +683,7 @@ function OpenMotionStudio({
       <main className="motion-content">
         {!ready ? (
           <div className="motion-loading">
-            <LoaderCircle className="animate-spin" />
-            正在连接角色工作区…
+            {error ? '请核对服务连接后重新连接。' : <><LoaderCircle className="animate-spin" />正在连接角色工作区…</>}
           </div>
         ) : (
           <>

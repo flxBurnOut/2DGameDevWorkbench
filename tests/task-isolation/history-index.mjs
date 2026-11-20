@@ -98,6 +98,38 @@ async function replaceDuringRead(id, before, after, operation) {
 }
 
 try {
+  const coldFile = taskFile('cold');
+  await mkdir(index);
+  await writeFile(coldFile, JSON.stringify(record('cold')));
+  const lookups = mock.method(fs, 'lstat');
+  const creates = mock.method(fs, 'mkdir');
+  const reads = mock.method(fs, 'open');
+  syncBuiltinESMExports();
+  try {
+    assert.equal((await list()).tasks[0].input.label, 'cold');
+    assert(!lookups.mock.calls.some(call => call.arguments[0] === summaryFile('cold')));
+    assert(!creates.mock.calls.some(call => call.arguments[0] === index));
+    // A different writer can populate the previously empty index before the
+    // next poll while leaving the set of task filenames unchanged.
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import { loadManifest, persistTask } from './lib/workbench/runtime.mjs';
+      const manifest = await loadManifest();
+      manifest.workspace.taskDirectory = process.argv[1];
+      await persistTask(manifest, { id: 'cold', status: 'completed', input: { label: 'external' } });
+    `, directory], { cwd: repositoryRoot, windowsHide: true });
+    reads.mock.resetCalls();
+    assert.equal((await list()).tasks[0].input.label, 'external');
+    assert(reads.mock.calls.some(call => call.arguments[0] === summaryFile('cold')));
+    assert(!reads.mock.calls.some(call => call.arguments[0] === coldFile));
+  } finally {
+    lookups.mock.restore();
+    creates.mock.restore();
+    reads.mock.restore();
+    syncBuiltinESMExports();
+  }
+  await unlink(coldFile);
+  await unlink(summaryFile('cold'));
+
   const archived = ['archived', 'archived-removed'];
   for (const id of ['deleted', 'retained', ...archived]) await persistTask(manifest, record(id));
   await writeFile(path.join(directory, '.archived.json'), JSON.stringify(archived));
@@ -149,9 +181,11 @@ try {
     await list();
     assert.deepEqual({ indexLists, indexStats }, settledReads);
     await persistTask(manifest, { id: 'retained', status: 'completed', input: { label: 'checkpoint' } });
+    const afterWrite = indexStats;
     reverseNames = true; // Filesystem enumeration order may change after a checkpoint.
     assert.equal((await list()).tasks[0]?.input.label, 'checkpoint');
-    assert.deepEqual({ indexLists, indexStats }, settledReads);
+    assert.equal(indexLists, settledReads.indexLists);
+    assert.equal(indexStats, afterWrite);
     // This archived source has never populated this process's summary cache.
     await unlink(path.join(directory, 'archived-removed.json'));
     await list();
@@ -243,6 +277,35 @@ try {
   assert.equal(await readFile(unrelatedFile, 'utf8'), '{}');
   await list();
   assert.equal(await readFile(unrelatedFile, 'utf8'), '{}');
+  const protectedFile = path.join(unrelated, 'retained.json');
+  await writeFile(protectedFile, 'same-name file owned by the other directory');
+  await persistTask(manifest, record('retained', 'saved to task'));
+  assert.equal(await readFile(protectedFile, 'utf8'), 'same-name file owned by the other directory');
+  // Reopen in a process with an empty cache. No disk summary below the link
+  // should be opened, even if it has the right filename.
+  execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import path from 'node:path';
+    import { createRequire, syncBuiltinESMExports } from 'node:module';
+    import { loadManifest, listTaskPage } from './lib/workbench/runtime.mjs';
+    const manifest = await loadManifest();
+    manifest.workspace.taskDirectory = process.argv[1];
+    const linked = path.join(process.argv[1], '.summaries-v1');
+    const fs = createRequire(import.meta.url)('node:fs/promises');
+    const opened = [];
+    for (const method of ['open', 'readFile']) {
+      const original = fs[method];
+      fs[method] = (file, ...args) => {
+        if (path.dirname(String(file)) === linked) opened.push(String(file));
+        return original(file, ...args);
+      };
+    }
+    syncBuiltinESMExports();
+    const page = await listTaskPage(manifest, { detail: false });
+    assert.equal(page.tasks.find(row => row.id === 'retained').input.label, 'saved to task');
+    assert.deepEqual(opened, []);
+  `, directory], { cwd: repositoryRoot, windowsHide: true });
+  assert.equal(await readFile(protectedFile, 'utf8'), 'same-name file owned by the other directory');
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

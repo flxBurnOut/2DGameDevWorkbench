@@ -1,4 +1,5 @@
 """Validate drawing outputs and interpret extra context without changing raw frames."""
+import hashlib
 import io
 
 from PIL import Image
@@ -16,8 +17,8 @@ def validate_drawing_frame(data, expected_size, index):
         with Image.open(io.BytesIO(data)) as image:
             image.load()
             if image.format == 'PNG' and image.size == expected_size and 'A' in image.getbands():
-                return
-    except (OSError, ValueError, Image.DecompressionBombError):
+                return hashlib.sha256(data).hexdigest()
+    except (OSError, TypeError, ValueError, Image.DecompressionBombError):
         pass
     raise ValidationHarnessError(
         '片段格式、尺寸或透明通道无效，不会用它继续生成',

@@ -162,6 +162,9 @@ class PollResult:
     usage: dict[str, Any] = field(default_factory=dict)
     error: dict[str, Any] | None = None
     diagnostic_only: bool = False
+    # A failed batch may still contain valuable decoded originals. Their slots
+    # remain separate from playable images and preserve the upstream indices.
+    partial_images: list[bytes | None] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Prevent contradictory poll states from escaping a provider."""
@@ -172,6 +175,12 @@ class PollResult:
             raise ValueError("pending or failed provider results cannot contain images")
         if self.status is PollStatus.failed and self.error is None:
             raise ValueError("failed provider results must include a structured error")
+        if self.status is not PollStatus.failed and self.partial_images:
+            raise ValueError("partial image evidence belongs to a failed batch")
+
+    @property
+    def raw_images(self) -> list[bytes] | list[bytes | None]:
+        return self.partial_images or self.images
 
     @property
     def frames(self) -> list[bytes]:

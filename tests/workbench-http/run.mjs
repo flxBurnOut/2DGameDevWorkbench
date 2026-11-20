@@ -33,9 +33,30 @@ try {
   const health = await jsonFetch(`${baseUrl}/health`);
   assert.equal(health.ok, true);
   assert.equal(health.service, '2d-game-workbench-runtime');
+  const webAi = { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ operation: { type: 'ai-edit' } }) };
+  const legacyEdit = await fetch(baseUrl + '/v1/web/image-edit/local', webAi);
+  assert.equal(legacyEdit.status, 409);
+  assert.equal((await legacyEdit.json()).code, 'IMAGE_SUBMISSION_UNKNOWN');
+  const editPath = '/v1/web/image-edit/paid';
+  const paidEdit = '/paired/v1/paid/v1' + editPath;
+  assert.equal((await fetch(baseUrl + paidEdit, webAi)).status, 409);
+  assert.equal((await fetch(baseUrl + paidEdit, { ...webAi, headers: { ...webAi.headers, 'x-forge-workspace': 'b'.repeat(64) } })).status, 409);
+  const checkoutHeaders = { ...webAi.headers, 'x-forge-workspace': health.workspaceId };
+  assert.equal((await fetch(baseUrl + '/paired/v1' + editPath, { ...webAi, headers: checkoutHeaders })).status, 409);
+  assert.equal((await fetch(baseUrl + paidEdit, { ...webAi, headers: checkoutHeaders })).status, 409);
+  const paidIdentity = await jsonFetch(baseUrl + '/v1/paid-workspace');
+  assert.equal((await fetch(baseUrl + paidEdit, { ...webAi, headers: {
+    ...checkoutHeaders, 'x-forge-paid-workspace': paidIdentity.paidWorkspaceId,
+  } })).status, 400,
+    'The original workspace reaches input validation.');
   assert.equal((await fetch(baseUrl + '/v1/tasks', { headers: { 'x-forge-workspace': 'another-checkout' } })).status, 409);
   assert.equal((await fetch(baseUrl + '/v1/tasks?limit=0')).status, 400);
   assert.equal((await fetch(baseUrl + '/v1/tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' })).status, 400);
+  const oldTab = await fetch(baseUrl + '/v1/web/tasks', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ commandId: 'from-old-web', capabilityId: 'sprite-generator', input: { operation: 'generate-existing' } }) });
+  assert.equal(oldTab.status, 409);
+  assert.equal((await oldTab.json()).code, 'WORKSPACE_REQUIRED');
+  assert.equal((await fetch(baseUrl + '/v1/tasks?commandId=from-old-web')).status, 404);
   const created = await jsonFetch(`${baseUrl}/v1/documents`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'interactable', name: 'HTTP object', commandId: 'http-create' }) });
   const documentUrl = `${baseUrl}/v1/documents/${created.document.id}`;
   const apply = expectedRevision => fetch(`${documentUrl}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision, commandId: `http-rename-${expectedRevision}`, commands: [{ type: 'rename', name: 'Updated object' }] }) });

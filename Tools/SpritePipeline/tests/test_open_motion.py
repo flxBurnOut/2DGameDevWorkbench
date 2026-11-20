@@ -425,3 +425,38 @@ def test_paraphrase_is_expert_interpretation_and_full_original_is_preserved(setu
     assert plan.requirements[0].source=='expert'
     assert plan.requirements[-1].source=='user' and plan.requirements[-1].evidence==work.spec.description
     assert plan.stages[0].prompt==turn['plan']['stages'][0]['prompt']
+
+
+def test_motion_workspace_identity_survives_restart_and_rejects_replaced_store(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    def restart():
+        # Each interpreter opens the same path with a fresh API and no cached identity.
+        program = """
+import json, sys
+from fastapi.testclient import TestClient
+from sprite_pipeline.api_app import create_api
+client = TestClient(create_api(sys.argv[1]))
+assert 'motion_workspace_id' not in client.get('/health').json()
+print(json.dumps(client.get('/health', headers={'x-forge-motion-identity': '1'}).json()['motion_workspace_id']))
+"""
+        run = subprocess.run([sys.executable, "-c", program, str(tmp_path)], check=True, capture_output=True,
+                             text=True, cwd=Path(__file__).resolve().parents[1])
+        return json.loads(run.stdout)
+
+    marker = tmp_path / "open-motion" / ".workspace-identity.json"
+    original = restart()
+    assert len(original) == 64 and restart() == original
+    client = TestClient(create_api(tmp_path))
+    probe = {"x-forge-motion-identity": "1"}
+    with patch("sprite_pipeline.store.JobStore.global_lock", side_effect=PermissionError):
+        assert client.get("/health", headers=probe).json()["motion_workspace_id"] == original
+        marker.parent.rename(tmp_path / "archived-motion")
+        assert client.get("/health").json()["ok"]
+        assert client.get("/health", headers=probe).json()["motion_workspace_id"] is None
+        assert not marker.exists()
+    assert restart() != original
+    denied = client.get("/paired/v1/v1/open-motion", headers={"x-forge-workspace": original})
+    assert denied.status_code == 409 and denied.json()["error"]["code"] == "WORKSPACE_MISMATCH"

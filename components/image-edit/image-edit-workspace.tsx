@@ -22,6 +22,7 @@ import { ImageVersionCache, ImageViewRequest } from '@/features/image-edit/versi
 import type { VerifiedPixels } from '@/features/image-edit/version-cache';
 import { imageDarkeningWarning } from '@/features/image-edit/appearance-check.mjs';
 import { browserRequestJournal } from '@/features/editor-documents/browser-journal';
+import { readPaidWorkspace, requestFingerprint } from '@/features/workbench/paid-task.mjs';
 import { journalRequestIdentity } from '@/features/editor-documents/request-journal.mjs';
 import './image-edit.css';
 
@@ -299,17 +300,27 @@ export function ImageEditWorkspace({ target, initialEditId, initialCandidateVers
     try {
       if (!journal) throw new Error('图片目标尚未读取，未发送请求。');
       if (command.operation === 'apply') await beforeApply?.();
-      const original = await journal.begin(request);
+      const paid = command.operation === 'edit' && (input.operation as {type?: string} | undefined)?.type === 'ai-edit';
+      const workspaceId = paid ? await readPaidWorkspace() : undefined;
+      const original = await journal.begin(request, { workspaceId });
       submitted = true;
-      awaitingResponse = !original.response;
-      const value = original.response || await imageEditRequest<unknown>(command.operation, command.body);
+      let value = original.response;
+      if (paid && original.workspaceId !== workspaceId) {
+        const query = new URLSearchParams({ commandId: String(input.commandId), requestHash: await requestFingerprint({ operation: 'image-edit', input }) });
+        const response = await fetch('/api/workbench/image-edit/receipt?' + query, { cache: 'no-store', headers: { 'x-forge-workspace': original.workspaceId ?? workspaceId! } });
+        if (!response.ok) throw new Error(original.workspaceId ? '这次 AI 修改属于另一工作区。请切回原工作区恢复。' : '尚未查到旧 AI 修改的匹配回执。请在原工作区核对。');
+        value = await response.json();
+      } else if (!value) {
+        awaitingResponse = true;
+        value = await imageEditRequest<unknown>(command.operation, command.body, undefined, original.workspaceId);
+      }
       awaitingResponse = false;
       await journal.respond(request, value);
       await command.complete(value);
       await journal.complete(request); setPending(null);
     } catch (cause) {
       setError(message(cause));
-      if (awaitingResponse && cause instanceof ImageEditClientError && cause.status >= 400 && cause.status < 500 && cause.status !== 408 && !['IMAGE_EDIT_BUSY', 'IMAGE_SUBMISSION_UNKNOWN'].includes(cause.code || '')) {
+      if (awaitingResponse && cause instanceof ImageEditClientError && (!command.external || cause.code) && cause.status >= 400 && cause.status < 500 && cause.status !== 408 && !['IMAGE_EDIT_BUSY', 'IMAGE_SUBMISSION_UNKNOWN', 'WORKSPACE_MISMATCH'].includes(cause.code || '')) {
         try { await journal?.complete(request, 'rejected'); setPending(null); }
         catch (storageError) { setError(message(storageError)); }
       } else if (!submitted && !await journal?.pending().catch(() => true)) setPending(null);

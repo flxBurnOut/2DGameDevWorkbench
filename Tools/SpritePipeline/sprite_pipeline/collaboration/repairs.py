@@ -70,7 +70,7 @@ class LocalRepairs:
                     return (attempt, job) if with_job else attempt
             candidate=self.s._candidate(job,index)
             from .experiment_policy import require_tool
-            require_tool(self.s,job,REPAIR_LEVELS[mode])
+            experiment = require_tool(self.s, job, REPAIR_LEVELS[mode])
             from .adjustments import pending_adjustment
             if pending_adjustment(self.s,job,index,stage):raise ConflictError('请先处理当前修改备选')
             if any(a['state'] in {'submitting','pending','unknown','awaiting_review'} for a in run.repairs):raise ConflictError('先处理已有修复，不创建重复请求')
@@ -97,6 +97,8 @@ class LocalRepairs:
             from .execution import stage_seed
             seed=stage_seed(candidate.seed,stage)
             request=repair_request(reference,base[start:end+1],base[end+1],note.strip(),seed,mode)
+            from .experiment_requests import check_model_redraw_budget
+            check_model_redraw_budget(experiment, job, stage, request)
             self.s._check_submission_quota(job_id,index,provider,phase_frame_count=request.frame_count)
             number=len(run.repairs);folder=self.store.job_dir(job_id)/'repairs'/f'c{index}s{stage}r{number}'
             folder.mkdir(parents=True,exist_ok=True)

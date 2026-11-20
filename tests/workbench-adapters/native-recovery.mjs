@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
-  findCapability, loadManifest, publicTaskRecord, readTask, refreshTask, repositoryRoot,
+  findCapability, loadManifest, persistTask, publicTaskRecord, readTask, refreshTask, repositoryRoot,
   runConnector, validateInput,
 } from '../../lib/workbench/runtime.mjs';
 
@@ -176,6 +176,16 @@ if (process.argv[2] === '--worker') {
 
   const nativeCalls = [];
   const nativeJobs = new Map();
+  const generationReceipts = new Map();
+  const saveGeneration = (job, body) => {
+    const receipt = { request_key: body.request_key, job_id: job.job_id, candidate_index: body.candidate_index ?? null,
+      wait: body.wait, revision: job.revision, state: 'returned' };
+    const data = { job: structuredClone(job), generation_receipt: receipt };
+    generationReceipts.set(body.request_key, data);
+    return data;
+  };
+  const readGeneration = key => generationReceipts.has(key)
+    ? Response.json({ data: generationReceipts.get(key) }) : Response.json({}, { status: 404 });
   let boundary = 'generate', offline = false;
   globalThis.fetch = async (url, options) => {
     const route = new URL(url).pathname;
@@ -198,11 +208,13 @@ if (process.argv[2] === '--worker') {
     if (route.startsWith('/v1/jobs/')) {
       const job = nativeJobs.get(route.split('/')[3]);
       assert(job);
+      if (method === 'GET' && route.includes('/generation-requests/')) return readGeneration(route.split('/').at(-1));
       if (method === 'GET') return body(job);
       if (route.endsWith('/generate')) {
         job.status = 'provider_pending';
         job.revision += 1;
         job.candidates[0] = { candidate_index: 1, status: 'provider_pending', submission_attempts: 1, provider_job_id: 'provider-fixture' };
+        saveGeneration(job, JSON.parse(options.body));
         throw new TypeError('response closed after paid acceptance');
       }
     }
@@ -239,6 +251,103 @@ if (process.argv[2] === '--worker') {
   assert.equal(existingRestored.task.adapter.remoteJobId, resume.jobId);
   assert.equal(existingRestored.task.status, 'running');
   assert.equal(nativeCalls.filter(([method]) => method === 'POST').length, 4);
+
+  for (const mode of ['normal', 'reply-lost', 'legacy-422', 'other-command']) {
+    let posts = 0, receiptBody;
+    globalThis.fetch = async (url, options) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.includes('/generation-requests/')) return Response.json(receiptBody);
+      if (options.method !== 'POST') return Response.json({ job: { job_id: jobId, revision: 1, status: 'created' } });
+      assert.equal(++posts, 1);
+      const command = JSON.parse(options.body);
+      const row = { candidate_index: 2, stage_index: 1, submission_attempts: 1, provider_job_id: 'paid-stage-two', usage: { usd: 3.5 } };
+      const receipt = { ...command, job_id: jobId, revision: 9, state: 'interrupted', error: 'invalid PNG', evidence: [row] };
+      const job = { job_id: jobId, revision: 9, status: 'provider_pending', candidates: [{ candidate_index: 2,
+        plan_execution: { stages: [{}, { provider_job_id: row.provider_job_id, usage: row.usage }] } }],
+        events: [{ ...command, event: 'generation_command_progress', result_revision: 9,
+          request_key: mode === 'other-command' ? 'another-command' : command.request_key, evidence: [row] }] };
+      receiptBody = { data: { generation_receipt: receipt, job } };
+      if (mode === 'reply-lost') throw new TypeError('response closed after paid validation failure');
+      if (mode === 'legacy-422') return Response.json({ error: 'validation failed after polling' }, { status: 422 });
+      return Response.json(receiptBody);
+    };
+    const action = { operation: 'generate-existing', jobId, candidateIndex: 2, wait: true };
+    const first = await runConnector(manifest, capability, action, { commandId: 'generation-error-' + mode });
+    const restored = await refreshTask(manifest, first.task.id);
+    assert.equal(restored.task.status, 'attention_required');
+    assert.equal(restored.task.execution.phase, 'awaiting_receipt');
+    if (mode === 'other-command') assert.equal(restored.task.resultDigest, undefined);
+    else {
+      const record = JSON.parse(await readFile(path.join(repositoryRoot, restored.task.outputs[0]), 'utf8'));
+      assert.equal(record.generationReceipt.state, 'interrupted');
+      assert.equal(record.generationReceipt.revision, record.jobRecord.revision);
+      assert.deepEqual(record.generationReceipt.evidence[0].usage, { usd: 3.5 });
+      assert.equal(record.generationReceipt.evidence[0].provider_job_id, 'paid-stage-two');
+    }
+    assert.equal(posts, 1);
+  }
+
+  let quotaCalls = 0;
+  globalThis.fetch = async (_url, options) => {
+    if (options.method !== 'POST') return Response.json({ job: { job_id: jobId, revision: 1, status: 'created' } });
+    quotaCalls++;
+    const command = JSON.parse(options.body);
+    const receipt = { ...command, job_id: jobId, revision: 3, state: 'rejected', submission_created: false, error: 'insufficient quota' };
+    const job = { job_id: jobId, revision: 3, status: 'not_submitted', candidates: [{ candidate_index: 2, submission_attempts: 0 }],
+      events: [{ ...command, event: 'generation_command_preflight', result_revision: 3 }] };
+    return Response.json({ data: { generation_receipt: receipt, job } });
+  };
+  const quotaInput = { operation: 'generate-existing', jobId, candidateIndex: 2, wait: false };
+  const noSpend = await runConnector(manifest, capability, quotaInput, { commandId: 'quota-preflight' });
+  assert.equal(noSpend.task.status, 'not_submitted');
+  assert.equal(noSpend.task.execution.phase, 'not_submitted');
+  const quotaReport = JSON.parse(await readFile(path.join(repositoryRoot, noSpend.task.outputs[0]), 'utf8'));
+  assert.equal(quotaReport.jobRecord.revision, quotaReport.generationReceipt.revision);
+  assert.equal(quotaReport.jobRecord.candidates[0].submission_attempts, 0);
+  assert.equal((await runConnector(manifest, capability, quotaInput, { commandId: 'quota-preflight' })).task.id, noSpend.task.id);
+  assert.equal(quotaCalls, 1);
+
+  const siblingJob = { job_id: 'sibling-candidates', revision: 1, status: 'created', generation_requested_at: null,
+    candidates: [1, 2].map(candidate_index => ({ candidate_index, status: 'created', submission_attempts: 0 })) };
+  let siblingPosts = 0;
+  globalThis.fetch = async (url, options) => {
+    const path = new URL(url).pathname;
+    if (path.includes('/generation-requests/')) return readGeneration(path.split('/').at(-1));
+    if (options.method === 'POST') {
+      siblingPosts++;
+      if (siblingPosts === 1) throw new TypeError('connection closed before command A arrived');
+      const body = JSON.parse(options.body);
+      siblingJob.status = 'provider_pending';
+      siblingJob.revision++;
+      siblingJob.generation_requested_at = '2026-11-01T12:03:04Z';
+      Object.assign(siblingJob.candidates[body.candidate_index - 1], { status: 'provider_pending', submission_attempts: 1,
+        provider_job_id: 'provider-' + body.request_key });
+      saveGeneration(siblingJob, body);
+      throw new TypeError('connection closed after the named command arrived');
+    }
+    assert.equal(path, '/v1/jobs/sibling-candidates');
+    return Response.json({ job: siblingJob });
+  };
+  const specific = { operation: 'generate-existing', jobId: siblingJob.job_id, candidateIndex: 2 };
+  const uncertain = await runConnector(manifest, capability, specific, { commandId: 'command-A-never-sent' });
+  const expectUncertain = async () => {
+    const result = await refreshTask(manifest, uncertain.task.id);
+    assert.equal(result.task.execution.phase, 'awaiting_receipt', result.refreshError);
+    assert.equal(result.task.adapter.nativeSubmissionPending, 'job-generation');
+    return result.task;
+  };
+  for (const candidateIndex of [1, 2]) {
+    const other = await runConnector(manifest, capability, { ...specific, candidateIndex },
+      { commandId: 'command-B-candidate-' + candidateIndex });
+    assert.equal((await refreshTask(manifest, other.task.id)).task.status, 'running');
+    await expectUncertain();
+  }
+  const historical = await expectUncertain();
+  delete historical.adapter.nativeGenerationKey;
+  historical.adapter.nativeGenerationEvidence = JSON.stringify([null, [[2, 'created', 0, null]]]);
+  await persistTask(manifest, historical);
+  await expectUncertain();
+  assert.equal(siblingPosts, 3, 'Neither foreign receipts nor legacy candidate progress can replay A');
 
   let revisionPosts = 0;
   globalThis.fetch = async (url, options) => {
@@ -285,5 +394,24 @@ if (process.argv[2] === '--worker') {
   const blocked = await refreshTask(manifest, openClaim.task.id);
   assert.equal(blocked.task.status, 'attention_required');
   assert.equal(generationPosts, 1);
+  for (const action of [{ operation: 'resume-motion', openWorkId: workId, expectedRevision: 1 },
+    { operation: 'recover', jobId, candidateIndex: 1 }]) {
+    let sent = 0;
+    globalThis.fetch = async (_url, options) => {
+      assert.equal(options.method, 'POST');
+      sent++;
+      if (sent === 1) return Response.json(action.operation === 'resume-motion' ? work('provider_pending', 2)
+        : { job: work('provider_pending', 2).job });
+      throw new TypeError('response closed after command');
+    };
+    const returned = await runConnector(manifest, capability, action);
+    assert.equal(returned.task.status, 'running');
+    const old = await runConnector(manifest, capability, action, { commandId: 'lost-' + action.operation });
+    assert.equal(old.task.execution.phase, 'awaiting_receipt');
+    const check = await runConnector(manifest, capability, action, { commandId: old.task.command.id });
+    assert.equal(check.task.status, 'attention_required');
+    assert.equal(check.task.execution.phase, 'awaiting_receipt');
+    assert.equal(sent, 2);
+  }
   console.log('Native receipts, hash-bound bundle retries, unchanged polls, separate-process ordering, strict validation and durable command recovery passed.');
 }

@@ -27,7 +27,7 @@ class CandidateArtifacts:
         self.service = service
         self.store = service.store
 
-    def _store_provider_frames(
+    def store_provider_frames(
         self,
         job_id: str,
         candidate_index: int,

@@ -144,6 +144,7 @@ export function GameDeliveryHistory() {
         {delivery && <>
           <h3>{delivery.title}</h3>
           <p><strong>{deliveryStates[delivery.status] || delivery.status}</strong> · {deliveryKinds[delivery.kind] || delivery.kind}</p>
+          {delivery.installVerification && <p role="alert">{delivery.installVerification.message}</p>}
           <p>目标项目：{delivery.project.name}</p>
           <p className="wb-delivery-path">{delivery.project.path}</p>
           <p className="wb-muted">交付于 {time(delivery.createdAt)} · 状态更新于 {time(delivery.updatedAt)}</p>

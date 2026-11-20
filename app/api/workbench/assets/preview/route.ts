@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   try {
     const query = new URL(request.url).searchParams;
     const selected = new URLSearchParams();
-    for (const key of ['assetId', 'projectRevision', 'task', 'batch']) {
+    for (const key of ['assetId', 'projectRevision', 'task', 'batch', 'origin']) {
       const value = query.get(key);
       if (value) selected.set(key, value);
     }

@@ -28,7 +28,7 @@ export class RequestJournal {
     return value;
   }
   async pending() { return clone(this.validate(await this.store.read(this.key)).pending); }
-  async begin(request) {
+  async begin(request, { workspaceId } = {}) {
     const identity = journalRequestIdentity(request), original = clone(request);
     const value = await this.store.update(this.key, previous => {
       const journal = this.validate(previous);
@@ -40,7 +40,7 @@ export class RequestJournal {
       const replay = journal.history.find(entry => entry.request.input.commandId === original.input.commandId);
       if (replay && journalRequestIdentity(replay.request) !== identity) fail('不能将原命令身份用于不同的请求。');
       return { ...journal, pending: replay ? { ...replay, completedAt: undefined } : {
-        request: original, state: 'pending', createdAt: this.now(), updatedAt: this.now(),
+        request: original, ...(workspaceId ? { workspaceId } : {}), state: 'pending', createdAt: this.now(), updatedAt: this.now(),
       } };
     });
     return clone(value.pending);

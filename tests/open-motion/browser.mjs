@@ -26,11 +26,13 @@ try {
   await page.route('**/api/workbench/**',route=>route.fulfill({status:503,json:{error:'本隔离验收仅启用开放动作接口'}}));
   await page.route('**/api/workbench/open-motion?**',async route=>{
     const request=route.request(),url=new URL(request.url());
-    const target=new URL('/v1/'+(url.searchParams.get('path')||'open-motion'),base);
+    const path = url.searchParams.get('path') || 'open-motion';
+    if (path === 'workspace-identity') return route.fulfill({json:{workspaceId:(await (await fetch(base+'/health', {headers:{'x-forge-motion-identity':'1'}})).json()).motion_workspace_id}});
+    const target = new URL(path.startsWith('paired/') ? '/paired/v1/v1/' + path.slice(7) : '/v1/' + path, base);
     for(const key of ['revision','candidate','stage'])if(url.searchParams.has(key))target.searchParams.set(key,url.searchParams.get(key));
     let body=request.postData();
     if(body){const value=JSON.parse(body);if(value.spec)value.spec.provider='fixture';body=JSON.stringify(value);}
-    const response=await fetch(target,{method:request.method(),headers:{'content-type':'application/json'},...(body?{body}:{})});
+    const response=await fetch(target,{method:request.method(),headers:{'content-type':'application/json', ...(path.startsWith('paired/') && {'x-forge-workspace':request.headers()['x-forge-workspace']})},...(body?{body}:{})});
     await route.fulfill({status:response.status,contentType:response.headers.get('content-type'),body:Buffer.from(await response.arrayBuffer())});
   });
   // Settings are readiness-only UI fixture data, never usable credentials.
@@ -284,6 +286,14 @@ try {
   await page.locator('.motion-content').hover();await page.mouse.wheel(0,850);
   await page.waitForFunction(()=>document.querySelector('.motion-content')?.scrollTop > 0);
   await page.screenshot({path:path.join(root,'mobile.png'),fullPage:true});
+  const absentId = 'b'.repeat(32);
+  const originalDraft = JSON.stringify({spec:original.spec, requestKey:'missing-work-original-planning-request', revision:1,
+    workspaceId:(await (await fetch(base + '/health', {headers:{'x-forge-motion-identity':'1'}})).json()).motion_workspace_id});
+  await page.evaluate(({id, draft}) => localStorage.setItem('forge.motion.draft.' + id, draft), { id:absentId, draft:originalDraft });
+  await page.goto((process.env.FORGE_TEST_WEB_URL || 'http://localhost:3000') + '/tools/sprite-generator?work=' + absentId);
+  await page.getByText('请核对服务连接后重新连接。').waitFor();
+  assert.equal(await page.evaluate(id => localStorage.getItem('forge.motion.draft.' + id), absentId), originalDraft,
+    'An unavailable original work cannot replace a pending planning draft with blank input.');
   // Real page rendering of rejected/interrupted planning. These responses are
   // browser-only fixtures; no production work or paid retry is created.
   const failed = { ...original, id: 'f'.repeat(32), revision: 1, latest_revision: 1,
@@ -302,9 +312,9 @@ try {
   const recoveryRequests = [];
   await page.route('**/api/workbench/open-motion?**', async route => {
     const routePath = new URL(route.request().url()).searchParams.get('path');
-    if(routePath === `open-motion/${failed.id}`)
+    if(routePath === `paired/open-motion/${failed.id}`)
       return route.fulfill({json:recoveryConfirmed ? recovered : failed});
-    if(routePath === `open-motion/${failed.id}/revise`) {
+    if(routePath === `paired/open-motion/${failed.id}/revise`) {
       const body = route.request().postDataJSON();
       assert.equal(body.planning_authorized, true);
       assert.equal(body.expected_revision, 1);

@@ -78,8 +78,8 @@ class SpritePipelineService:
         self.settings.ensure_directories()
         self.presets = PresetRepository(self.settings)
         self.store = JobStore(self.settings)
-        self._execution = NativeJobExecution(self)
         self._artifacts = CandidateArtifacts(self)
+        self._execution = NativeJobExecution(self, self._artifacts)
 
     def list_presets(self) -> dict[str, Any]:
         return {
@@ -937,7 +937,7 @@ class SpritePipelineService:
         diagnostic_only: bool,
         expected_provider_job_id: str,
     ) -> bool:
-        return self._artifacts._store_provider_frames(
+        return self._artifacts.store_provider_frames(
             job_id,
             candidate_index,
             images,

@@ -19,6 +19,7 @@ from .errors import (
     ProviderConfigurationError,
     ValidationHarnessError,
 )
+from .generation_commands import lookup_generation, run_keyed_generation
 from .motion_constraints import Phase
 from .models import ExportOptions, FrameReviewRequest, GenerationRequest
 from .service import QA_ALGORITHM_VERSION, SpritePipelineService
@@ -56,6 +57,7 @@ class MotionRepairBody(_Body):
 
 
 class GenerateBody(_Body):
+    request_key: str | None = Field(default=None, min_length=8, max_length=128, pattern=r'^[A-Za-z0-9][A-Za-z0-9._:-]+$')
     wait: bool = False
     candidate_index: int | None = Field(default=None, ge=1)
 
@@ -104,7 +106,7 @@ def create_api(
     """Create the FastAPI app lazily so CLI/offline processing needs no FastAPI."""
 
     try:
-        from fastapi import FastAPI, Header, Query, Request
+        from fastapi import Depends, FastAPI, Header, Query, Request
         from fastapi.exceptions import RequestValidationError
         from fastapi.responses import FileResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
@@ -145,7 +147,18 @@ def create_api(
 
     app.include_router(create_asset_router(service))
     from .collaboration.api import create_router as create_open_motion_router
-    app.include_router(create_open_motion_router(service))
+    motion_router = create_open_motion_router(service)
+    app.include_router(motion_router)
+    from .collaboration.workspace import motion_workspace_identity
+
+    class MotionWorkspaceMismatch(ConflictError):
+        code = 'WORKSPACE_MISMATCH'
+
+    def require_motion_workspace(workspace_header: str = Header(default='', alias='x-forge-workspace')):
+        if not workspace_header or workspace_header != motion_workspace_identity(service):
+            raise MotionWorkspaceMismatch('动画服务已切换工作区。请切回原工作区恢复请求。')
+
+    app.include_router(motion_router, prefix='/paired/v1', dependencies=[Depends(require_motion_workspace)], include_in_schema=False)
     static_dir = Path(__file__).resolve().parent / "static"
 
     class _NoStoreStaticFiles(StaticFiles):
@@ -301,12 +314,13 @@ def create_api(
         return attack_plans.stop(plan_id)
 
     @app.get("/health")
-    def health() -> dict[str, Any]:
+    def health(identity_probe: str = Header(default="", alias="x-forge-motion-identity")) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "ok": True,
             "version": "0.1.0",
             "workbench_api_version": 1,
+            **({"motion_workspace_id": motion_workspace_identity(service, create=True)} if identity_probe == "1" else {}),
             "pixellab_configured": bool(service.settings.pixellab_api_key),
             "attack_extra_generation_limit": 2,
             "data_root": str(service.settings.data_root),
@@ -512,8 +526,14 @@ def create_api(
             "data": {"safety": service.candidate_safety(job_id, candidate_index)},
         }
 
+    @app.get('/v1/jobs/{job_id}/generation-requests/{request_key}')
+    def generation_request(job_id: str, request_key: str):
+        return lookup_generation(service.store, job_id, request_key)
+
     @app.post("/v1/jobs/{job_id}/generate")
     def generate(job_id: str, body: GenerateBody) -> dict[str, Any]:
+        if body.request_key is not None:
+            return run_keyed_generation(service, job_id, body)
         try:
             job = service.generate_job(job_id, wait=body.wait, candidate_index=body.candidate_index)
         except ValidationHarnessError:

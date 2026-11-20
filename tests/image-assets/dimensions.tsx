@@ -21,13 +21,17 @@ window.fetch = async (input, options) => {
     if (path === 'outputs/slow-result/result.json') { await wait(350); return Response.json({ width: 3072, height: 1024 }); }
     if (path === 'outputs/processed-history/result.json') return Response.json({ width: 2560, height: 1280 });
   }
-  if (url === '/api/workbench/tasks' && options?.method === 'POST') {
+  if (url === '/api/workbench/paid-tasks' && !options?.method) return Response.json({ workspaceId: 'a'.repeat(64) });
+  if (url === '/api/workbench/paid-tasks' && options?.method === 'POST') {
     if (typeof options.body !== 'string') throw new Error('Fixture only accepts a JSON string body');
     const body = JSON.parse(options.body);
     submitted.push(body);
     const task: StoredTask = { id: `submitted-${submitted.length}`, capabilityId: body.capabilityId, status: 'prepared', input: body.input, outputs: [] };
     fixtureTasks.push(task);
-    return Response.json({ taskId: task.id });
+    const bytes = new TextEncoder().encode(JSON.stringify({ capabilityId: body.capabilityId, input: body.input }, (_key, value) =>
+      value && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a],[b]) => a < b ? -1 : a > b ? 1 : 0)) : value));
+    const requestSha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
+    return Response.json({ taskId: task.id, commandId: body.commandId, requestSha256, status: task.status });
   }
   throw new Error(`Fixture blocked an unexpected request: ${url}`);
 };

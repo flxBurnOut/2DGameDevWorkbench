@@ -28,11 +28,12 @@ export async function POST(request: Request) {
   const denied = trustedRequest(request, { json: true });
   if (denied) return denied;
   try {
-    const response = await fetchWorkbenchRuntime('/v1/tasks', {
+    const response = await fetchWorkbenchRuntime('/v1/web/tasks', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: await request.text(),
-    });
+      body: request.body,
+      duplex: 'half',
+    } as RequestInit);
     return forwardJson(response);
   } catch (error) {
     return runtimeUnavailable(error);

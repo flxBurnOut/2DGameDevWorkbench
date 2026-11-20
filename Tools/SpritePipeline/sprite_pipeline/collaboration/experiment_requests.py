@@ -135,3 +135,21 @@ def preflight(requests, limits, size):
         if units > maximum:
             problems.append({'reason': 'max_generation_units', 'maximum': maximum, 'observed': units})
     return problems
+
+
+def check_model_redraw_budget(experiment, job, stage, request):
+    """Reserve all baseline draws and account for every extra submitted redraw."""
+    if experiment.get('arm') != 'model_only' or experiment.get('protocol') != PROTOCOL:
+        return
+    frozen = experiment['frozen_drawing']
+    if digest(frozen) != experiment['frozen_drawing_sha256']:
+        raise ConflictError('实验副本的冻结绘图协议已改变')
+    previous = [{'kind': 'repair', 'stage': i, 'count': attempt['input_count'], 'prompt': attempt['note']}
+                for candidate in job.candidates for i, run in enumerate(candidate.plan_execution.stages)
+                for attempt in run.repairs]
+    proposed = {'kind': 'repair', 'stage': stage, 'count': request.frame_count, 'prompt': request.prompt}
+    issues = preflight([*frozen['requests'], *previous, proposed], frozen['limits'],
+                       (job.character.cell_width, job.character.cell_height))
+    if issues:
+        raise ValidationHarnessError('重画超过冻结绘图上限：' + issues[0]['reason'],
+                                     details={'reason': issues[0]['reason'], 'problems': issues})

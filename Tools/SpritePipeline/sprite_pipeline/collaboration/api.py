@@ -507,6 +507,11 @@ def create_router(service):
     def create_adjustment(work_id: str, body: AdjustmentInput):
         return {'adjustment':adjustments.create(work_id,body),'work':view(work_id)}
 
+    @router.get('/{work_id}/adjustments/requests/{request_key}')
+    def adjustment_request(work_id: str, request_key: str):
+        task = adjustments.original_request(work_id, request_key)
+        return {'adjustment': task, 'work': view(work_id, task['revision'])}
+
     @router.get('/{work_id}/adjustments/{adjustment_id}')
     def get_adjustment(work_id: str, adjustment_id: str):
         return {'adjustment':adjustments.load(work_id,adjustment_id),'work':view(work_id)}

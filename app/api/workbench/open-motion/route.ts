@@ -1,6 +1,7 @@
 import manifest from '@/workbench/manifest.json';
 import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 import { endpointUrl } from '@/lib/workbench/service-endpoints.mjs';
+import { isPaidMotionPath } from '@/lib/workbench/paid-operations.mjs';
 
 // Deliberately bounded proxy: no arbitrary URL, path, header or method passthrough.
 const work = '[0-9a-f]{32}';
@@ -31,9 +32,16 @@ async function proxy(request: Request) {
   const denied = trustedRequest(request, { json: request.method !== 'GET' });
   if (denied) return denied;
   const url = new URL(request.url);
-  const path = url.searchParams.get('path') || 'open-motion';
-  if (!(request.method === 'GET' ? read.test(path) || structureRead.test(path) || temporalRead.test(path) : write.test(path) || structureWrite.test(path) || temporalWrite.test(path)))
+  const requested = url.searchParams.get('path') || 'open-motion';
+  const paired = requested.startsWith('paired/');
+  const path = paired ? requested.slice('paired/'.length) : requested;
+  const probe = request.method === 'GET' && path === 'workspace-identity';
+  const planningReceipt = paired && /^open-motion\/(?:[0-9a-f]{32}\/)?requests\/[A-Za-z0-9._:-]{8,128}$/.test(path);
+  if (!(request.method === 'GET' ? probe || planningReceipt || read.test(path) || structureRead.test(path) || temporalRead.test(path) : write.test(path) || structureWrite.test(path) || temporalWrite.test(path)))
     return Response.json({ error: '不支持的工作区操作' }, { status: 400 });
+  const workspaceId = request.headers.get('x-forge-workspace') || '';
+  if ((paired && !sha256.test(workspaceId)) || (!paired && request.method === 'POST' && isPaidMotionPath(path)))
+    return Response.json({ error: '请刷新页面，在原动画工作区恢复请求。', code: 'WORKSPACE_REQUIRED' }, { status: 409 });
   const connector = manifest.capabilities.find(
     (c) => c.id === 'sprite-generator',
   )!.connector;
@@ -44,7 +52,7 @@ async function proxy(request: Request) {
     : undefined;
   if (!base)
     return Response.json({ error: '序列帧服务未配置' }, { status: 503 });
-  const target = new URL(endpointUrl(base, `/v1/${path}`));
+  const target = new URL(endpointUrl(base, `${paired ? '/paired/v1' : ''}/v1/${path}`));
   const legacyVersion = url.searchParams.get('v');
   const legacyWorkRevision = workReference.test(path) && legacyVersion !== null && positiveRevision.test(legacyVersion) ? legacyVersion : null;
   const revision = url.searchParams.get('revision') ?? legacyWorkRevision;
@@ -89,6 +97,15 @@ async function proxy(request: Request) {
     target.searchParams.set('stage',stage);
   }
   try {
+    if (probe || paired) {
+      const health = await fetch(endpointUrl(base, '/health'), { cache: 'no-store', redirect: 'manual',
+        signal: AbortSignal.timeout(5000), headers: { 'x-forge-motion-identity': '1', ...(token && { authorization: `Bearer ${token}` }) } });
+      const healthBody = health.ok ? await health.json() as { motion_workspace_id?: unknown } | null : null;
+      const id = healthBody?.motion_workspace_id;
+      if (typeof id !== 'string' || !sha256.test(id) || (paired && id !== workspaceId))
+        return Response.json({ code: 'WORKSPACE_MISMATCH', error: '动画工作区或服务版本不匹配。请切回原工作区恢复。' }, { status: 409 });
+      if (probe) return Response.json({ workspaceId: id }, { headers: { 'cache-control': 'no-store' } });
+    }
     const body = request.method === 'POST' ? await request.text() : undefined;
     if (body && Buffer.byteLength(body) > 2_100_000)
       return Response.json(
@@ -97,11 +114,13 @@ async function proxy(request: Request) {
       );
     const response = await fetch(target, {
       method: request.method,
+      ...(paired && { redirect: 'manual' }),
       cache: 'no-store',
       signal: AbortSignal.timeout(30_000),
       body,
       headers: {
         ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(paired ? { 'x-forge-workspace': workspaceId } : {}),
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
     });

@@ -7,15 +7,17 @@ import shutil
 from datetime import timedelta
 from typing import Any
 
-from .errors import ConflictError, HarnessError, ProviderError, ProviderTemporaryError, ValidationHarnessError
+from .candidate_artifacts import CandidateArtifacts
+from .errors import ConflictError, HarnessError, ProviderConfigurationError, ProviderError, ProviderTemporaryError, ValidationHarnessError
 from .jsonio import atomic_write_json, relative_posix
 from .models import CandidateStatus, JobRecord, JobStatus, utc_now
 from .providers.account import AccountSlotBusy, PixelLabSlot, animation_intent_id
 
 
 class NativeJobExecution:
-    def __init__(self, service):
+    def __init__(self, service, artifacts: CandidateArtifacts):
         self.service = service
+        self.artifacts = artifacts
         self.store = service.store
 
     def generate_job(
@@ -31,13 +33,17 @@ class NativeJobExecution:
 
         job = self.store.load(job_id)
         if job.request.provider == "import":
-            raise ValidationHarnessError("import jobs accept frames through ingest, not generate")
+            raise ValidationHarnessError("import jobs accept frames through ingest, not generate", details={"submission_created": False})
         if job.motion_control and job.generation_requested_at is None and not any(c.submission_attempts for c in job.candidates):
             from .vision_review import VisionReviewer
             if not VisionReviewer(self.service.settings).configured:
-                raise ValidationHarnessError("请先在设置中保存 视觉检查 API Key；尚未提交生成")
-        provider = get_provider(job.request.provider, self.service.settings)
-        self.service.reconcile_saved_results(job_id)
+                raise ValidationHarnessError("请先在设置中保存 视觉检查 API Key；尚未提交生成", details={"submission_created": False})
+        try:
+            provider = get_provider(job.request.provider, self.service.settings)
+        except ProviderConfigurationError as exc:
+            exc.details['submission_created'] = False
+            raise
+        self.artifacts.reconcile_saved_results(job_id)
         job = self.store.load(job_id)
         if not self.service._same_generation_account(job, provider):
             return job
@@ -65,7 +71,7 @@ class NativeJobExecution:
             and candidate.candidate_index not in targets
         ]
         if pending_other:
-            raise ConflictError("another candidate is already pending", details={"candidate_indices": pending_other})
+            raise ConflictError("another candidate is already pending", details={"candidate_indices": pending_other, "submission_created": False})
 
         for index in targets:
             current = self.store.load(job_id)
@@ -455,7 +461,7 @@ class NativeJobExecution:
             if pending_other:
                 raise ConflictError(
                     "another candidate is already pending",
-                    details={"candidate_indices": pending_other},
+                    details={"candidate_indices": pending_other, "submission_created": False},
                 )
             candidate.status = CandidateStatus.submitting
             job.generation_account = job.generation_account or getattr(provider, 'account_fingerprint', None)
@@ -650,7 +656,7 @@ class NativeJobExecution:
                 )
 
             try:
-                stored = self.service._store_provider_frames(
+                stored = self.artifacts.store_provider_frames(
                     job_id,
                     candidate_index,
                     result.images,
@@ -769,7 +775,7 @@ class NativeJobExecution:
                 continue
             job_id = str(row["job_id"])
             try:
-                job = self.service.reconcile_saved_results(job_id)
+                job = self.artifacts.reconcile_saved_results(job_id)
                 if job.request.open_plan and job.generation_requested_at is not None:
                     from .providers import get_provider
                     from .collaboration.execution import PlanGeneration

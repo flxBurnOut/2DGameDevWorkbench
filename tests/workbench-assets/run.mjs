@@ -427,6 +427,21 @@ try {
   assert.deepEqual(snapshotAsset.taskIds, ['animation-start', 'animation-check', 'animation-export']);
   assert.equal(snapshotAsset.history.length, 3);
   assert.equal(snapshotAsset.fps, 12);
+  const live = { ...nativeAssets[0], id: snapshotAsset.id, jobId: 'snapshot-job' };
+  nativeAssets.push(live);
+  try {
+    const latest = (await agentRequest(manifest, 'asset', { assetId: live.id })).asset;
+    const hints = new URL(latest.previewUrl, 'http://localhost').searchParams;
+    assert.equal(hints.get('origin'), 'sprite-pipeline');
+    // Same candidate has a saved local PNG. Only historical unqualified URLs
+    // may use it after the native preview becomes unavailable.
+    offline = true;
+    await assert.rejects(readAssetPreview(manifest, live.id, Object.fromEntries(hints)), { status: 503 });
+    assert((await readAssetPreview(manifest, live.id)).bytes.equals(png));
+  } finally {
+    nativeAssets.pop();
+    offline = false;
+  }
 
   client = new Client({ name: 'asset-inventory-test', version: '1.0.0' });
   await client.connect(

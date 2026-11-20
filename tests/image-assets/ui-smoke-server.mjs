@@ -45,6 +45,9 @@ const gateway = createHttpServer(async (request, response) => {
 await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
 const gatewayUrl = `http://127.0.0.1:${gateway.address().port}`;
 const bridgePort = await freePort(), bridgeUrl = `http://127.0.0.1:${bridgePort}`;
+const webPort = process.env.WORKBENCH_UI_SMOKE_PORT ? Number(process.env.WORKBENCH_UI_SMOKE_PORT) : await freePort();
+process.env.WORKBENCH_FRONTEND_URL = `http://127.0.0.1:${webPort}`;
+process.env.WORKBENCH_RUNTIME_URL = bridgeUrl;
 const child = spawn(process.execPath, ['scripts/workbench-http.mjs'], {
   cwd: repositoryRoot, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   env: { ...process.env, WORKBENCH_TEST_RUN: run, WORKBENCH_RUNTIME_PORT: String(bridgePort), OPENAI_API_KEY: 'fixture-no-production-key', MAP_STITCHER_OPENAI_API_URL: `${gatewayUrl}/v1/images/edits`, MAP_STITCHER_OPENAI_GENERATION_API_URL: `${gatewayUrl}/v1/images/generations`, IMAGE_ASSETS_PROVIDER: 'gpt-image-2.6', SPRITE_PIPELINE_API_URL: gatewayUrl },
@@ -90,6 +93,16 @@ const vite = await createTestViteServer({
       if (url.pathname === '/__smoke/status') return json(response, { run, providerCalls, clientErrors });
       if (url.pathname === '/__smoke/client-error') { try { clientErrors.push(JSON.parse(await readBody(request))); } catch {} return json(response, { ok: true }); }
       if (url.pathname === '/__smoke/stop' && request.method === 'POST') { json(response, { stopping: true }); setTimeout(() => void stop(), 50); return; }
+      if (url.pathname === '/api/workbench/paid-tasks' || url.pathname.startsWith('/api/workbench/image-edit/')) {
+        const tasks = url.pathname.endsWith('/paid-tasks');
+        const route = await server.ssrLoadModule(tasks ? '/app/api/workbench/paid-tasks/route.ts' : '/app/api/workbench/image-edit/[operation]/route.ts');
+        const input = new Request(process.env.WORKBENCH_FRONTEND_URL + request.url, { method: request.method, headers: request.headers,
+          ...(request.method === 'POST' && { body: request, duplex: 'half' }) });
+        const upstream = await route[request.method](input, { params: Promise.resolve({ operation: url.pathname.split('/').at(-1) }) });
+        response.writeHead(upstream.status, Object.fromEntries(upstream.headers));
+        response.end(Buffer.from(await upstream.arrayBuffer()));
+        return;
+      }
       if (url.pathname === '/api/workbench/sprite-pipeline/jobs') return json(response, { jobs: [] });
       if (url.pathname === '/api/workbench/sprite-pipeline/health') return json(response, { ok: false, uiReady: false });
       if (url.pathname === '/api/workbench/assets' && request.method === 'GET') {
@@ -102,7 +115,7 @@ const vite = await createTestViteServer({
       next();
     });
   } }],
-  server: { host: '127.0.0.1', port: process.env.WORKBENCH_UI_SMOKE_PORT ? Number(process.env.WORKBENCH_UI_SMOKE_PORT) : await freePort(), strictPort: true, proxy: { '/api/workbench': { target: bridgeUrl, rewrite: requestPath => requestPath.startsWith('/api/workbench/image-edit/') ? requestPath.replace('/api/workbench/image-edit/', '/v1/agent/image-') : requestPath.startsWith('/api/workbench/frontend') ? requestPath.replace('/api/workbench/frontend', '/v1/frontend/heartbeat') : requestPath.replace('/api/workbench', '/v1') } } },
+  server: { host: '127.0.0.1', port: webPort, strictPort: true, proxy: { '/api/workbench': { target: bridgeUrl, rewrite: requestPath => requestPath.startsWith('/api/workbench/frontend') ? requestPath.replace('/api/workbench/frontend', '/v1/frontend/heartbeat') : requestPath.replace('/api/workbench', '/v1') } } },
 });
 resources.vite = vite;
 await vite.listen();

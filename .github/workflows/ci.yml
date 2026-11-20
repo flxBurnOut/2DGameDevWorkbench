@@ -54,7 +54,10 @@ jobs:
       - run: python -c "import importlib.util; assert importlib.util.find_spec('gradio') is None"
       - run: >
           python -m pytest -q Tools/PixelProp/tests
+          Tools/SpritePipeline/tests/test_service_launch.py
           Tools/SpritePipeline/tests/test_paper_experiment.py
+          Tools/SpritePipeline/tests/test_open_motion.py
+          Tools/SpritePipeline/tests/test_interactable_state_chain.py
           Tools/SpritePipeline/tests/test_open_motion_checkpoints.py
           Tools/SpritePipeline/tests/test_open_motion_recovery_media.py
           Tools/SpritePipeline/tests/test_open_motion_repairs.py

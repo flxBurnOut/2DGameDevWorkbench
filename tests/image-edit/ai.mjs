@@ -6,7 +6,9 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { createProject, createObject } from '../../features/interactable-editor/contract.mjs';
 import { createDocument, getDocument, applyDocumentCommands } from '../../lib/workbench/editor-documents.mjs';
-import { imageEditRequest } from '../../lib/workbench/image-edits.mjs';
+import { imageEditRequest, readImageEditReceipt } from '../../lib/workbench/image-edits.mjs';
+import { requestFingerprint } from '../../features/workbench/paid-task.mjs';
+import { imageEditInputs } from '../../lib/workbench/image-edit-contract.mjs';
 import { findCapability, loadManifest, readTask, repositoryRoot, runConnector } from '../../lib/workbench/runtime.mjs';
 
 const manifest = await loadManifest();
@@ -124,6 +126,10 @@ try {
   release = {};
   const beforeAi = await countTasks();
   const [submitted, replay] = await Promise.all([request('image-edit', input), request('image-edit', input)]);
+  const requestHash = await requestFingerprint({ operation: 'image-edit', input: imageEditInputs['image-edit'].parse(input) });
+  check((await readImageEditReceipt(repositoryRoot, manifest, input.commandId, requestHash)).taskId, submitted.taskId);
+  await reject(readImageEditReceipt(repositoryRoot, manifest, input.commandId, '0'.repeat(64)), 'IMAGE_RECEIPT_UNAVAILABLE');
+  await reject(readImageEditReceipt(repositoryRoot, manifest, 'absent-command', requestHash), 'IMAGE_RECEIPT_UNAVAILABLE');
   check(submitted.status, 'running'); check(replay.taskId, submitted.taskId); check(replay.replayed, true); check(await countTasks(), beforeAi + 1);
   const persisted = await readTask(manifest, submitted.taskId);
   check(persisted.input.operation, 'edit-image'); check(persisted.input.width, 1024); check(persisted.input.height, 1024);

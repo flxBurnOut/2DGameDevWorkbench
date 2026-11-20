@@ -29,6 +29,28 @@ def record_error(exc, **identity):
             **({'code': exc.code, 'message': exc.message} if isinstance(exc, HarnessError) else {})}
 
 
+def motion_workspace_identity(service, *, create=False):
+    root = service.settings.data_root / "open-motion"
+    marker = root / ".workspace-identity.json"
+    try:
+        try:
+            token = read_json(marker)
+        except FileNotFoundError:
+            if not create:
+                return None
+            with service.store.global_lock("motion_workspace_identity"):
+                try:
+                    token = read_json(marker)
+                except FileNotFoundError:
+                    token = uuid.uuid4().hex
+                    atomic_write_json(marker, token)
+        if isinstance(token, str) and re.fullmatch(r"[0-9a-f]{32}", token):
+            return digest([str(root.resolve()), token])
+    except (OSError, ValueError, ConflictError):
+        pass
+    return None
+
+
 class OpenMotionWorkspace:
     def __init__(self, service, *, model=None):
         self.service = service

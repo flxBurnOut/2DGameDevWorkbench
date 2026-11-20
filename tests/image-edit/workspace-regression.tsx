@@ -5,7 +5,7 @@ import { ImageEditWorkspace } from '../../components/image-edit/image-edit-works
 import { ImageAttributePlan } from '../../components/image-edit/image-attribute-plan';
 import { attributeDefaults } from '../../features/image-edit/attribute-plan.mjs';
 import type { RegionSpec } from '../../features/image-edit/core.mjs';
-import { base64ToBytes, bytesToBase64, rgbaHash } from '../../features/image-edit/client';
+import { base64ToBytes, bytesToBase64, rgbaHash, submitImageAnalysis } from '../../features/image-edit/client';
 import type { ImageEditSession, ImagePixels, ImageTargetInfo, ImageTargetRef } from '../../features/image-edit/client';
 import { readImageEditNavigation, writeImageEditNavigation } from '../../features/image-edit/navigation';
 import '../../app/globals.css';
@@ -41,11 +41,17 @@ try {
   const original = await fixturePixels([110, 81, 30, 255]), candidate = await fixturePixels([22, 132, 144, 255]);
   const originalUrl = `data:image/png;base64,${original.imageBase64}`, candidateUrl = `data:image/png;base64,${candidate.imageBase64}`;
   const target: ImageTargetRef = { kind: 'interactable', documentId: 'workspace-fixture', definitionId: 'gate', slot: 'visual' };
+  let workspace = 'a'.repeat(64), disconnected = true;
   let currentTarget: ImageTargetInfo = { targetId: 'imgtarget:workspace-fixture', targetRef: target, revision: 1, sha256: original.sha256, rgbaSha256: original.rgbaSha256, width: 8, height: 4, editable: true, locked: false, kind: 'prop', name: '本机浏览器回归素材', aiEdit: { supported: true, provider: 'fixture-no-provider', width: 8, height: 4, minPixels: 1, maxPixels: 32, maxEdge: 8, dimensionStep: 1, maxAspectRatio: 3, maxReferences: 8, maxImageBytes: 1024, maxTotalImageBytes: 8192, constraints: { preserveOutsideRegion: true, preserveDimensions: true, preserveAlpha: true } } };
   const sessions = new Map<string, ImageEditSession>([['edit-original', { editId: 'edit-original', revision: 1, target: structuredClone(currentTarget), source: { sha256: original.sha256, rgbaSha256: original.rgbaSha256 }, candidates: [{ version: 'candidate-teal', status: 'completed', operation: { type: 'pixel-patch' }, baseCandidateVersion: 'source', createdAt: new Date().toISOString() }], adoptions: [] }]]);
   window.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+    if (url.origin === location.origin && url.pathname === '/api/workbench/paid-tasks') return Response.json({ workspaceId: workspace });
     if (url.origin !== location.origin || !url.pathname.startsWith('/api/workbench/image-edit/')) throw new Error('Browser regression forbids non-fixture fetch: ' + url.pathname);
+    if (url.pathname.endsWith('/receipt')) {
+      check(new Headers(init?.headers).get('x-forge-workspace') === 'a'.repeat(64), 'A changed workspace can only look up the original receipt using its stored pin');
+      return Response.json({ code: 'WORKSPACE_MISMATCH' }, { status: 409 });
+    }
     if (typeof init?.body !== 'string') throw new Error('Fixture requests require a JSON string body');
     const body = JSON.parse(init.body), operation = url.pathname.split('/').at(-1);
     if (operation === 'inspect') return Response.json({ target: currentTarget, sessions: [...sessions.values()].map(edit => ({ editId: edit.editId, revision: edit.revision, createdAt: new Date().toISOString() })) });
@@ -64,7 +70,9 @@ try {
       edit.adoptions.push(adoption); edit.revision++;
       return Response.json({ target: currentTarget, revision: currentTarget.revision, currentRevision: currentTarget.revision, adoption });
     }
-    if (operation === 'edit') {
+    if (operation === 'paid-edit' || operation === 'edit') {
+      if (body.operation.type === 'ai-edit') check(operation === 'paid-edit' && new Headers(init?.headers).get('x-forge-workspace') === 'a'.repeat(64), 'AI requests carry their stored workspace identity');
+      if (operation === 'paid-edit' && disconnected) { disconnected = false; throw new TypeError('fixture connection lost'); }
       editPayloads.push(structuredClone(body));
       const version = `candidate-ui-${editPayloads.length}`;
       edit.revision++; edit.candidates.push({ version, status: 'completed', createdAt: new Date().toISOString(), operation: body.operation, constraints: body.constraints, baseCandidateVersion: body.baseCandidateVersion });
@@ -104,6 +112,13 @@ try {
   const prompt = document.querySelector('textarea')!;
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(prompt, 'Fixture-only recolor'); prompt.dispatchEvent(new Event('input', { bubbles: true }));
   await click('生成 AI 候选（调用模型）');
+  await until(() => !!button('恢复同一请求（不新建）'));
+  workspace = 'b'.repeat(64);
+  await click('恢复同一请求（不新建）');
+  await until(() => document.body.innerText.includes('另一工作区'));
+  check(editPayloads.length === 0, 'Switching workspaces preserves the unacknowledged request without submitting.');
+  workspace = 'a'.repeat(64);
+  await click('恢复同一请求（不新建）');
   await until(() => editPayloads.length === 1 && document.body.innerText.includes('AI 结果已存为版本 1'));
   check(editPayloads[0].constraints.preserveAlpha === false, 'Turning off Alpha preservation reaches the frozen request');
   await until(() => readImageEditNavigation()?.candidateVersion === 'candidate-ui-1');
@@ -142,6 +157,27 @@ try {
   await click('准备计划并预览范围');
   await until(()=>!!submitted);
   check(JSON.stringify(submitted?.targetRegion)===JSON.stringify(manual) && !submitted?.influenceRegion,'A redrawn selection replaces the suggested target and influence in the prepared request');
+  for (const operation of ['part-suggest', 'critic-run'] as const) {
+    const calls: string[] = [];
+    const ref = operation + '-fixture';
+    window.fetch = async (url, init) => {
+      if (url === '/api/workbench/paid-tasks') return Response.json({workspaceId: workspace});
+      if (url !== '/api/workbench/image-edit/paid-' + operation || new Headers(init?.headers).get('x-forge-workspace') !== 'a'.repeat(64))
+        throw Error('Unexpected visual-analysis endpoint or workspace');
+      if (typeof init?.body !== 'string') throw Error('Expected an analysis body');
+      const body = JSON.parse(init.body);
+      if ((body.partRef ?? body.reviewRef) !== ref) throw Error('Analysis reference changed');
+      calls.push(body.commandId);
+      if (calls.length === 1) throw Error('Fixture reply lost');
+      return Response.json({replayed: true});
+    };
+    await submitImageAnalysis(operation, ref, 'original-command').then(() => { throw Error('Expected lost reply'); }, e => check(e.message === 'Fixture reply lost', operation + ' freezes the first submission'));
+    workspace = 'b'.repeat(64);
+    await submitImageAnalysis(operation, ref, 'after-reload').then(() => { throw Error('Expected workspace refusal'); }, e => check(e.message.includes('原工作区') && calls.length === 1, operation + ' never dispatches into a switched workspace'));
+    workspace = 'a'.repeat(64);
+    await submitImageAnalysis(operation, ref, 'after-reload');
+    check(calls.join(',') === 'original-command,original-command', operation + ' recovers the original command after switching back');
+  }
   results.textContent = JSON.stringify({ status: 'passed', checks: passed.length, assertions: passed, fixtureEditRequests: editPayloads.length, realProviderRequests: 0, canvasEncodingCalls: blobCalls }, null, 2);
   results.dataset.status = 'passed';
 } catch (cause) {

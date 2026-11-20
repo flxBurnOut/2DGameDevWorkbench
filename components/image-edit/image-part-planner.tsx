@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import type { AttributePolicy } from '@/features/image-edit/attribute-plan.mjs';
 import type { PixelBounds, RegionSpec } from '@/features/image-edit/core.mjs';
 import { PartTargetPreview } from './part-target-preview';
-import { imageEditRequest, imageGuards, imageResolveInput, type ImageEditSession, type ImageTargetInfo } from '@/features/image-edit/client';
+import { imageEditRequest, submitImageAnalysis, imageGuards, imageResolveInput, type ImageEditSession, type ImageTargetInfo } from '@/features/image-edit/client';
 
 export interface PartSuggestion {
   decision: 'propose' | 'needs_input';
@@ -90,7 +90,7 @@ export function ImagePartPlanner(props: Props) {
   const suggest = () => work('视觉模型正在定位部件', async () => {
     if (!current || !record || record.status !== 'prepared') return;
     if (submit.current?.ref !== record.partRef) submit.current = { ref: record.partRef, id: crypto.randomUUID() };
-    const result = await imageEditRequest<{ part: PartContext }>('part-suggest', { partRef: record.partRef, commandId: submit.current.id });
+    const result = await submitImageAnalysis<{ part: PartContext }>('part-suggest', record.partRef, submit.current.id);
     setRecord(result.part);
   });
   const recover = () => work('读取原定位记录', async () => {

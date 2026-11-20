@@ -139,7 +139,7 @@ class Replay:
         except Exception as exc:
             call.update(state='provider_outcome_unknown', error=error_record(exc))
             if isinstance(exc, ProviderError) and exc.details.get('provider_job_id') in (None, accepted.provider_job_id):
-                call['usage'] = poll_error_usage(exc) or call['usage']
+                call['usage'] = poll_error_usage(exc, accepted.provider_job_id) or call['usage']
             self.stop('interrupted', 'provider_failure', 'poll_interrupted', stage=spec['stage'])
             raise
         call.update(provider_status=result.provider_status, poll_receipt=redact_provider_payload(result.raw_response))
@@ -149,12 +149,12 @@ class Replay:
             self.stop('interrupted', 'provider_failure', 'provider_job_mismatch', stage=spec['stage'])
             raise ValueError('provider result belongs to another request')
         call['usage'] = response_usage({'usage': result.usage}) or response_usage(result.raw_response) or call['usage']
-        if result.status != PollStatus.completed:
+        if result.status != PollStatus.completed and not (self.version == PROTOCOL and result.partial_images):
             call.update(state='provider_failed', error=redact_provider_payload(result.error))
             reason = (result.error or {}).get('code', 'unexpected_provider_status')
             self.stop('interrupted', 'provider_failure', reason, stage=spec['stage'])
             raise ValueError('unexpected provider result; no retry')
-        call.update(state='provider_completed', raw_count=len(result.images), frames=[])
+        call.update(state='provider_completed', raw_count=len(result.raw_images), frames=[])
         self.save()
         if self.version == 2 and len(result.images) != spec['count']:
             call['state'] = 'provider_failed'
@@ -162,7 +162,7 @@ class Replay:
             raise ValueError('unexpected provider result; no retry')
         directory.mkdir(parents=True, exist_ok=True)
         invalid = []
-        for i, data in enumerate(result.images):
+        for i, data in enumerate(result.raw_images):
             try:
                 if self.version == PROTOCOL:
                     validate_drawing_frame(data, self.size, i)
@@ -173,6 +173,12 @@ class Replay:
             file.write_bytes(data)
             call['frames'].append({'file': file.relative_to(self.output).as_posix(), 'sha256': sha(data), 'raw_index': i})
         self.save()
+        if result.status == PollStatus.failed:
+            error = result.error or {}
+            reason = (error.get('details') or {}).get('reason') or error.get('code', 'unexpected_provider_status')
+            call.update(state='provider_failed', error=redact_provider_payload(error), invalid_raw_indices=invalid)
+            self.stop('interrupted', 'provider_failure', reason, stage=spec['stage'])
+            raise ValueError('invalid provider batch; original evidence preserved')
         try:
             if invalid:
                 raise ValidationHarnessError('provider output has invalid PNG frames',

@@ -38,9 +38,12 @@ async function childInstall(options) {
     process.send({ type, ...value });
   });
   const lstat = fs.lstat;
+  let pausedBeforeLock = false;
   fs.lstat = async (file, ...args) => {
-    if (mode.endsWith('before-lock') && path.basename(file) === '.install-gate.sqlite')
+    if (!pausedBeforeLock && mode.endsWith('before-lock') && path.basename(file) === '.install-gate.sqlite') {
+      pausedBeforeLock = true;
       await pause('before-lock');
+    }
     return lstat(file, ...args);
   };
   const readFile = fs.readFile;
@@ -63,7 +66,7 @@ async function childInstall(options) {
   const writeFile = fs.writeFile;
   fs.writeFile = async (file, ...args) => {
     const name = typeof file === 'string' ? file : '';
-    if (mode === 'deny-ignore-write' && path.basename(name) === '.gitignore')
+    if (mode.endsWith('deny-ignore-write') && path.basename(name) === '.gitignore')
       throw Object.assign(new Error('ignore write denied'), { code: 'EACCES' });
     const owner = path.basename(name).startsWith('install.lock.owner-');
     if (owner && mode.startsWith('deny-ignore-')) throw new Error('owner staging reached before checking .gitignore');
@@ -82,6 +85,8 @@ async function childInstall(options) {
   };
   const link = fs.link;
   fs.link = async (file, destination) => {
+    if (mode === 'deliver-deny-ignore-write' && destination === path.join(projectPath, 'forge_imports/.gitignore'))
+      throw Object.assign(new Error('ignore publication denied'), { code: 'EACCES' });
     const publishingOwner = path.basename(destination) === 'install.lock';
     const legacyMarker = path.basename(destination).startsWith('.recover-');
     if (publishingOwner && mode === 'unsupported-filesystem')
@@ -104,7 +109,7 @@ async function childInstall(options) {
   if (mode === 'unknown-process') process.kill = () => { throw Object.assign(new Error('permission denied'), { code: 'EPERM' }); };
   syncBuiltinESMExports();
   try {
-    const result = mode === 'partial-zip'
+    const result = mode === 'partial-zip' || mode.startsWith('deliver-')
       ? await deliverGodotPackage(root, manifest, { bytes: await fs.readFile(packagePath), projectPath })
       : await (mode.startsWith('complete-') ? completeGameExport : installGameExport)(root, manifest, input);
     process.send({ type: 'result', result }, () => process.disconnect());
@@ -133,8 +138,12 @@ if (process.argv[2] === '--child') {
   async function fixture(name) {
     const { root, game } = await bareProject(name);
     const delivery = await deliverGodotPackage(root, manifest, { bytes: packageBytes, projectPath: game });
+    return { root, game, manifest, delivery, input: await installInput(root, delivery), lock: path.join(game, 'forge_imports/install.lock') };
+  }
+  async function installInput(root, delivery) {
     const detail = await getGameExport(root, manifest, delivery);
-    return { root, game, manifest, delivery, input: { ...delivery, projectRevision: detail.inspection.projectRevision }, lock: path.join(game, 'forge_imports/install.lock') };
+    return { deliveryId: detail.deliveryId, packageSha256: detail.packageSha256, projectRevision: detail.inspection.projectRevision,
+      deliveryRevision: detail.deliveryRevision, installPlanRevision: detail.installPlanRevision };
   }
   function launch(f, mode, extra = {}) {
     const child = fork(fileURLToPath(import.meta.url), ['--child', JSON.stringify({ root: f.root, manifest, input: f.input, mode, ...extra })], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
@@ -281,6 +290,48 @@ if (process.argv[2] === '--child') {
     await fs.unlink(ignore);
     assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
   });
+  test('a first export with a blocked ignore file leaves the Git working tree free of runtime gates', async () => {
+    const { root, game } = await bareProject('initial-ignore-failed');
+    await git(game, 'init', '--quiet', '--template=');
+    const inbox = path.join(game, 'forge_imports'), ignore = path.join(inbox, '.gitignore');
+    await fs.mkdir(ignore, { recursive: true });
+    const before = await gitChanges(game);
+    const deliver = () => deliverGodotPackage(root, manifest, { bytes: packageBytes, projectPath: game });
+    await assert.rejects(deliver(), ignoreError);
+    assert.deepEqual(await gitChanges(game), before);
+    await absent(path.join(inbox, '.install-gate.sqlite'));
+    await absent(path.join(inbox, '.install-bootstrap'));
+    await fs.rmdir(ignore);
+    const results = await Promise.allSettled([deliver(), deliver(), deliver()]);
+    assert.ok(results.some(item => item.status === 'fulfilled'));
+    for (const item of results) if (item.status === 'rejected') assert.equal(item.reason.status, 409);
+    assert.equal((await fs.readFile(ignore, 'utf8')).split(ignoreMarker).length, 2);
+    assert.equal((await deliver()).reused, true);
+    await absent(path.join(inbox, '.install-bootstrap'));
+  });
+  test('first use of an existing unmarked ignore file serializes appends and hides its bootstrap gate', async () => {
+    const { root, game } = await bareProject('custom-initial-ignore'), inbox = path.join(game, 'forge_imports');
+    await git(game, 'init', '--quiet', '--template=');
+    await fs.mkdir(inbox);
+    const ignore = path.join(inbox, '.gitignore');
+    await fs.writeFile(ignore, '/custom-file\r\n');
+    const packagePath = path.join(root, 'fixture.zip');
+    await fs.writeFile(packagePath, packageBytes);
+    const before = await gitChanges(game);
+    const denied = launch({ root }, 'deliver-deny-ignore-write', { projectPath: game, packagePath });
+    assert.equal((await denied.message('result')).code, ignoreError.code);
+    assert.equal((await denied.exited).code, 0);
+    assert.deepEqual(await gitChanges(game), before);
+    await absent(path.join(inbox, '.install-gate.sqlite'));
+    const deliver = () => deliverGodotPackage(root, manifest, { bytes: packageBytes, projectPath: game });
+    const results = await Promise.allSettled([deliver(), deliver(), deliver()]);
+    assert.ok(results.some(item => item.status === 'fulfilled'));
+    for (const item of results) if (item.status === 'rejected') assert.equal(item.reason.status, 409);
+    const rules = await fs.readFile(ignore, 'utf8');
+    assert.ok(rules.startsWith('/custom-file\r\n' + ignoreMarker + '\r\n'));
+    assert.equal(rules.split(ignoreMarker).length, 2);
+    assert.equal([...await gitChanges(game)].some(name => name.includes('.install-')), false);
+  });
   test('Git ignores shared install lock files and preserves custom rules on older deliveries', async () => {
     const f = await fixture('git-ignore'), inbox = path.dirname(f.lock);
     await git(f.game, 'init', '--quiet', '--template=');
@@ -376,7 +427,8 @@ if (process.argv[2] === '--child') {
     const { file } = await child.message('resource-written');
     assert.equal((await child.exited).code, 76);
     const before = await fs.readFile(file);
-    const result = await installGameExport(partial.root, manifest, partial.input);
+    await assert.rejects(installGameExport(partial.root, manifest, partial.input), { status: 409 });
+    const result = await installGameExport(partial.root, manifest, await installInput(partial.root, partial.delivery));
     assert.equal(result.installed, true);
     assert.ok(!result.changedFiles.includes(path.relative(partial.game, file).split(path.sep).join('/')));
     assert.deepEqual(await fs.readFile(file), before);
@@ -398,10 +450,11 @@ if (process.argv[2] === '--child') {
     await installer.message('partial-written');
     assert.equal((await installer.exited).code, 77);
     await absent(path.join(prepared.game, scene));
-    const result = await installGameExport(prepared.root, manifest, prepared.input);
+    const resumedInput = await installInput(prepared.root, prepared.delivery);
+    const result = await installGameExport(prepared.root, manifest, resumedInput);
     assert.equal(result.installed, true);
     assert.ok(result.changedFiles.includes(scene));
-    assert.deepEqual((await installGameExport(prepared.root, manifest, prepared.input)).changedFiles, []);
+    assert.deepEqual((await installGameExport(prepared.root, manifest, resumedInput)).changedFiles, []);
   });
   test('live holders reject concurrent installs without repeating writes', async () => {
     const f = await fixture('live-holder'), child = launch(f, 'hold-owner');
@@ -422,6 +475,19 @@ if (process.argv[2] === '--child') {
     await assert.rejects(installGameExport(f.root, manifest, f.input), busy);
     assert.deepEqual(await ownerAt(f.lock), owner);
     await absent(path.join(f.game, scene));
+  });
+  test('the same SQLite gate recovers a v2 owner after a hostname change', async () => {
+    const f = await fixture('renamed-host'), owner = await deadLock(f);
+    owner.host = hostname() + '-old';
+    owner.pid = process.pid;
+    await fs.writeFile(f.lock, JSON.stringify(owner));
+    assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
+    await absent(f.lock);
+    const legacy = await legacyDeadLock(f);
+    const evidence = path.join(f.lock, legacy.token + '.json');
+    await fs.writeFile(evidence, JSON.stringify({ ...legacy, host: owner.host }));
+    await assert.rejects(installGameExport(f.root, manifest, f.input), busy);
+    assert.equal(JSON.parse(await fs.readFile(evidence)).host, owner.host);
   });
   test('legacy, empty, malformed, foreign and unprovable process locks remain untouched', async () => {
     const f = await fixture('unknown-holder');
@@ -477,7 +543,8 @@ if (process.argv[2] === '--child') {
     await fs.writeFile(path.join(f.game, scene), 'custom scene');
     await assert.rejects(installGameExport(f.root, manifest, f.input), busy);
     child.release();
-    const blocked = (await child.message('result')).result;
+    assert.equal((await child.message('result')).status, 409);
+    const blocked = await installGameExport(f.root, manifest, await installInput(f.root, f.delivery));
     assert.equal(blocked.installed, false);
     assert.ok(blocked.conflicts.includes(scene));
     assert.equal((await child.exited).code, 0);
@@ -491,20 +558,24 @@ if (process.argv[2] === '--child') {
     const zip = await JSZip.loadAsync(packageBytes);
     zip.file(scene, before.toString() + '\n; managed update\n');
     const delivery = await deliverGodotPackage(update.root, manifest, { bytes: await zip.generateAsync({ type: 'nodebuffer' }), projectPath: update.game });
-    update.input = { ...delivery, projectRevision: (await getGameExport(update.root, manifest, delivery)).inspection.projectRevision };
+    update.input = await installInput(update.root, delivery);
     await deadLock(update);
     assert.equal((await installGameExport(update.root, manifest, update.input)).installed, true);
     assert.deepEqual(await fs.readFile(path.join(delivery.inboxPath, 'backups', scene)), before);
 
-    const returnTo = update.input;
+    const returnTo = await installInput(update.root, delivery);
     const nextBytes = Buffer.from(before.toString() + '\n; another managed update\n');
     zip.file(scene, nextBytes);
     const next = await deliverGodotPackage(update.root, manifest, { bytes: await zip.generateAsync({ type: 'nodebuffer' }), projectPath: update.game });
-    const nextInput = { ...next, projectRevision: returnTo.projectRevision };
+    const nextInput = await installInput(update.root, next);
     assert.equal((await installGameExport(update.root, manifest, nextInput)).installed, true);
     await assert.rejects(installGameExport(update.root, manifest, returnTo), { status: 409 });
-    const current = await getGameExport(update.root, manifest, { deliveryId: returnTo.deliveryId });
-    const refreshed = { ...returnTo, deliveryRevision: current.deliveryRevision };
+    const { installPlanRevision: _omitted, ...legacyInput } = returnTo;
+    await assert.rejects(installGameExport(update.root, manifest, legacyInput), { status: 409 });
+    assert.deepEqual(await fs.readFile(path.join(update.game, scene)), nextBytes);
+    const refreshed = await installInput(update.root, delivery);
+    assert.equal(refreshed.deliveryRevision, returnTo.deliveryRevision);
+    assert.notEqual(refreshed.installPlanRevision, returnTo.installPlanRevision);
     assert.equal((await installGameExport(update.root, manifest, refreshed)).installed, true);
     assert.deepEqual(await fs.readFile(path.join(delivery.inboxPath, 'backups', scene)), before);
     const backups = path.join(delivery.inboxPath, 'backups-by-sha256');
@@ -536,6 +607,56 @@ if (process.argv[2] === '--child') {
       assert.deepEqual(record.integration, expected.integration);
     }
   }
+  test('an unrelated ledger edit preserves a preflight, while ownership drift on an affected file invalidates it and its original retry', async () => {
+    const f = await fixture('ledger-only-plan-change');
+    const legacy = { ...f.input };
+    delete legacy.installPlanRevision;
+    assert.equal((await installGameExport(f.root, manifest, legacy)).installed, true);
+    assert.deepEqual((await installGameExport(f.root, manifest, legacy)).changedFiles, []);
+    const plan = await installInput(f.root, f.delivery);
+    const ledgerFile = path.join(f.game, 'forge_imports/install-ledger.json');
+    const ledger = JSON.parse(await fs.readFile(ledgerFile));
+    ledger.files['forge_sprites/unrelated/frame.png'] = { sha256: 'a'.repeat(64), deliveryId: f.delivery.deliveryId };
+    await fs.writeFile(ledgerFile, JSON.stringify(ledger));
+    assert.deepEqual((await installGameExport(f.root, manifest, plan)).changedFiles, []);
+    ledger.files[scene].deliveryId = 'delivery-' + 'b'.repeat(32);
+    await fs.writeFile(ledgerFile, JSON.stringify(ledger));
+    for (const input of [plan, f.input]) await assert.rejects(installGameExport(f.root, manifest, input), { status: 409 });
+    assert.deepEqual(JSON.parse(await fs.readFile(ledgerFile)), ledger);
+  });
+  test('a damaged online ledger exposes a verification issue without hiding other projects', async () => {
+    const f = await fixture('damaged-ledger-history');
+    const before = await installGameExport(f.root, manifest, f.input);
+    await completeGameExport(f.root, manifest, { ...await evidenceFor(f), deliveryRevision: before.deliveryRevision });
+    const other = await bareProject('healthy-ledger-history');
+    const healthy = await deliverGodotPackage(f.root, manifest, { bytes: packageBytes, projectPath: other.game });
+    const ledgerPath = path.join(f.game, 'forge_imports/install-ledger.json');
+    for (const bytes of ['{', '{"files":{},"installs":[]}', '{"files":{},"installs":{}}', null]) {
+      if (bytes === null) await fs.unlink(ledgerPath);
+      else await fs.writeFile(ledgerPath, bytes);
+      const visible = await listGameExports(f.root, manifest);
+      assert.equal(visible.total, 2);
+      assert.equal(visible.deliveries.find(item => item.deliveryId === healthy.deliveryId).status, 'awaiting_agent');
+      for (const item of [visible.deliveries.find(item => item.deliveryId === f.delivery.deliveryId),
+        await readGameExportSummary(f.root, manifest, f.input), await getGameExport(f.root, manifest, f.input)]) {
+        assert.equal(item.status, 'install_verification_required');
+        assert.equal(item.installVerification.code, 'INSTALL_LEDGER_UNAVAILABLE');
+        assert.equal(item.integration, null);
+      }
+    }
+    const restored = await installGameExport(f.root, manifest, await installInput(f.root, f.delivery));
+    assert.equal(restored.status, 'assets_installed');
+    assert.deepEqual(restored.changedFiles, []);
+    const [receiptPath] = copies(f);
+    const receipt = JSON.parse(await fs.readFile(receiptPath));
+    for (const installedFiles of [{}, [null]]) {
+      await fs.writeFile(receiptPath, JSON.stringify({ ...receipt, installedFiles }));
+      const list = await listGameExports(f.root, manifest);
+      assert.equal(list.total, 2);
+      const damaged = list.deliveries.find(item => item.deliveryId === f.delivery.deliveryId);
+      assert.equal(damaged.installVerification.code, 'INSTALL_RECEIPT_UNAVAILABLE');
+    }
+  });
   test('a pending no-op install cannot erase integration committed before lock acquisition', async () => {
     const f = await fixture('complete-before-install');
     const installed = await installGameExport(f.root, manifest, f.input);
@@ -572,7 +693,7 @@ if (process.argv[2] === '--child') {
     await assertCopies(f, result);
     await fs.writeFile(path.join(f.game, scene), 'edited by the game developer');
     await assert.rejects(completeGameExport(f.root, manifest, proof), /交付资源发生变化/);
-    assert.equal((await installGameExport(f.root, manifest, f.input)).installed, false);
+    assert.equal((await installGameExport(f.root, manifest, await installInput(f.root, f.delivery))).installed, false);
     assert.equal(await fs.readFile(path.join(f.game, scene), 'utf8'), 'edited by the game developer');
     await assertCopies(f, result);
   });
@@ -630,14 +751,23 @@ if (process.argv[2] === '--child') {
     const update = await deliverGodotPackage(f.root, manifest, {
       bytes: await zip.generateAsync({ type: 'nodebuffer' }), projectPath: f.game,
     });
-    await installGameExport(f.root, manifest, { ...update, projectRevision: f.input.projectRevision });
+    await installGameExport(f.root, manifest, await installInput(f.root, update));
     await assert.rejects(installGameExport(f.root, manifest, f.input), { status: 409 });
-    const reinstall = { ...f.input, deliveryRevision: completed.deliveryRevision };
+    const reinstall = await installInput(f.root, f.delivery);
     const crashed = launch(f, 'install-crash-project', { input: reinstall });
     assert.equal((await crashed.exited).code, 79);
     await assertCopies(f, completed);
     assert.deepEqual(await fs.readFile(path.join(f.game, scene)), original);
-    await assert.rejects(completeGameExport(f.root, manifest, proof), /交付资源发生变化/);
+    const staleList = await listGameExports(f.root, manifest);
+    const pending = staleList.deliveries.find(item => item.deliveryId === f.delivery.deliveryId);
+    for (const visible of [pending, await getGameExport(f.root, manifest, f.input), await readGameExportSummary(f.root, manifest, f.input)]) {
+      assert.equal(visible.status, 'install_recovery_required');
+      assert.equal(visible.installRecovery.ledgerInstallRevision, completed.deliveryRevision + 1);
+      assert.equal(visible.integration, null);
+    }
+    await assertCopies(f, completed);
+    for (const status of ['integrated', 'needs_attention'])
+      await assert.rejects(completeGameExport(f.root, manifest, { ...proof, status }), { status: 409, message: /恢复回执/ });
     const recovered = await installGameExport(f.root, manifest, reinstall);
     assert.equal(recovered.status, 'assets_installed');
     assert.equal(recovered.integration, null);
@@ -645,6 +775,7 @@ if (process.argv[2] === '--child') {
     assert.deepEqual(recovered.changedFiles, []);
     assert.deepEqual(await fs.readFile(path.join(f.delivery.inboxPath, 'backups', scene)), nextBytes);
     await assertCopies(f, recovered);
+    await assert.rejects(listGameExports(f.root, manifest, { snapshot: staleList.snapshot }), { status: 409 });
   });
   test('project config checks happen after obtaining the lock', async () => {
     const f = await fixture('lock-local-project-revision');

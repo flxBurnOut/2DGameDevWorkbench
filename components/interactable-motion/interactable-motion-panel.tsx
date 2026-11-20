@@ -12,7 +12,7 @@ import type { ImageTargetRef } from '@/features/image-edit/client';
 import type { Box, Point } from '@/features/interactable-motion/frame-tools';
 import { ImageEditWorkspace } from '../image-edit/lazy-image-edit-workspace';
 import {
-  blankSpec, MotionRequestError, motionObjectId, motionPlanningRequestKey, motionReferenceObjects, motionRequest, motionUrl,
+  blankSpec, MotionRequestError, motionObjectId, motionPlanningRequestKey, motionReferenceObjects, motionSpecsEqual, motionRequest, motionUrl, motionWorkspace, submitMotionPlan,
   type MotionReferenceObject, type MotionReview, type MotionSpec, type MotionWork,
 } from '../sprite-generator/open-motion-model';
 import type { MotionConfiguration } from '../sprite-generator/motion-model-settings';
@@ -46,7 +46,7 @@ type Tab = 'requirements' | 'check' | 'tools' | 'writeback';
 const tabs: [Tab, string][] = [['requirements', '要求'], ['check', '检查'], ['tools', '工具'], ['writeback', '写回']];
 type StageEvidence = { token: string; review: MotionReview & { motion_evidence?: { tracked_parts?: { pivot_xy?: [number, number] | null } } } };
 type Recent = { id: string; title: string; updated_at: string; diagnostic_only: boolean; object_type?: string };
-type PlanningAttempt = { requestKey: string; spec: MotionSpec; expectedRevision?: number };
+type PlanningAttempt = { requestKey: string; spec: MotionSpec; expectedRevision?: number; workspaceId?: string };
 type DraftSession = {
   draft: InteractableDraft;
   objectId: string;
@@ -155,16 +155,28 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
   // Match local edits and target PNGs to their own work revision.
   useEffect(() => {
     if (draftReady || !loaded || (workId && !work)) return;
-    queueMicrotask(() => {
+    let live = true;
+    queueMicrotask(async () => {
       let saved: DraftSession | null = null;
       try {
         if (!readOnly) saved = JSON.parse(localStorage.getItem(draftKey) || 'null') as DraftSession | null;
       } catch { setError('浏览器草稿未能读取；服务器中的作品不受影响。'); }
       if (!saved && documentId && !project && !work) return;
-      if (saved?.pending && work && saved.pending.requestKey === work.request_key) {
+      if (saved?.pending?.workspaceId && work) {
+        try {
+          if (await motionWorkspace() !== saved.pending.workspaceId)
+            throw new Error('这份规划草稿属于另一动画工作区。请切回原工作区后刷新。');
+        } catch (error) { if (live) setError((error as Error).message); return; }
+        if (!live) return;
+      }
+      if (saved?.pending && work && saved.pending.requestKey === work.request_key &&
+          work.revision === (saved.pending.expectedRevision ?? 0) + 1 && motionSpecsEqual(work.spec, saved.pending.spec)) {
         setDraftSession(committedDraft(saved, work));
         setEditing(false);
         setSelection(null);
+      } else if (saved?.pending && saved.revision !== work?.revision) {
+        setError('原规划草稿与当前作品版本不一致。请在原动画工作区核对回执。');
+        return;
       } else if (saved && saved.revision === work?.revision) {
         setDraftSession({ ...saved, objectId: saved.objectId ?? initialObject });
       } else {
@@ -180,6 +192,7 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
         });
       }
     });
+    return () => { live = false; };
   }, [draftReady, loaded, workId, work, documentId, project, draftKey, readOnly, frozenDraft, initialDraft, initialObject, setError]);
   useEffect(() => {
     if (!activeDraft || transferred.current || readOnly) return;
@@ -271,7 +284,9 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
       const { description, ending } = draftDescription(draft);
       const spec: MotionSpec = { ...(work?.spec ?? blankSpec), object_id: objectId, object_type: 'interactable', description, ending,
         loop: draft.loop, return_to_reference: draft.returnToStart, interactable_skeleton: draftSkeleton(draft), visual_structure: structure };
-      attempt = { spec, requestKey: motionPlanningRequestKey(work, activeDraft.requestKey || ''), expectedRevision: work?.revision };
+      const key = motionPlanningRequestKey(work, activeDraft.requestKey || '');
+      attempt = { spec, requestKey: key, expectedRevision: work?.revision,
+        workspaceId: key === activeDraft.requestKey ? undefined : await motionWorkspace() };
     }
     const pending = { ...activeDraft, pending: attempt };
     // The POST may succeed even when the response never reaches the browser.
@@ -279,13 +294,10 @@ function InteractableMotionPanel({ workId, version, objectId: initialObject, ini
     setDraftSession(pending);
     let value: MotionWork;
     try {
-      value = await motionRequest<MotionWork>(work ? `open-motion/${work.id}/revise` : 'open-motion', {
-        spec: attempt.spec, request_key: attempt.requestKey, planning_authorized: true,
-        ...(attempt.expectedRevision === undefined ? {} : { expected_revision: attempt.expectedRevision }),
-      });
+      value = await submitMotionPlan(work?.id, attempt);
     } catch (e) {
       // These responses reject the submitted values before starting a plan.
-      if (e instanceof MotionRequestError && [400, 409, 413, 422].includes(e.status)) {
+      if (e instanceof MotionRequestError && ['validation_error', 'conflict', 'request_validation_error'].includes(e.code || '') && [400, 409, 413, 422].includes(e.status)) {
         const editable = { ...activeDraft, pending: undefined, requestKey: undefined };
         saveBrowserDraft(draftKey, editable);
         setDraftSession(editable);

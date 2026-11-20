@@ -18,6 +18,7 @@ import {
 } from '../lib/workbench/interactable-assets.mjs';
 
 import { agentRequest } from '../lib/workbench/agent-api.mjs';
+import { isPaidTask } from '../lib/workbench/paid-operations.mjs';
 import {
   archiveTaskHistory,
   commandTaskId,
@@ -39,7 +40,8 @@ import { previewPropConversion, referenceServiceRequest } from '../lib/workbench
 import { frontendHeartbeat } from '../lib/workbench/preview-follow.mjs';
 
 import { workspaceIdentity } from '../lib/workbench/workspace-identity.mjs';
-import { bridgeProtocolVersion, pairedBridgePrefix } from '../lib/workbench/service-endpoints.mjs';
+import { paidWorkspaceIdentity } from '../lib/workbench/paid-workspace.mjs';
+import { bridgeProtocolVersion, pairedBridgePrefix, paidBridgePrefix, paidWorkspacePath } from '../lib/workbench/service-endpoints.mjs';
 import {randomUUID} from 'node:crypto';
 import {selectedGameProject,selectGameProject,deliverGodotPackage,listGameExports,readGameExportSummary,readGamePackageRequest} from '../lib/workbench/game-export.mjs';
 import {gameExportInputs} from '../lib/workbench/game-export-contract.mjs';
@@ -51,7 +53,7 @@ const gameExportToken=randomUUID();
 const requireGameToken=request=>{if(request.headers['x-forge-game-token']!==gameExportToken)throw new Error('项目导出会话已失效，请关闭导出窗口后重试。');};
 
 import { documentRequest, readDocumentMedia, uploadDocumentMedia } from '../lib/workbench/editor-documents.mjs';
-import { sessionMedia } from '../lib/workbench/image-edits.mjs';
+import { readImageEditReceipt, sessionMedia } from '../lib/workbench/image-edits.mjs';
 import { MAX_DOCUMENT_MEDIA_BYTES } from '../lib/workbench/document-media.mjs';
 import { inspectAssetPackage, commitAssetPackages, readAssetPackageCommit, readAssetPackagePreview } from '../lib/workbench/asset-packages.mjs';
 import { ASSET_PACKAGE_LIMITS } from '../lib/workbench/asset-package-contract.mjs';
@@ -77,12 +79,27 @@ const server = http.createServer(async (request, response) => {
       request.url ?? '/',
       `http://${request.headers.host ?? `${host}:${port}`}`,
     );
-    if (url.pathname.startsWith(pairedBridgePrefix + '/')) {
+    const paired = url.pathname.startsWith(pairedBridgePrefix + '/');
+    if (paired) {
       if (request.headers['x-forge-workspace'] !== workspaceId) {
         sendJson(response, 409, { code: 'WORKSPACE_MISMATCH', error: '请求缺少匹配的工作区指纹。' });
         return;
       }
       url.pathname = url.pathname.slice(pairedBridgePrefix.length);
+    }
+    const paid = paired && url.pathname.startsWith(paidBridgePrefix + '/');
+    if (paid || (request.method === 'GET' && url.pathname === paidWorkspacePath)) {
+      const paidWorkspaceId = await paidWorkspaceIdentity(repositoryRoot, await loadManifest(), workspaceId);
+      if (!paid) {
+        sendJson(response, 200, { service: '2d-game-workbench-runtime', version: bridgeProtocolVersion, workspaceId, paidWorkspaceId });
+        return;
+      }
+      if (request.headers['x-forge-paid-workspace'] !== paidWorkspaceId) {
+        sendJson(response, 409, { code: 'WORKSPACE_MISMATCH', error: '付费任务数据目录已切换。请切回原工作区恢复。' });
+        return;
+      }
+      response.setHeader('x-forge-paid-workspace', paidWorkspaceId);
+      url.pathname = url.pathname.slice(paidBridgePrefix.length);
     }
     if (request.method === 'GET' && url.pathname === '/health') {
       sendJson(response, 200, {
@@ -91,6 +108,11 @@ const server = http.createServer(async (request, response) => {
         workspaceId,
         service: '2d-game-workbench-runtime',
       });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/v1/image-edit/receipt') {
+      sendJson(response, 200, await readImageEditReceipt(repositoryRoot, await loadManifest(),
+        url.searchParams.get('commandId'), url.searchParams.get('requestHash')));
       return;
     }
     if (request.method === 'GET' && url.pathname === '/v1/image-edit/media') {
@@ -275,7 +297,9 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/v1/assets/preview') {
       const assetId = url.searchParams.get('assetId');
       if (!assetId || assetId.length > 500) throw new Error('Invalid assetId.');
-      const preview = await readAssetPreview(await loadManifest(), assetId, { task: url.searchParams.get('task'), batch: url.searchParams.get('batch') });
+      const preview = await readAssetPreview(await loadManifest(), assetId, {
+        task: url.searchParams.get('task'), batch: url.searchParams.get('batch'), origin: url.searchParams.get('origin'),
+      });
       response.writeHead(200, {
         'Content-Type': preview.mime,
         'Cache-Control': 'no-store',
@@ -292,17 +316,24 @@ const server = http.createServer(async (request, response) => {
       }
       return;
     }
-    if (request.method === 'POST' && url.pathname.startsWith('/v1/agent/')) {
-      const operation = url.pathname.slice('/v1/agent/'.length);
+    const webImageEdit = url.pathname === '/v1/web/image-edit/paid' || url.pathname === '/v1/web/image-edit/local';
+    if (request.method === 'POST' && (webImageEdit || url.pathname.startsWith('/v1/agent/'))) {
+      const operation = webImageEdit ? 'image-edit' : url.pathname.slice('/v1/agent/'.length);
       if(['export-to-game','install-game-export','complete-game-export'].includes(operation))requireGameToken(request);
       try {
+        const input = await readJsonBody(request, operation.startsWith('document-') ? 350 * 1024 * 1024 : maxRequestBytes);
+        if (webImageEdit && input?.operation?.type === 'ai-edit' &&
+            (url.pathname !== '/v1/web/image-edit/paid' || !paid)) {
+          sendJson(response, 409, { code: 'IMAGE_SUBMISSION_UNKNOWN', error: '请刷新页面，在原工作区恢复 AI 修改请求。' });
+          return;
+        }
         sendJson(
           response,
           200,
           await agentRequest(
             await loadManifest(),
             operation,
-            await readJsonBody(request, operation.startsWith('document-') ? 350 * 1024 * 1024 : maxRequestBytes),
+            input,
             { documentAuthority: true },
           ),
         );
@@ -442,7 +473,7 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 200, { ...page, tasks: page.tasks.map(task => publicTaskRecord(task, detail)) });
       return;
     }
-    if (request.method === 'POST' && ['/v1/tasks', '/v1/tasks/prepare'].includes(url.pathname)) {
+    if (request.method === 'POST' && ['/v1/tasks', '/v1/tasks/prepare', '/v1/web/tasks'].includes(url.pathname)) {
       // Image task inputs permit 80 MiB of raw reference media; JSON base64
       // overhead fits within 120 MiB. Each adapter retains its narrower limits.
       const body = await readJsonBody(request, 120 * 1024 * 1024);
@@ -458,6 +489,12 @@ const server = http.createServer(async (request, response) => {
           status: 'failed',
           error: 'capabilityId must be a string and input must be an object.',
         });
+        return;
+      }
+      // An older tab can retain a journal after this origin switches workspaces.
+      if ((url.pathname === '/v1/web/tasks' || (paired && !paid && url.pathname === '/v1/tasks')) &&
+          body.commandId && isPaidTask(body.capabilityId, body.input.operation)) {
+        sendJson(response, 409, { code: 'WORKSPACE_REQUIRED', error: '请刷新页面，在原工作区恢复付费任务。' });
         return;
       }
       const manifest = await loadManifest();

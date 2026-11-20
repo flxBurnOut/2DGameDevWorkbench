@@ -53,7 +53,7 @@ npm run dev
 
 - `npm ci` 安装锁定的前端与 Node 依赖。
 - 将 Web 和 Bridge 放在不同机器或反向代理后时，可在可信部署中读取 Bridge 的 `/health`，将其中的 `workspaceId` 配入 `WORKBENCH_RUNTIME_WORKSPACE_ID`。工作区移入新路径后需更新此值。本机直连会自动核对工作区。
-- 只使用原生 HTTP API 和 Web 工作台时，可在新环境运行 `npm run sprite-pipeline:setup -- --api-only`，再用 `npm run dev -- --api-only` 启动。该模式按同一锁文件约束安装 API 依赖，跳过 Gradio。需要原生操作面板时，重新运行默认 setup 并启动完整工作台。
+- 只使用原生 HTTP API 和 Web 工作台时，可在新环境运行 `npm run sprite-pipeline:setup -- --api-only`，再用 `npm run dev -- --api-only` 启动。MCP 的 `workbench_start_services` 和 CLI 的 `agent start` 冷启动时会检查项目 Python 环境，已安装 Gradio 时启动原生面板，其余情况启动 API。需要原生操作面板时，重新运行默认 setup 并启动完整工作台。
 - `sprite-pipeline:setup` 在 `Tools/SpritePipeline/.venv` 创建 Python 环境并安装锁定依赖，同时以可编辑方式安装物品转换工具 PixelProp（`Tools/PixelProp`）。它不生成图片。拉取新版本后应重新运行一次；换操作系统或换机器时重新 setup，不要复制 `.venv`。
 
 只需要交互物和静态图片编辑时，`npm ci` 后运行 `npm run dev:interactable` 即可。它同样启动全部前端页面，只是不启动 SpritePipeline；交互物动画、物品原图导入与转换都依赖 SpritePipeline，需要用 `npm run dev`。

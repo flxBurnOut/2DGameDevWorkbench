@@ -4,15 +4,16 @@ import { createHash } from 'node:crypto';
 import {imageEditRequest} from '../../lib/workbench/image-edits.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
-import { loadManifest, findCapability, validateInput, runConnector, refreshTask } from '../../lib/workbench/runtime.mjs';
+import { loadManifest, findCapability, validateInput, runConnector, refreshTask, persistTask, listTaskPage } from '../../lib/workbench/runtime.mjs';
+import { writeTaskSummary } from '../../lib/workbench/task-history-index.mjs';
 import { taskViewPath, taskPresentation } from '../../lib/workbench/presentation.mjs';
 import { createTestViteServer } from '../helpers/vite-server.mjs';
 import { verifyPlanningProgress } from './planning-progress.mjs';
 import { verifyMotionObjects } from './object-model.mjs';
-import { listPresets } from '../../lib/workbench/agent-api.mjs';
+import { getEnvironment, listPresets } from '../../lib/workbench/agent-api.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -68,6 +69,59 @@ try {
   for (let n=0; n<100; n++) { try { await request('/health'); break; } catch { if (child.exitCode !== null || n===99) throw new Error(log || 'Test API startup failed'); await delay(100); } }
   process.env.SPRITE_PIPELINE_API_URL = base;
   const manifest = await loadManifest(), capability = findCapability(manifest, 'sprite-generator');
+  async function recoverLostResponse(input, endpoint) {
+    const send = globalThis.fetch;
+    let posts = 0;
+    globalThis.fetch = async (url, options) => {
+      if (options?.method === 'POST') {
+        assert.equal(new URL(url).pathname, endpoint);
+        assert.equal(++posts, 1, 'Recovery repeated a modifying request');
+        const response = await send(url, options);
+        assert.equal(response.ok, true, await response.text());
+        throw new TypeError('response closed after native acceptance');
+      }
+      return send(url, options);
+    };
+    try {
+      const { task } = await runConnector(manifest, capability, input, { commandId: 'lost-' + input.operation });
+      assert.equal(task.execution.phase, 'awaiting_receipt');
+      assert.equal(task.adapter.nativeSubmissionPending, input.operation);
+      const current = await refreshTask(manifest, task.id);
+      assert.ok(current.task.adapter.originalReceiptSha256, current.refreshError || current.task.error);
+      // Also reproduce historical records that treated this disconnect as a finished failure.
+      const legacy = structuredClone(task);
+      delete legacy.adapter;
+      legacy.status = 'failed';
+      legacy.execution.phase = 'finished';
+      legacy.error = 'fetch failed';
+      const file = path.resolve(await persistTask(manifest, legacy));
+      await writeTaskSummary(file, await stat(file, { bigint: true }), legacy, { project: task => task, active: () => false });
+      const listed = await listTaskPage(manifest, { query: legacy.id, refresh: true });
+      assert.ok(listed.tasks[0].adapter?.originalReceiptSha256, listed.tasks[0].refreshError || listed.tasks[0].error);
+      const recovered = await runConnector(manifest, capability, input, { commandId: task.command.id });
+      assert.equal(recovered.task.id, task.id);
+      assert.equal(recovered.task.adapter.nativeSubmissionPending, undefined, recovered.refreshError || recovered.task.error);
+      assert.equal(posts, 1);
+      return recovered;
+    } finally { globalThis.fetch = send; }
+  }
+  const spec = await request('/openapi.json');
+  const jobLookup = '/v1/jobs/requests/{request_key}', revisionLookup = '/v1/open-motion/{work_id}/requests/{request_key}';
+  const send = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, options) => {
+      const address = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      if (address === base + '/openapi.json') return Response.json(spec);
+      return address.startsWith(base + '/') ? send(url, options) : Response.json({});
+    };
+    assert.equal((await getEnvironment(manifest)).pipeline.compatible, true);
+    delete spec.paths[jobLookup];
+    spec.paths[revisionLookup] = { post: {} };
+    const outdated = (await getEnvironment(manifest)).pipeline;
+    assert.equal(outdated.compatible, false);
+    assert.deepEqual(outdated.capabilities.spriteJobs.missingRoutes, [jobLookup]);
+    assert.deepEqual(outdated.capabilities.openMotion.missingRoutes, [revisionLookup]);
+  } finally { globalThis.fetch = send; }
   const motionSpec = { character_id:'test_hero', description:'角色低头检查手套，最后保持低头', provider:'fixture', review_protocol:'experts_v1', candidate_count:2, budget:{max_planning_calls:8,max_generation_calls:5,max_review_calls:35} };
   const planningModels = { strategy: { model: 'kimi-k3.1-pro', provider: 'tokenhub' } };
   const input = { operation:'plan-motion', motionSpec, planningAuthorized:true, planningModels };
@@ -160,7 +214,7 @@ try {
       const repairInput={operation:'repair-motion-stage',openWorkId:workId,expectedRevision:1,candidateIndex,stageIndex,stageToken:evidence.stage.token,repairStart:1,repairEnd:2,repairMode:'appearance',reviewNote:'只修中间两帧物品轮廓；其余真实诊断帧保持原样。',generationAuthorized:true};
       assert.deepEqual(validateInput(capability,repairInput),[]);
       assert.ok(validateInput(capability,{...repairInput,generationAuthorized:false}).length);
-      await runConnector(manifest,capability,repairInput);
+      await recoverLostResponse(repairInput, `/v1/open-motion/${workId}/repair-stage`);
       for(let n=0;n<100;n++){const v=await request(`/v1/open-motion/${workId}`);if(v.job.candidates[0].plan_execution.stages[0].repairs[0]?.state==='awaiting_review')break;assert.ok(n<99);await delay(100);}
       const preview=await runConnector(manifest,capability,{operation:'get-motion-stage',openWorkId:workId,candidateIndex,stageIndex});
       const before=JSON.parse(await readFile(preview.task.outputs.find(p=>p.endsWith('/result.json')),'utf8'));
@@ -258,6 +312,38 @@ try {
   assert.deepEqual(adjustmentAttemptBudget(attemptContext,13,14).blocked,[14]);
   assert.equal(adjustmentAttemptBudget(attemptContext,14,15).remaining,2);
   const proxy=await vite.ssrLoadModule('/app/api/workbench/open-motion/route.ts');
+  const frontendOrigin = 'http://localhost:3000';
+  const workspace = (await (await proxy.GET(new Request(frontendOrigin + motionModel.motionUrl('workspace-identity')))).json()).workspaceId;
+  assert.match(workspace, /^[a-f0-9]{64}$/);
+  const draft = { spec: { ...motionModel.blankSpec, character_id: legacyCharacterId, object_id: legacyCharacterId, provider: 'fixture' },
+    requestKey: 'web-plan-workspace-recovery' };
+  draft.spec.description = motionSpec.description;
+  let webPosts = 0, changedAfterProbe = false;
+  const foreign = 'f'.repeat(64);
+  try {
+    globalThis.fetch = async (address, init) => {
+      if (typeof address === 'string' && address.startsWith('/api/')) {
+        const req = new Request(frontendOrigin + address, init);
+        if (req.method === 'POST') webPosts++;
+        return proxy[req.method](req);
+      }
+      if (changedAfterProbe && address === base + '/health') return Response.json({motion_workspace_id:foreign});
+      return send(address, init);
+    };
+    const created = await motionModel.submitMotionPlan(undefined, { ...draft, workspaceId: workspace });
+    assert.equal(created.request_key, draft.requestKey);
+    const restored = await motionModel.submitMotionPlan(undefined, draft);
+    assert.equal(restored.id, created.id);
+    await assert.rejects(motionModel.submitMotionPlan(undefined, { ...draft, requestKey: 'missing-legacy-planning-key' }), /旧规划/);
+    assert.equal(webPosts, 1, 'Legacy journals use read-only native receipt lookups.');
+    await assert.rejects(motionModel.submitMotionPlan(undefined, { ...draft, workspaceId: foreign }), /不匹配/);
+    changedAfterProbe = true;
+    // The proxy sees the expected identity but dispatch reaches the original fixture service.
+    await assert.rejects(motionModel.submitMotionPlan(undefined, { ...draft, workspaceId: foreign }), /切回原工作区/);
+    const oldTab = await proxy.POST(new Request(frontendOrigin + motionModel.motionUrl('open-motion'),
+      { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({spec:draft.spec, request_key:draft.requestKey, planning_authorized:true}) }));
+    assert.equal(oldTab.status, 409);
+  } finally { globalThis.fetch = send; }
   assert.equal((await proxy.GET(new Request('http://localhost:3000/api/workbench/open-motion?path=../secrets'))).status,400);
   assert.equal((await proxy.POST(new Request('http://localhost:3000/api/workbench/open-motion',{method:'POST',headers:{origin:'https://foreign.example'},body:'{}'}))).status,403);
   const proxied=await proxy.GET(new Request(`http://localhost:3000/api/workbench/open-motion?path=open-motion/${workId}`));
@@ -310,7 +396,7 @@ try {
     generationAuthorized:true,requestKey:'isolated-adjustment-test'};
   assert.deepEqual(validateInput(capability,altInput),[]);
   assert.ok(validateInput(capability,{...altInput,generationAuthorized:false}).length);
-  let alt=await runConnector(manifest,capability,altInput);
+  let alt=await recoverLostResponse(altInput, `/v1/open-motion/${workId}/adjustments`);
   for(let n=0;alt.task.status==='running'&&n<100;n++){await delay(100);alt=await refreshTask(manifest,alt.task.id);}
   assert.equal(alt.task.status,'attention_required');
   const alternative=JSON.parse(await readFile(alt.task.outputs.find(p=>p.endsWith('/result.json')),'utf8'));

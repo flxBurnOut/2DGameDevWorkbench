@@ -128,6 +128,14 @@ Image 2.6 先持久化 running 任务和执行进程租约，再提交后台请�
 
 `app/api/workbench/**` 是 Web 同源代理，转发到 `WORKBENCH_RUNTIME_URL`。
 
+浏览器提交付费任务前，先通过 `GET /api/workbench/paid-tasks` 取得 `workspaceId`，把它与原始载荷和 `commandId` 一起存入日志。这个 64 位十六进制值同时绑定 Bridge 工作区、任务目录和图片编辑目录。Bridge 首次处理付费身份查询时，在这两个数据目录中分别原子建立持久的随机标识 `.paid-workspace-id`。恢复整个数据目录时须连同标识一起恢复。无法建立或读取标识时，付费入口返回 503。
+
+提交和查询分别使用 `POST /api/workbench/paid-tasks` 和 `GET /api/workbench/paid-tasks?commandId=...`，均在 `x-forge-workspace` 头中携带浏览器保存的身份。Web 代理先通过 Bridge 的 `GET /v1/paid-workspace` 验证数据身份，再向 `/paired/v1/paid/v1` 下的实际端点同时发送公共工作区头和 `x-forge-paid-workspace`。接收任务的 Bridge 再次检查两项身份。同路径更换服务或替换数据目录后，旧记录保留，可切回原目录继续。旧浏览器通过通用任务入口提交带 `commandId` 的付费请求会收到 409。
+
+升级前缺少工作区身份或仅保存公共工作区身份的浏览器日志仅能通过查询核对现有回执。命令号与原载荷 SHA-256 均匹配且任务已开始时，可以恢复该记录。遇到 404、参数不符或任务仍为 `prepared` 时，日志保留待核验。已经收到回执的命令遇到任务记录缺失时同样保留原命令号。
+
+角色动画和交互物动画的规划草稿保存原生动画工作区身份，恢复时由 Python 服务核对。图片局调的 AI 修改、部件定位和成品复核命令绑定 Bridge 付费存储实例。升级前的规划草稿和 AI 修改日志只读取已有的匹配回执，缺少回执时保留原请求。
+
 ## 6. SpritePipeline 适配器
 
 ### 操作映射
@@ -157,6 +165,10 @@ Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创�
 ```
 
 本地任务 ID 用作默认幂等键，避免不明确重试创建第二个可能计费的作业。`wait` 默认 false；生成异步返回时，任务保存上游 job ID，后续 `get`/`status` 刷新同一 job。
+
+对 `create-and-generate` 和 `generate-existing`，工作台在生成 POST 的 `request_key` 中传入本地任务 ID。原生服务先在对应 Job 中登记 `received`，并绑定候选选择和 `wait`。本命令写入候选或分段的提交次数、上游 Job ID 或用量时，`progress` 事件和对应 Job revision 一起落盘。调用正常返回时登记 `returned` 与当次结果版本。运行中断且已有本命令的执行证据时，`interrupted` 回执带原版本、候选、分段、上游 ID、已知用量与错误。只有确认提交前拒绝时才登记带 `submission_created: false` 的 `rejected`，缺少执行证据的异常登记为 `unknown`。同一 Job 内按相同参数重试原键会读取原回执，复用键时更改候选或 `wait` 返回 409。省略此可选键的原生客户端仍可按原方法调用生成。
+
+响应丢失时，工作台通过 `GET /v1/jobs/{job_id}/generation-requests/{request_key}` 查询原命令。工作台核对命令键、Job、候选、`wait` 和原结果 revision，再恢复 `returned` 的结果。`progress` 或 `interrupted` 的候选和用量还须与原快照中本命令写入的观察记录一致。工作台保存这些证据，未确认的产物仍待核验。`received`、尚未查到回执，以及仅记录了作业时间或候选进度的旧任务，均保留为待核验。同一候选在其他命令下的进展不能确认原命令。
 
 标准化输出类型为 `jobRecord`、`orderedFrames`、`spriteSheet`、`godotPackage`、`preview` 和 `metadata`。需要交付的帧与导出文件被复制到当前任务输出目录，不暴露上游私有路径。
 
@@ -283,6 +295,8 @@ image-assets 的外部操作为 generate-prop、edit-image，使用gpt-image-2.6
 精简页的快照核对记录版本。以 `detail: true` 开始的查询按匹配记录的身份和顺序翻页，同一任务写入进度后可继续查询并读取新正文。若工作台选中该行后、读取正文前发生改写，返回的最新明细带 `detailChanged: true`。匹配集合、顺序或来源覆盖发生变化时，旧快照返回 409，需从第一页重新查询。
 
 Web `GET /v1/tasks` 分页返回本地记录，另支持 refresh 与 since。revision 跟踪正文版本与临时 refreshError。第一页将上次的 revision 作为 since 传回，内容相同时返回 `unchanged: true`、空 tasks 及当前 revision、snapshot、total。不了解 since 的旧 runtime 照常返回完整页。
+
+同时指定 `refresh=true` 和 `status` 时，会先刷新搜索范围内的活动任务，再按有效状态筛选。总数、游标和分页都从这一次筛选的有序集合计算。两页之间记录进出该集合或顺序改变时，续页返回 409，客户端从第一页重查。省略状态筛选时，单次刷新仍受页大小限制。
 
 ### 序列帧 Godot 交付
 

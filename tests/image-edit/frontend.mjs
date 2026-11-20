@@ -134,6 +134,38 @@ try {
   const previousFetch = globalThis.fetch;
   let coldReads = 0, corrupt = false;
   try {
+    const media = await vite.ssrLoadModule('/app/api/workbench/image-edit/[operation]/route.ts');
+    const checkout = 'a'.repeat(64), pin = 'b'.repeat(64);
+    const identity = { service: '2d-game-workbench-runtime', version: 1, workspaceId: checkout, paidWorkspaceId: pin };
+    for (const operation of ['part-suggest', 'critic-run']) {
+      let writes = 0;
+      globalThis.fetch = async (url, init) => {
+        if (url.endsWith('/v1/paid-workspace') || url.endsWith('/health')) return Response.json(identity);
+        assert(url.endsWith('/paired/v1/paid/v1/v1/agent/image-' + operation));
+        assert.equal(new Headers(init.headers).get('x-forge-paid-workspace'), pin);
+        writes++;
+        return Response.json({ ok: true }, { headers: { 'x-forge-paid-workspace': pin } });
+      };
+      const send = (name, workspace) => media.POST(new Request('http://localhost:3000/api/workbench/image-edit/' + name, {
+        method: 'POST', headers: { 'content-type': 'application/json', ...(workspace && { 'x-forge-workspace': workspace }) }, body: '{}',
+      }), { params: Promise.resolve({ operation: name }) });
+      check((await send(operation)).status, 409);
+      check((await send('paid-' + operation, checkout)).status, 409);
+      check(writes, 0, 'A legacy visual control or a switched workspace never sends a modifying request.');
+      check((await send('paid-' + operation, pin)).status, 200);
+      check(writes, 1);
+    }
+    for (const encoded of [true, false]) {
+      globalThis.fetch = async () => new Response(Buffer.from(source), { headers: {
+        'content-type': 'application/octet-stream', 'content-length': String(encoded ? 38 : source.length),
+        ...(encoded ? { 'content-encoding': 'gzip' } : {}),
+      } });
+      const proxied = await media.GET(new Request('http://localhost:3000/api/workbench/image-edit/media'),
+        { params: Promise.resolve({ operation: 'media' }) });
+      check(proxied.status, 200);
+      check(proxied.headers.get('content-length'), encoded ? null : String(source.length));
+      check(new Uint8Array(await proxied.arrayBuffer()), source);
+    }
     globalThis.fetch = async (input, options) => {
       coldReads++;
       if (input.endsWith('/session-get')) {

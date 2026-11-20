@@ -1,5 +1,7 @@
 import type { RegionSpec } from './core.mjs';
 import type { PixelSpan } from './pixel-controller.mjs';
+import { browserRequestJournal } from '../editor-documents/browser-journal';
+import { readPaidWorkspace } from '../workbench/paid-task.mjs';
 import { createLocalHistoryGuard } from '@/lib/workbench/browser-store';
 import { appearanceAnimation, type Interactable } from '../interactable-editor/contract.mjs';
 
@@ -72,14 +74,27 @@ export const IMAGE_AI_REFERENCE_LIMITS = Object.freeze({ count: 8, perImageBytes
 export class ImageEditClientError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); this.name = 'ImageEditClientError'; }
 }
-export async function imageEditRequest<T>(operation: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`/api/workbench/image-edit/${operation}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+export async function imageEditRequest<T>(operation: string, body: unknown, signal?: AbortSignal, workspaceId?: string): Promise<T> {
+  const route = workspaceId ? 'paid-' + operation : operation;
+  const response = await fetch(`/api/workbench/image-edit/${route}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...(workspaceId && { 'x-forge-workspace': workspaceId }) }, body: JSON.stringify(body),
     cache: 'no-store', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000),
   });
   const value = await response.json() as { error?: unknown; code?: string };
   if (!response.ok) throw new ImageEditClientError(typeof value.error === 'string' ? value.error : '局部调整请求未完成。', response.status, value.code);
   return value as T;
+}
+export async function submitImageAnalysis<T>(operation: 'part-suggest' | 'critic-run', ref: string, commandId: string): Promise<T> {
+  const journal = browserRequestJournal('image-analysis', operation + ':' + ref);
+  const input = operation === 'part-suggest' ? { partRef: ref, commandId } : { reviewRef: ref, commandId };
+  const request = (await journal.pending())?.request ?? { operation, input };
+  const workspaceId = await readPaidWorkspace();
+  const entry = await journal.begin(request, { workspaceId });
+  if (entry.workspaceId !== workspaceId)
+    throw new Error('请切回视觉分析的原工作区核对原请求。');
+  const result = await imageEditRequest<T>(operation, entry.request.input, undefined, workspaceId);
+  await journal.complete(entry.request);
+  return result;
 }
 export const imageGuards = (target: ImageTargetInfo) => ({ targetId: target.targetId, expectedRevision: target.revision, expectedSha256: target.sha256 });
 export const imageInspectInput = (target: ImageTargetRef, offset = 0) => ({ target, view: 'metadata' as const, includePixels: false, offset });

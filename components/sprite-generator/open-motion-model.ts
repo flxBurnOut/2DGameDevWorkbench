@@ -1,3 +1,5 @@
+import { isPaidMotionPath } from '@/lib/workbench/paid-operations.mjs';
+
 export type MotionObjectType = 'character' | 'interactable';
 export type MotionObjectIdentity = {
   object_id?: string;
@@ -311,9 +313,38 @@ export function motionUrl(
   return `/api/workbench/open-motion?${new URLSearchParams({ path, ...query })}`;
 }
 export class MotionRequestError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message);
   }
+}
+
+let pageWorkspace: Promise<string> | undefined;
+export function motionWorkspace() {
+  pageWorkspace ??= motionRequest<{ workspaceId: string }>('workspace-identity').then(result => {
+    if (!/^[a-f0-9]{64}$/.test(result.workspaceId)) throw new Error('无法核对动画工作区身份。');
+    return result.workspaceId;
+  }).catch(error => { pageWorkspace = undefined; throw error; });
+  return pageWorkspace;
+}
+
+export async function submitMotionPlan(workId: string | undefined, attempt: {
+  spec: MotionSpec; requestKey: string; expectedRevision?: number; workspaceId?: string;
+}) {
+  const route = workId ? `open-motion/${workId}` : 'open-motion';
+  if (!attempt.workspaceId) {
+    const workspaceId = await motionWorkspace();
+    let work: MotionWork;
+    try { work = await motionRequest<MotionWork>(`${route}/requests/${encodeURIComponent(attempt.requestKey)}`, undefined, {}, undefined, workspaceId); }
+    catch { throw new Error('无法核对旧规划的原回执。请切回原动画工作区查看。'); }
+    if (work.request_key !== attempt.requestKey || (workId && work.id !== workId) ||
+        work.revision !== (attempt.expectedRevision ?? 0) + 1 || !motionSpecsEqual(work.spec, attempt.spec))
+      throw new Error('旧规划回执与原请求不一致。请在原动画工作区核对。');
+    return work;
+  }
+  return motionRequest<MotionWork>(workId ? route + '/revise' : route, {
+    spec: attempt.spec, request_key: attempt.requestKey, planning_authorized: true,
+    ...(attempt.expectedRevision !== undefined && { expected_revision: attempt.expectedRevision }),
+  }, {}, undefined, attempt.workspaceId);
 }
 
 export async function motionRequest<T>(
@@ -321,20 +352,26 @@ export async function motionRequest<T>(
   body?: unknown,
   query: Record<string, string> = {},
   signal?: AbortSignal,
+  pinnedWorkspace?: string,
 ): Promise<T> {
-  const response = await fetch(motionUrl(path, query), {
+  const paid = body !== undefined && isPaidMotionPath(path);
+  // Bind an existing work when it is first displayed, before any paid action is selected.
+  const openingWork = body === undefined && /^open-motion\/[0-9a-f]{32}$/.test(path);
+  const identity = pinnedWorkspace || (paid ? await motionWorkspace() : openingWork ? await motionWorkspace().catch(() => undefined) : undefined);
+  const response = await fetch(motionUrl(identity ? 'paired/' + path : path, query), {
     cache: 'no-store',
+    headers: { ...(identity && { 'x-forge-workspace': identity }), ...(body !== undefined && { 'content-type': 'application/json' }) },
     signal: signal || AbortSignal.timeout(35_000),
     ...(body === undefined
       ? {}
       : {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
         }),
   });
   const payload = (await response.json()) as {
-    error?: string | { message?: string };
+    error?: string | { code?: string; message?: string };
+    code?: string;
     detail?: { msg?: string }[];
   };
   if (!response.ok)
@@ -345,6 +382,7 @@ export async function motionRequest<T>(
             payload.detail?.[0]?.msg ||
             '操作未完成，请查看当前状态后重试。',
       response.status,
+      payload.code || (typeof payload.error === 'object' ? payload.error.code : undefined),
     );
   return payload as T;
 }

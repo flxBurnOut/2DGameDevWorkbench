@@ -10,6 +10,7 @@ export interface GameDelivery {
   packageSha256: string;
   packageId: string;
   package?: { kind: string; details: Record<string, unknown> };
+  installVerification?: { code: string; message: string };
   integration?: {
     summary: string;
     files?: { path: string; sha256: string }[];
@@ -27,6 +28,8 @@ export interface GameDeliveryPage {
 export const deliveryStates: Record<string, string> = {
   awaiting_agent: '等待 WorkBuddy 接入',
   assets_installed: '资源已就位，等待代码接入',
+  install_recovery_required: '安装已写入，需要恢复交付回执',
+  install_verification_required: '安装账本需要核验',
   integrated: '代码已接入',
   needs_attention: '接入需要处理',
 };

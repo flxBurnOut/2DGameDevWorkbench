@@ -114,6 +114,34 @@ try {
     assert.equal(page.tasks.find(task => task.id === modern.id).input.name, 'newest title');
     assert.match(page.tasks.find(task => task.id === 'unsupported-active').refreshError, /Unknown capability/);
   }
+  // The most recent record has lost its worker. Its derived state must affect
+  // membership on both pages, including when asking for that new state.
+  for (const [id, day] of [['lease-a', '03'], ['lease-b', '02'], ['lease-c', '01']]) {
+    await persistTask(manifest, { id, capabilityId: 'image-assets', status: 'running',
+      updatedAt: '2026-01-' + day, input: {}, outputs: [],
+      adapter: { backgroundExecution: true, backgroundPid: process.pid, backgroundToken: id,
+        backgroundExpiresAt: id === 'lease-a' ? 0 : Date.now() + 60_000 } });
+    const output = path.resolve(repositoryRoot, manifest.workspace.outputDirectory, id);
+    await mkdir(output, { recursive: true });
+    await writeFile(path.join(output, '.background-lease.json'),
+      JSON.stringify({ pid: process.pid, token: id, heartbeatAt: Date.now() }));
+  }
+  for (const detail of [false, true]) {
+    const options = { detail, query: 'lease-', refresh: true, status: 'running', limit: 1 };
+    const first = await listTaskPage(manifest, options);
+    const second = await listTaskPage(manifest, { ...options, offset: first.nextOffset, snapshot: first.snapshot });
+    assert.deepEqual([first.tasks[0].id, second.tasks[0].id, first.total, second.total, second.nextOffset],
+      ['lease-b', 'lease-c', 2, 2, null]);
+    const attention = await listTaskPage(manifest, { ...options, status: 'attention_required' });
+    assert.deepEqual(attention.tasks.map(row => row.id), ['lease-a']);
+  }
+  const unfiltered = { detail: false, query: 'lease-', limit: 1 };
+  const derived = await listTaskPage(manifest, { ...unfiltered, refresh: true });
+  assert.equal(derived.tasks[0].status, 'attention_required');
+  for (const refresh of [false, true]) {
+    const next = await listTaskPage(manifest, { ...unfiltered, refresh, offset: derived.nextOffset, snapshot: derived.snapshot });
+    assert.equal(next.tasks[0].id, 'lease-b');
+  }
 } finally {
   fs.open = open;
   fs.readFile = readFile;

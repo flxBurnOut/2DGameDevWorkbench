@@ -2,7 +2,7 @@
 /* oxlint-disable next/no-img-element -- inspect the exact frozen evidence sent for review. */
 import {useRef,useState} from 'react';
 import {Button} from '@/components/ui/button';
-import {imageEditRequest,type ImageCandidate} from '@/features/image-edit/client';
+import {imageEditRequest,submitImageAnalysis,type ImageCandidate} from '@/features/image-edit/client';
 
 type Grade = 'pass'|'fail'|'uncertain';
 type Result = {
@@ -66,7 +66,7 @@ export function CandidateCheck({editId,candidate,disabled,canEdit,onAction}:{edi
   }
   async function run(value:Check){
     if(!canEdit)return;
-    const {check}=await imageEditRequest<{check:Check}>('critic-run',{reviewRef:value.reviewRef,commandId:id('run-'+value.reviewRef)});
+    const {check}=await submitImageAnalysis<{check:Check}>('critic-run',value.reviewRef,id('run-'+value.reviewRef));
     display(check);
   }
   async function recover(){

@@ -13,6 +13,7 @@ from typing import Any, Iterator
 from pydantic import ValidationError
 
 from .errors import ConflictError, NotFoundError, ValidationHarnessError
+from .generation_commands import record_progress
 from .jsonio import atomic_write_json, inside, read_json, relative_posix
 from .models import JobRecord
 from .settings import HarnessSettings
@@ -460,6 +461,8 @@ class JobStore:
                 # Read/verify paths also use this context manager. Do not create
                 # an append-only history revision when their observable state
                 # did not change (notably repeated recovery of one bad result).
-                if job.model_dump(mode="json") != before:
+                after = job.model_dump(mode="json")
+                if after != before:
                     job.revision += 1
+                    record_progress(job, before, after)
                     self._save(job)

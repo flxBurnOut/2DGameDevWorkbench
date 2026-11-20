@@ -60,6 +60,8 @@
     "states": [
       "awaiting_agent",
       "assets_installed",
+      "install_recovery_required",
+      "install_verification_required",
       "integrated",
       "needs_attention"
     ],

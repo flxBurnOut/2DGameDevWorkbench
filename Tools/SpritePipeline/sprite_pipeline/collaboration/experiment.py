@@ -210,6 +210,45 @@ def _repair_interruption(attempts, stage, reports):
             'provider_job_id': attempt.get('provider_job_id'), 'last_review_verdict': last_verdict}
 
 
+def _model_review_interruption(attempts, stage, reports):
+    first = reports[0] or {}
+    if not _real_verdict(first):
+        return {'kind': 'provider_failure', 'reason': 'initial_review_unavailable', 'stage': stage,
+                'review_state': first.get('state'), 'last_review_verdict': None}
+    return _repair_interruption(attempts, stage, reports)
+
+
+def _model_frame_budget(job, experiment):
+    if experiment.get('arm') != 'model_only' or experiment.get('protocol') != PROTOCOL:
+        return None
+    frozen = experiment['frozen_drawing']
+    if digest(frozen) != experiment['frozen_drawing_sha256']:
+        raise ConflictError('实验副本的冻结绘图协议已改变')
+    counts = [call['count'] for call in frozen['requests']]
+    requested = reserved = 0
+    for candidate in job.candidates:
+        for count, run in zip(counts, candidate.plan_execution.stages, strict=True):
+            requested += count * run.submission_attempts + sum(a['input_count'] for a in run.repairs)
+            if not run.submission_attempts:
+                reserved += count
+    limit = frozen['limits']['max_total_frames']
+    return {'max_total_frames': limit, 'requested_frames': requested, 'reserved_baseline_frames': reserved,
+            'over_limit': limit is not None and requested + reserved > limit}
+
+
+def _model_interruption(job, experiment, frame_budget):
+    if experiment.get('arm') != 'model_only':
+        return None
+    for candidate in job.candidates:
+        for stage, run in enumerate(candidate.plan_execution.stages):
+            if run.state in ('awaiting_review', 'rejected', 'accepted', 'repairing'):
+                if failure := _model_review_interruption(run.repairs, stage, [*run.review_history, run.review]):
+                    return failure
+    if frame_budget and frame_budget['over_limit']:
+        return {'kind': 'protocol_violation', 'reason': 'max_total_frames', **frame_budget}
+    return None
+
+
 def drive_model_only(service, work_id, provider, *, authorized, allow_unsupported_motion=False, max_steps=40):
     """Decide a ``model_only`` copy from the pipeline reviewer alone.
 
@@ -243,7 +282,12 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
     job_id, engine, checkpoints, repairs = work.job_id, PlanGeneration(service), Checkpoints(service), LocalRepairs(service)
     decisions, status = [], 'stalled'
     outcome = {'kind': 'not_submitted', 'reason': 'no_provider_submission'}
+    job = service.store.load(job_id)
+    failure = _model_interruption(job, work.experiment, _model_frame_budget(job, work.experiment))
     for _ in range(max_steps):
+        if failure:
+            status, outcome = 'interrupted', failure
+            break
         try:
             job = engine.advance(job_id, provider, wait=True)
         except HarnessError:
@@ -252,10 +296,8 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
                 raise
         candidate = job.candidates[0]
         runs = candidate.plan_execution.stages
-        interruptions = (_repair_interruption(run.repairs, i, [*run.review_history, run.review])
-                         for i, run in enumerate(runs) if run.state in ('awaiting_review', 'rejected'))
-        failure = next((found for found in interruptions if found), None)
-        if failure and not candidate.frames:
+        failure = _model_interruption(job, work.experiment, _model_frame_budget(job, work.experiment))
+        if failure:
             status, outcome = 'interrupted', failure
             break
         stage = next((i for i, r in enumerate(runs) if r.state == 'awaiting_review'), None)
@@ -270,8 +312,10 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
                 status = 'interrupted'
                 error = candidate.error or {}
                 reason = (error.get('details') or {}).get('reason') or error.get('code') or candidate.status.value
-                outcome = {'kind': 'provider_failure' if any(r.submission_attempts for r in runs) else 'local_preflight',
-                           'reason': reason}
+                stage_failed = next((i for i, r in enumerate(runs) if r.error), None)
+                submitted = runs[stage_failed].submission_attempts if stage_failed is not None else candidate.submission_attempts
+                outcome = {'kind': 'provider_failure' if submitted else 'local_preflight', 'reason': reason,
+                           **({'stage': stage_failed} if stage_failed is not None else {})}
             else:
                 continue
             break
@@ -283,7 +327,7 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
             decisions.append({'stage': stage, 'action': 'adopt_repair'})
             continue
         view = checkpoints.view(job_id, 1, stage)
-        verdict = (run.review or {}).get('verdict')
+        verdict = _real_verdict(run.review)
         if verdict == 'pass':
             checkpoints.decide(job_id, 1, stage, token=view['token'], decision='accept', reviewer=MODEL_ONLY_REVIEWER,
                                note='Fixed policy: reviewer verdict pass, no human inspection')
@@ -331,7 +375,7 @@ def counterfactual_verdicts(report):
     stored report; no model is called.
     """
     expert = (report or {}).get('expert_review') or {}
-    if not report or report.get('verdict') is None:
+    if not report or report.get('verdict') is None or ('state' in report and not _real_verdict(report)):
         return None
     result = {'full': report['verdict'], 'baseline_only': (expert.get('baseline') or {}).get('verdict'),
               'final_review_wins': None, 'retained_contradictions': len(expert.get('requires_human_adjudication') or [])}
@@ -449,12 +493,8 @@ def retrospective(job_dir, work, adjustments, out):
         note_review(c.plan_execution.quality_review)
         for i, run in enumerate(c.plan_execution.stages):
             folder = f'candidate-{c.candidate_index}/stage-{i}'
-            raw = []
             manifest = job_dir / 'provider' / f'candidate_{c.candidate_index:02}.plan' / str(i) / 'frames.json'
             saved_stage = optional_record(manifest)
-            if saved_stage:
-                raw = [{'path': (manifest.parent / f['filename']).relative_to(job_dir).as_posix(), 'sha256': f['sha256']}
-                       for f in saved_stage['frames']]
             reports = [*run.review_history, run.review or {}]
             for report in reports:
                 note_review(report)
@@ -482,12 +522,24 @@ def retrospective(job_dir, work, adjustments, out):
                                 **({'original_archive_unavailable': True} if inherited and attempt.get('raw_frames') else {})})
                 drawing_usage.append(usage)
             stage_usage = (response_usage(saved_stage) or run.usage)
+            returned = None
             if run.submission_attempts:
-                stage_usage, _ = drawing_record({'provider_job_id': run.provider_job_id, 'usage': stage_usage, 'error': run.error},
-                                                manifest.parent, 'submit.response.json')
+                stage_usage, returned = drawing_record({'provider_job_id': run.provider_job_id, 'usage': stage_usage,
+                                                        'error': run.error}, manifest.parent, 'submit.response.json')
                 drawing_usage.append(stage_usage)
+            if saved_stage:
+                if run.frames_manifest_sha256 and digest(saved_stage) != run.frames_manifest_sha256:
+                    raise ValueError('archive stage manifest hash mismatch')
+                originals = [{'file': f['filename'], 'sha256': f['sha256'], 'raw_index': j}
+                             for j, f in enumerate(saved_stage.get('frames', []))]
+            else:
+                originals = (returned or {}).get('frames', [])
+            raw = [{**copy_png(f, f'{folder}/raw/{f["raw_index"]:03}.png', root=manifest.parent),
+                    'raw_index': f['raw_index']} for f in originals]
             rows.append({'candidate': c.candidate_index, 'stage': i, 'state': run.state,
-                         'raw': [copy_png(f, f'{folder}/raw/{j:03}.png') for j, f in enumerate(raw)],
+                         'raw': raw,
+                         **({'raw_count': returned['raw_count'], 'invalid_raw_indices': returned['invalid_frames']}
+                            if returned else {}),
                          'provider_job_id': run.provider_job_id, 'usage': stage_usage, 'drawing_error': run.error,
                          'submitted_attempts': run.submission_attempts,
                          'frame_normalization': (run.accepted or {}).get('frame_normalization'),
@@ -558,13 +610,14 @@ def retrospective(job_dir, work, adjustments, out):
         'clips': _playback(job, job_dir, out), 'stages': rows, 'alternatives': alternatives,
         'tool_usage': tools, 'cost': cost}
     if current_protocol:
-        interruptions = (_repair_interruption(row['repairs'], row['stage'], row['review_history'])
-                         for row in rows if row['state'] in ('awaiting_review', 'rejected'))
-        repair_outcome = next((found for found in interruptions if found), None)
-        if result['clips']:
+        frame_budget = _model_frame_budget(job, work['experiment'])
+        if frame_budget:
+            result['drawing_frame_budget'] = frame_budget
+        interruption = _model_interruption(job, work['experiment'], frame_budget)
+        if interruption:
+            result['outcome'] = interruption
+        elif result['clips']:
             result['outcome'] = {'kind': 'complete', 'reason': 'playable'}
-        elif (work.get('experiment') or {}).get('arm') == 'model_only' and repair_outcome:
-            result['outcome'] = repair_outcome
         elif any(row['state'] == 'rejected' for row in rows):
             result['outcome'] = {'kind': 'review_stopped', 'reason': 'segment_rejected'}
         elif failed := next((row for row in rows if row['drawing_error']), None):
@@ -637,11 +690,15 @@ def collect_clips(roots):
         if (root / 'retrospective.json').exists():
             export = json.loads((root / 'retrospective.json').read_bytes())
             arm = (export.get('experiment') or {}).get('arm')
-            if not export['clips']:
+            outcome = export.get('outcome') or {}
+            if not export['clips'] or (outcome and outcome['kind'] != 'complete'):
                 exclusion = {'source': str(root), 'arm': arm, 'status': 'no_playable_clip'}
                 if export.get('outcome'):
-                    exclusion.update(protocol=PROTOCOL, outcome=export['outcome'])
+                    status = {'provider_failure': 'interrupted', 'protocol_violation': 'interrupted',
+                              'review_stopped': 'stopped_by_review', 'local_preflight': 'blocked_preflight'}
+                    exclusion.update(protocol=PROTOCOL, outcome=outcome, status=status.get(outcome['kind'], 'no_playable_clip'))
                 excluded.append(exclusion)
+                continue
             for clip in export['clips']:
                 clips.append((root, clip['frames'], clip['fps'], {'arm': arm, 'candidate': clip['candidate']}))
             continue

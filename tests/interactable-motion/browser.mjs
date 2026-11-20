@@ -41,18 +41,20 @@ try {
   await page.route('**/api/workbench/**', route => route.fulfill({ status: 503, json: { error: '本隔离验收仅启用开放动作接口' } }));
   await page.route('**/api/workbench/open-motion?**', async route => {
     const request = route.request(), url = new URL(request.url());
-    const target = new URL('/v1/' + (url.searchParams.get('path') || 'open-motion'), base);
+    const path = url.searchParams.get('path') || 'open-motion';
+    if (path === 'workspace-identity') return route.fulfill({json:{workspaceId:(await (await fetch(base+'/health', {headers:{'x-forge-motion-identity':'1'}})).json()).motion_workspace_id}});
+    const target = new URL(path.startsWith('paired/') ? '/paired/v1/v1/' + path.slice(7) : '/v1/' + path, base);
     for (const [key, value] of url.searchParams) if (key !== 'path' && key !== 'v') target.searchParams.set(key, value);
     let body = request.postData();
     if (body) {
       const value = JSON.parse(body);
       if (value.spec) value.spec.provider = 'fixture';
-      posted.push({ path: url.searchParams.get('path'), body: value });
+      posted.push({ path: path.replace(/^paired\//, ''), body: value });
       body = JSON.stringify(value);
     }
-    const response = await fetch(target, { method: request.method(), headers: { 'content-type': 'application/json', connection: 'close' }, ...(body ? { body } : {}) })
+    const response = await fetch(target, { method: request.method(), headers: { 'content-type': 'application/json', connection: 'close', ...(path.startsWith('paired/') && {'x-forge-workspace':request.headers()['x-forge-workspace']}) }, ...(body ? { body } : {}) })
       .catch(() => new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } }));
-    if (body && target.pathname === '/v1/open-motion' && response.ok && dropPlanningResponse) {
+    if (body && path === 'paired/open-motion' && response.ok && dropPlanningResponse) {
       dropPlanningResponse = false;
       await response.arrayBuffer();
       return route.abort('connectionreset');

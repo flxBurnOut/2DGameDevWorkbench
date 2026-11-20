@@ -47,6 +47,7 @@ try {
   ] };
   window.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString(), location.href);
+    if (url.origin === location.origin && url.pathname === '/api/workbench/paid-tasks') return Response.json({ workspaceId: 'a'.repeat(64) });
     if (url.origin !== location.origin || !url.pathname.startsWith('/api/workbench/image-edit/')) throw new Error('Non-fixture fetch forbidden');
     if (typeof init?.body !== 'string') throw new Error('Expected JSON fixture request');
     const body = JSON.parse(init.body), operation = url.pathname.split('/').at(-1);
@@ -57,7 +58,8 @@ try {
       return Response.json({ edit: { ...session, ...(body.includePixels ? { selectedVersion: body.candidateVersion, pixels: body.candidateVersion === 'source' ? original : candidate } : {}) } });
     }
     if (operation === 'resolve') return Response.json({ regionRef: 'fixture-region' });
-    if (operation === 'edit') {
+    if (operation === 'paid-edit' || operation === 'edit') {
+      if (body.operation.type === 'ai-edit') check(operation === 'paid-edit' && new Headers(init?.headers).get('x-forge-workspace') === 'a'.repeat(64), 'AI requests carry their stored workspace identity');
       session.revision++; session.candidates.push({ version: 'candidate-result', status: 'completed', operation: body.operation, createdAt: new Date().toISOString(), baseCandidateVersion: body.baseCandidateVersion });
       return Response.json({ edit: session, status: 'completed', candidateVersion: 'candidate-result' });
     }

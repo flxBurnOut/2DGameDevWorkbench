@@ -127,28 +127,37 @@ try {
   vite = await createTestViteServer({ root: repositoryRoot, configFile: false, appType: 'custom', logLevel: 'error', resolve: { alias: { '@': repositoryRoot } }, server: { middlewareMode: true } });
   /** @type {Array<[name: string, method: 'POST' | 'PUT' | 'DELETE', json: boolean, params?: Record<string, string>, routePath?: string]>} */
   const routes = [
-    ['tasks', 'POST', true], ['image-assets/settings', 'POST', true], ['reference-art/settings', 'POST', true],
+    ['tasks', 'POST', true], ['paid-tasks', 'POST', true], ['image-assets/settings', 'POST', true], ['reference-art/settings', 'POST', true],
     ['assets', 'POST', true], ['assets/manage', 'POST', true], ['assets/import', 'POST', true], ['assets/download', 'POST', true],
     ['assets/packages/commit', 'POST', true], ['assets/packages/inspect', 'POST', false],
     ['interactable-assets', 'POST', false], ['documents', 'POST', true],
     ['documents/[id]/[action]', 'POST', true, { id: 'interactable-fixture', action: 'apply' }],
     ['image-edit/[operation]', 'POST', true, { operation: 'session-create' }],
     ['document-media/[key]', 'PUT', false, { key: `${'a'.repeat(64)}.png` }],
-    ['frontend', 'POST', true], ['open-motion', 'POST', true],
+    ['frontend', 'POST', true], ['open-motion', 'POST', true, {}, 'open-motion?path=paired/open-motion'],
     ['game-export/[action]', 'POST', true, {}, 'game-export/select'],
     ['history', 'DELETE', false],
   ];
   let forwarded = 0;
-  globalThis.fetch = async (_url, init) => {
+  const workspaceId = 'a'.repeat(64);
+  const paidWorkspaceId = 'b'.repeat(64);
+  globalThis.fetch = async (url, init) => {
     forwarded++;
     if (init?.body) assert.equal(typeof init.body === 'string' || init.body instanceof ReadableStream, true);
-    return Response.json({ ok: true, count: 0 });
+    const address = url instanceof Request ? url.url : url.toString();
+    if (address.endsWith('/health')) return Response.json({ motion_workspace_id: workspaceId,
+      workspaceId, service: '2d-game-workbench-runtime', version: 1 });
+    if (address.endsWith('/v1/paid-workspace')) return Response.json({ paidWorkspaceId,
+      workspaceId, service: '2d-game-workbench-runtime', version: 1 });
+    return Response.json({ ok: true, count: 0 }, { headers: { 'x-forge-paid-workspace': paidWorkspaceId } });
   };
   for (const [name, method, json, params = {}, routePath = name] of routes) {
     const routeModule = await vite.ssrLoadModule(`/app/api/workbench/${name}/route.ts`);
     const url = `http://localhost:4321/api/workbench/${routePath}`;
     const invoke = headers => routeModule[method](new Request(url, {
-      method, headers: { 'content-type': json ? 'application/json' : 'application/octet-stream', ...headers },
+      method, headers: { 'content-type': json ? 'application/json' : 'application/octet-stream',
+        ...(name === 'open-motion' && { 'x-forge-workspace': workspaceId }),
+        ...(name === 'paid-tasks' && { 'x-forge-workspace': paidWorkspaceId }), ...headers },
       ...(method === 'DELETE' ? {} : { body: '{}' }),
     }), { params: Promise.resolve(params) });
     const before = forwarded;

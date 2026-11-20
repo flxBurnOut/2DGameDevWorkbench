@@ -11,7 +11,7 @@ from test_interactable_motion import ARCHIVE, PropPlanner, workspace_for
 from sprite_pipeline.api_app import create_api
 from sprite_pipeline.collaboration.contracts import TaskSpec
 from sprite_pipeline.collaboration.execution import PlanGeneration
-from sprite_pipeline.errors import ConflictError
+from sprite_pipeline.errors import ConflictError, ProviderTemporaryError
 from sprite_pipeline.providers.fixture import FixtureProvider
 
 A = 'Grey lamp face'
@@ -89,6 +89,40 @@ def decide(client, stage, decision, frame=None):
     response = client.post('review-stage', json=body)
     assert response.status_code == 200, response.text
     return response.json()['job']['candidates'][0]['state_chain']
+
+
+@pytest.mark.parametrize('failure', ['invalid_frame', 'provider_timeout'])
+def test_keyed_generation_preserves_own_interrupted_stage(chain, monkeypatch, failure):
+    service, work, _, provider, client = chain
+    decide(client, 0, 'accept', 2)
+    wait = provider.wait
+
+    def interrupt(job_id):
+        if failure == 'provider_timeout':
+            raise ProviderTemporaryError('fixture timeout', details={'provider_job_id': job_id,
+                'response': {'usage': {'usd': 3.5}}})
+        result = wait(job_id)
+        return replace(result, images=[*result.images[:-1], b'bad'], usage={'usd': 3.5})
+    monkeypatch.setattr(provider, 'wait', interrupt)
+    native = TestClient(create_api(service=service))
+    route = '/v1/jobs/' + work.job_id
+    command = {'wait': True, 'request_key': 'interrupted-stage'}
+    if failure == 'provider_timeout':
+        command['candidate_index'] = 1
+    response = native.post(route + '/generate', json=command)
+    assert response.status_code == 200, response.text
+    data = response.json()['data']
+    receipt, job = data['generation_receipt'], data['job']
+    stage = job['candidates'][0]['plan_execution']['stages'][1]
+    assert receipt['state'] == 'interrupted' and receipt['revision'] == job['revision']
+    assert stage['provider_job_id'] and stage['submission_attempts'] == 1 and stage['usage'] == {'usd': 3.5}
+    assert receipt['evidence'] == [{'candidate_index': 1, 'stage_index': 1, 'submission_attempts': 1,
+        'provider_job_id': stage['provider_job_id'], 'usage': {'usd': 3.5}}]
+    with service.store.locked_job(work.job_id) as current:
+        current.candidates[0].plan_execution.stages[1].usage = {'usd': 7}
+    assert native.get(route + '/generation-requests/interrupted-stage').json()['data'] == data
+    assert native.post(route + '/generate', json=command).json()['data'] == data
+    assert len(provider.inputs) == 2
 
 
 def test_archive_chain_from_selected_pixels_to_next_request(chain):

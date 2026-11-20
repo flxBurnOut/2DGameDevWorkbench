@@ -116,6 +116,16 @@ class Adjustments:
             raise ValidationHarnessError('修改任务记录缺少状态或调用账本')
         return task
 
+    def original_request(self, work_id, request_key):
+        receipt = self.root(work_id) / 'requests' / (digest({'request_key': request_key}) + '.json')
+        if not receipt.is_file():
+            raise NotFoundError('未找到此修改请求')
+        saved = read_json(receipt)
+        task = self.load(work_id, saved['id'])
+        if task['request_key'] != request_key or task['request_identity'] != saved['identity']:
+            raise ConflictError('修改任务与原请求回执不符')
+        return task
+
     def save(self, task):
         task['updated_at']=now();atomic_write_json(self.folder(task)/'task.json',task)
 

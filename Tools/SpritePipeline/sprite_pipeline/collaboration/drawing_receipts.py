@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from ..errors import ConflictError, ProviderError, ValidationHarnessError
 from ..jsonio import atomic_write_json, inside, read_json
 from ..providers.base import PollStatus, redact_provider_payload
+from ..providers.pixellab import poll_identity_mismatch
 from .drawing_frames import playback_indices
 from .targets import checked_png
 
@@ -14,9 +15,11 @@ def response_usage(response):
     return redact_provider_payload(usage) if isinstance(usage, Mapping) else {}
 
 
-def poll_error_usage(exc):
-    return (response_usage(exc.details.get('response')) or
-            response_usage({'usage': exc.details.get('last_poll_usage')}))
+def poll_error_usage(exc, provider_job_id):
+    response = exc.details.get('response')
+    if poll_identity_mismatch(response, provider_job_id):
+        return {}
+    return response_usage(response) or response_usage({'usage': exc.details.get('last_poll_usage')})
 
 
 def read_poll_receipt(path, provider_job_id):
@@ -28,10 +31,17 @@ def read_poll_receipt(path, provider_job_id):
         raise ConflictError('已保存的绘图回执无效') from exc
     if not isinstance(receipt, dict) or receipt.get('version') != 1 or receipt.get('provider_job_id') != provider_job_id:
         raise ConflictError('已保存的绘图回执与远端请求不匹配')
+    error = receipt.get('error')
+    details = error.get('details') if isinstance(error, Mapping) else None
+    # Historical non-200 responses were archived inside the provider error.
+    for response in (receipt.get('response'), details.get('response') if isinstance(details, Mapping) else None):
+        if mismatch := poll_identity_mismatch(response, provider_job_id):
+            raise ConflictError('已保存的绘图回执包含其他作业的响应', details=mismatch)
     return receipt
 
 
-def poll_drawing(folder, provider, provider_job_id, size, frame_name, write_bytes, *, usage=None):
+def poll_drawing(folder, provider, provider_job_id, size, frame_name, write_bytes, *,
+                 usage=None, wait=False, validate_frame=None):
     """Reopen a committed result or poll the same ID and archive it exactly once."""
     result_path = folder / 'provider-result.json'
     saved = read_poll_receipt(result_path, provider_job_id)
@@ -42,28 +52,33 @@ def poll_drawing(folder, provider, provider_job_id, size, frame_name, write_byte
     known = response_usage(previous) or usage or {}
     identity = {'version': 1, 'provider_job_id': provider_job_id}
     try:
-        result = provider.poll(provider_job_id)
+        result = provider.wait(provider_job_id) if wait else provider.poll(provider_job_id)
     except ProviderError as exc:
         observed_id = exc.details.get('provider_job_id')
         if not observed_id or observed_id == provider_job_id:
             atomic_write_json(receipt_path, {**identity, 'status': 'poll_error',
-                'usage': poll_error_usage(exc) or known, 'error': redact_provider_payload(exc.as_dict())})
+                'usage': poll_error_usage(exc, provider_job_id) or known, 'error': redact_provider_payload(exc.as_dict())})
         raise
     if result.provider_job_id != provider_job_id:
-        raise ConflictError('远端返回的绘图请求编号与本次提交不符')
+        error = {'code': 'provider_job_mismatch', 'message': '远端返回的绘图请求编号与本次提交不符',
+                 'details': {'requested_job_id': provider_job_id, 'response_job_id': result.provider_job_id}}
+        saved = {**identity, 'status': 'failed', 'provider_status': 'identity_mismatch', 'usage': known,
+                 'response': {}, 'error': error, 'raw_count': 0, 'frames': [], 'invalid_frames': []}
+        atomic_write_json(result_path, saved)
+        return saved
     receipt = {**identity, 'status': result.status.value, 'provider_status': result.provider_status,
                'usage': response_usage({'usage': result.usage}) or response_usage(result.raw_response) or known,
                'response': redact_provider_payload(result.raw_response), 'error': redact_provider_payload(result.error),
-               'raw_count': len(result.images)}
+               'raw_count': len(result.raw_images)}
     if result.status != PollStatus.pending or receipt['usage'] != response_usage(previous):
         atomic_write_json(receipt_path, receipt)
     if result.status == PollStatus.pending:
         return receipt
 
     frames, invalid = [], []
-    for index, data in enumerate(result.images):
+    for index, data in enumerate(result.raw_images):
         try:
-            sha256 = checked_png(data, *size)
+            sha256 = validate_frame(data, size, index) if validate_frame else checked_png(data, *size)
         except ValidationHarnessError:
             invalid.append(index)
             continue

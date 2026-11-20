@@ -2,13 +2,13 @@ import { fetchBridge } from './service-endpoints.mjs';
 
 declare const __FORGE_WORKSPACE_ID__: string;
 
-export async function fetchWorkbenchRuntime(pathname: string, init?: RequestInit) {
+export async function fetchWorkbenchRuntime(pathname: string, init?: RequestInit, pinnedWorkspace?: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 370_000);
   try {
     return await fetchBridge(pathname, {
       ...init, cache: 'no-store', signal: init?.signal ?? controller.signal,
-    }, typeof __FORGE_WORKSPACE_ID__ === 'string' ? __FORGE_WORKSPACE_ID__ : undefined);
+    }, typeof __FORGE_WORKSPACE_ID__ === 'string' ? __FORGE_WORKSPACE_ID__ : undefined, pinnedWorkspace);
   } finally {
     clearTimeout(timeout);
   }

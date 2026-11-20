@@ -15,7 +15,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import JSZip from 'jszip';
 import sharp from 'sharp';
@@ -212,12 +212,14 @@ test('inspection and idempotent install place resources, preserve config and do 
   assert.equal(detail.conflicts.length, 0);
   installed = await installGameExport(repositoryRoot, manifest, {
     ...delivery,
+    installPlanRevision: detail.installPlanRevision,
     projectRevision: detail.inspection.projectRevision,
   });
   assert.equal(installed.installed, true);
   assert.equal(installed.status, 'assets_installed');
   const again = await installGameExport(repositoryRoot, manifest, {
     ...delivery,
+    installPlanRevision: detail.installPlanRevision,
     projectRevision: detail.inspection.projectRevision,
   });
   assert.deepEqual(again.changedFiles, []);
@@ -246,6 +248,7 @@ test('managed updates back up old resources and protect manually edited files', 
   );
   await installGameExport(repositoryRoot, manifest, {
     ...update,
+    installPlanRevision: detail.installPlanRevision,
     projectRevision: detail.inspection.projectRevision,
   });
   assert.equal(
@@ -257,6 +260,7 @@ test('managed updates back up old resources and protect manually edited files', 
   assert.ok(detail.conflicts.includes(scene));
   const blocked = await installGameExport(repositoryRoot, manifest, {
     ...delivery,
+    installPlanRevision: detail.installPlanRevision,
     projectRevision: detail.inspection.projectRevision,
   });
   assert.equal(blocked.installed, false);
@@ -266,8 +270,10 @@ test('managed updates back up old resources and protect manually edited files', 
   );
   // Restore the original package for the later completion fixtures.
   await writeFile(path.join(game, scene), first.get(scene));
+  detail = await getGameExport(repositoryRoot, manifest, delivery);
   installed = await installGameExport(repositoryRoot, manifest, {
     ...delivery,
+    installPlanRevision: detail.installPlanRevision,
     deliveryRevision: detail.deliveryRevision,
     projectRevision: detail.inspection.projectRevision,
   });
@@ -393,6 +399,14 @@ test('HTTP rejects unauthenticated project writes and exposes remembered setting
       await fetch(url + '/v1/game-export/settings')
     ).json();
     assert.equal(settings.project.path, game);
+    const agent = (operation, input) => fetch(url + '/v1/agent/' + operation, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-forge-game-token': settings.token }, body: JSON.stringify(input),
+    });
+    const inspected = await (await agent('game-export', { deliveryId: delivery.deliveryId })).json();
+    assert.match(inspected.installPlanRevision, /^[a-f0-9]{64}$/);
+    const stale = await agent('install-game-export', { deliveryId: delivery.deliveryId, packageSha256: inspected.packageSha256,
+      projectRevision: inspected.inspection.projectRevision, deliveryRevision: inspected.deliveryRevision, installPlanRevision: '0'.repeat(64) });
+    assert.equal(stale.status, 409);
     const spriteRequest = input=>fetch(url+'/v1/game-export/package',{method:'POST',headers:{'content-type':'application/json','x-forge-game-token':settings.token},body:JSON.stringify(input)});
     const matched = await spriteRequest({jobId:'fixture_export',candidateIndex:2});
     assert.equal(matched.status,200);assert.equal((await prepareGodotPackage(new Uint8Array(await matched.arrayBuffer()))).manifest.details.candidateIndex,2);
@@ -471,7 +485,17 @@ test('MCP discovers all delivery tools and verifies the same delivery through st
     assert.equal(result.isError, undefined);
     assert.equal(result.structuredContent.project.path, game);
 
-    const { packageSha256, deliveryRevision, inspection } = result.structuredContent;
+    const { packageSha256, deliveryRevision, inspection, installPlanRevision } = result.structuredContent;
+    assert.match(installPlanRevision, /^[a-f0-9]{64}$/);
+    const args = { deliveryId: delivery.deliveryId, packageSha256, deliveryRevision, projectRevision: inspection.projectRevision, installPlanRevision };
+    const staleInput = { ...args, installPlanRevision: '0'.repeat(64) };
+    const stale = await client.callTool({ name: 'workbench_install_game_export', arguments: staleInput });
+    assert.equal(stale.structuredContent.error.status, 409);
+    const cli = spawnSync(process.execPath, ['scripts/workbench.mjs', 'agent', 'install-game-export', '--input-json', JSON.stringify(staleInput)], {
+      cwd: repositoryRoot, encoding: 'utf8',
+    });
+    assert.equal(cli.status, 1);
+    assert.match(cli.stderr, /版本已变化/);
     const ignore = path.join(game, 'forge_imports', '.gitignore');
     const existing = await readFile(ignore);
     await unlink(ignore);
@@ -479,7 +503,7 @@ test('MCP discovers all delivery tools and verifies the same delivery through st
     try {
       const blocked = await client.callTool({
         name: 'workbench_install_game_export',
-        arguments: { deliveryId: delivery.deliveryId, packageSha256, deliveryRevision, projectRevision: inspection.projectRevision },
+        arguments: args,
       });
       assert.equal(blocked.isError, true);
       const failure = blocked.structuredContent.error;

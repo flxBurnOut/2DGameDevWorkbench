@@ -16,7 +16,7 @@ import {
 } from '@/features/godot-export/package.mjs';
 import { gameHandoff } from '@/features/godot-export/handoff.mjs';
 import type { GodotExportOffer } from '@/lib/workbench/godot-export';
-import { readGameDelivery, gameDeliveryHref } from '@/lib/workbench/game-export-client';
+import { readGameDelivery, gameDeliveryHref, deliveryStates } from '@/lib/workbench/game-export-client';
 import {
   publishEditorSession,
   removeEditorSession,
@@ -39,12 +39,6 @@ type Delivery = {
     summary: string;
     engine: { status: string; version?: string };
   } | null;
-};
-const states: Record<string, string> = {
-  awaiting_agent: '等待 WorkBuddy 接入',
-  assets_installed: '资源已就位，等待代码接入',
-  integrated: '代码已接入',
-  needs_attention: '接入需要处理',
 };
 const kinds: Record<string, string> = {
   interactable: '交互物',
@@ -283,7 +277,7 @@ export function GodotExportDialog({ initialOffer = null }: { initialOffer?: Godo
           <>
             <p className="flex items-center gap-2 font-medium">
               <CheckCircle2 className="size-5 text-[var(--theme-success)]" />
-              {states[delivery.status] || delivery.status}
+              {deliveryStates[delivery.status] || delivery.status}
             </p>
             <p>
               已保存到 <strong>{delivery.project.name}</strong>

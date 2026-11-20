@@ -4,7 +4,7 @@
 | --- | --- |
 | 记录时间 | 自 2026-11-19T23:06:33-05:00 起，美东时间 |
 | 基准提交 | `b9cf677edd5e`，分支 `paper-vbyc` |
-| 实现提交 | `612e4b8` 开发与构建门禁，`0905ebf` Godot 账本，`472892e` 原生执行与论文协议，`dca46db` API 安装，`2f14c1c` 资产查询，`76cd84b` Node 执行与查询，`8415cf4` 跨平台回归入口，`252f07f` 工程锁崩溃窗口，`b6a4331` 失败绘图的计量与回放 |
+| 实现提交 | `612e4b8` 开发与构建门禁，`0905ebf` Godot 账本，`472892e` 原生执行与论文协议，`dca46db` API 安装，`2f14c1c` 资产查询，`76cd84b` Node 执行与查询，`8415cf4` 跨平台回归入口，`252f07f` 工程锁崩溃窗口，`b6a4331` 失败绘图的计量与回放，`3569f40` 技术中断与真实审查分类 |
 | 跟进问题 | DEV-01 |
 
 ## DEV-01
@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | 任务命令 | 浏览器断线、原生已接单、产物写完而最终任务尚未登记、旧执行者仍存活 | 按原请求身份恢复。已保存产物的发布重放核对文件哈希。未能确定远端是否接单时保留待核验状态。[任务回归](../../../tests/task-isolation/paid-recovery.mjs) · [原生回执](../../../tests/workbench-adapters/native-recovery.mjs) |
 | 动画 | 授权后中断、Job 绑定前后重启、修订与生成交错、过期媒体链接 | 原授权和 Job 可关联，回执区分生效与当前版本。按段依次请求 4、8、16 张 PNG，热路径分别读取 4、8、16 张原帧。清单损坏时重验源证据，源帧不符时拒绝读取。[原生回归](../../../Tools/SpritePipeline/tests/test_open_motion_recovery_media.py) |
-| 论文对照 | 合法额外首帧、异常额外帧、预算不足、旧协议回放 | 对冻结条件、回执、已知 usage、原始帧与播放帧分别核验；v2 档案沿用原规则。夹具中初次绘图 1.00 美元，错帧修补 2.50 美元，重启后计两次、已知共 3.50 美元。没有上游 Job ID 但已知收费的回包仍计入原尝试。[论文回归](../../../Tools/SpritePipeline/tests/test_paper_experiment.py) |
+| 论文对照 | 合法额外首帧、异常额外帧、预算不足、旧协议回放 | 对冻结条件、回执、已知 usage、原始帧与播放帧分别核验；v2 档案沿用原规则。夹具中初次绘图 1.00 美元，错帧修补 2.50 美元，重启后计两次、已知共 3.50 美元。没有上游 Job ID 但已知收费的回包仍计入原尝试。修补失败或结果未知计入技术中断，确有第二次审查未通过才计入第二次非通过。[论文回归](../../../Tools/SpritePipeline/tests/test_paper_experiment.py) |
 | 工程交付 | 并行安装与接入、工程账本写入失败、登记副本更新前中断 | 以工程内账本恢复，复用已有安装和采用证据。macOS 上的工程锁故障套件覆盖 16 项；缺少原子发布能力时锁不会占住工程。Godot 4.7.2 无头验证导入、实际播放、帧事件、暂停及动画合并，交互物导出另通过 76 项引擎断言。[交付测试](../../../tests/game-export/install-lock.mjs) · [引擎测试](../../../tests/game-engineering/run.mjs) |
 | 读取与协议 | 旧任务、目录局部缺失、跨进程重建、媒体传输、旧 Bridge | 稳定轮询原任务正文 0 字节。新预览按来源定位；旧导入记录仍可采用。Web 先确认服务身份，旧服务或错误工作区收不到制作请求。MCP 保留完整严格对象与纯文本分页。[历史](../../../tests/task-isolation/history.mjs) · [跨入口](../../../tests/image-edit/transport.mjs) · [工作区配对](../../../tests/workbench-http/pairing.mjs) |
 | 工具链 | 干净 API-only 安装及跨语言导入 | Python 3.11 和 3.13 解析对应的锁定 NumPy。干净 API 环境可启动真实 HTTP 服务，未安装 Gradio。检查 273 个 Node/Web 生产模块的 645 条静态值依赖，循环数为 0。Python 的 service.py 从 3,910 行降至 2,377 行，执行和产物校验保留在独立模块。[安装脚本](../../../scripts/setup-sprite-pipeline.mjs) · [依赖图断言](../../../tests/task-isolation/dependency-graph.mjs) |
@@ -36,9 +36,19 @@
 
 复验命令为 `node tests/task-isolation/benchmark.mjs 100 2048 0`、`node tests/task-isolation/benchmark.mjs 1000 128 25` 和 `node tests/task-isolation/benchmark.mjs 10000 8 50`。[基准实现](../../../tests/task-isolation/benchmark.mjs)
 
+### 托管运行器对照
+
+同一提交 `73df0e3` 的三平台作业均通过。各行是对应 GitHub 托管运行器的一次测量，硬件、虚拟化和文件系统不同。三组规模的稳定查询均读取 0 B 任务正文。[三平台作业与原始日志](https://github.com/aaaarthur666-design/2DGameDevWorkbench/actions/runs/44676200890)
+
+| 托管运行器 | 100 条 since p95 | 1,000 条 since p95 | 10,000 条 since p95 | 10,000 条首次重建 | 10,000 条进程峰值 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Linux x64，Node 24.22.2 | 3.0 ms | 16.1 ms | 99.9 ms | 1.64 s | 170 MiB |
+| macOS arm64，Node 24.22.3 | 5.6 ms | 8.3 ms | 129.0 ms | 1.99 s | 175 MiB |
+| Windows x64，Node 24.22.2 | 2.6 ms | 20.0 ms | 83.0 ms | 4.11 s | 150 MiB |
+
 ## 开发环境验证
 
-从已提交源码在临时目录重新 `npm ci`，安装 495 个依赖，冷开发、生产构建、生产健康检查及首页通过。在独立 Python 3.13 环境执行真实 `--api-only` 安装及 `pip check`，从空数据目录启动 Uvicorn 并读取 `/health`；其 site-packages 约 86 MiB。工作机还执行了 Python 3.11 最低版本的全新安装。完整配置含 Gradio 的功能测试与无 Gradio 配置分开运行。实际引擎验收使用公开夹具和临时工程。外部制作服务以模拟提供方验证请求次数和用量。
+从已提交源码在临时目录重新 `npm ci`，安装 495 个依赖，冷开发、生产构建、生产健康检查及首页通过。在独立 Python 3.13 环境执行真实 `--api-only` 安装及 `pip check`，从空数据目录启动 Uvicorn 并读取 `/health`；其 site-packages 约 86 MiB。工作机还执行了 Python 3.11 最低版本的全新安装。完整配置含 Gradio 的功能测试与无 Gradio 配置分开运行。本机最终完整 Python 回归含 PixelProp 和 SpritePipeline，894 项通过、1 项仅 Windows 适用的测试跳过，另有 57 项子测试通过。32 个 npm 测试入口逐组复验。实际引擎验收使用公开夹具和临时工程。外部制作服务以模拟提供方验证请求次数和用量。
 
 ## 回退与演进条件
 

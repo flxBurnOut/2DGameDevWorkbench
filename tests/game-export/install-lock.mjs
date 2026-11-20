@@ -15,16 +15,16 @@ import {
 } from '../../lib/workbench/game-export.mjs';
 
 async function childInstall(options) {
-  const { root, manifest, input, mode, oldToken, projectPath, packagePath } = options;
+  const { root, manifest, input, mode, projectPath, packagePath } = options;
   const pause = (type, value = {}) => new Promise((resolve) => {
     process.once('message', resolve);
     process.send({ type, ...value });
   });
-  const mkdir = fs.mkdir;
-  fs.mkdir = async (file, ...args) => {
-    if (mode.endsWith('before-lock') && path.basename(file) === 'install.lock')
+  const lstat = fs.lstat;
+  fs.lstat = async (file, ...args) => {
+    if (mode.endsWith('before-lock') && path.basename(file) === '.install-gate.sqlite')
       await pause('before-lock');
-    return mkdir(file, ...args);
+    return lstat(file, ...args);
   };
   const rename = fs.rename;
   fs.rename = async (file, destination) => {
@@ -34,27 +34,37 @@ async function childInstall(options) {
       throw Object.assign(new Error('receipt write failed'), { code: 'EIO' });
     if (mode === 'complete-crash-mirror' && name === input.deliveryId + '.json') process.exit(78);
     if (mode === 'install-crash-project' && name === 'delivery.json') process.exit(79);
-    return rename(file, destination);
+    await rename(file, destination);
+    if (mode === 'crash-legacy-move' && path.basename(file) === 'install.lock') process.exit(83);
   };
   const writeFile = fs.writeFile;
   fs.writeFile = async (file, ...args) => {
     const name = typeof file === 'string' ? file : '';
-    const owner = name.includes(`${path.sep}install.lock${path.sep}`) && name.endsWith('.json');
+    const owner = path.basename(name).startsWith('install.lock.owner-');
     if (owner && mode === 'fail-owner') throw Object.assign(new Error('owner write failed'), { code: 'EIO' });
+    if (owner && mode === 'crash-before-publication') {
+      await writeFile(file, args[0].slice(0, 31), args[1]);
+      process.exit(74);
+    }
     if ((mode === 'partial-zip' && /package\.zip(?:\.forge-.*\.tmp)?$/.test(name)) ||
         (mode === 'partial-scene' && /object\.tscn(?:\.forge-.*\.tmp)?$/.test(name))) {
       await writeFile(file, args[0].subarray(0, 31), args[1]);
       await new Promise((resolve) => process.send({ type: 'partial-written', file: name }, resolve));
       process.exit(77);
     }
-    const result = await writeFile(file, ...args);
-    if (owner && mode === 'crash-owner') process.exit(75);
-    if (owner && mode === 'hold-owner') await pause('owner-written', { owner: JSON.parse(args[0]) });
-    return result;
+    return writeFile(file, ...args);
   };
   const link = fs.link;
   fs.link = async (file, destination) => {
+    const publishingOwner = path.basename(destination) === 'install.lock';
+    const legacyMarker = path.basename(destination).startsWith('.recover-');
+    if (publishingOwner && mode === 'unsupported-filesystem')
+      throw Object.assign(new Error('No hard links in fixture filesystem'), { code: 'ENOTSUP' });
     await link(file, destination);
+    if (publishingOwner && mode === 'crash-owner') process.exit(75);
+    if (publishingOwner && mode === 'hold-owner') await pause('owner-written', { owner: JSON.parse(await fs.readFile(destination)) });
+    if (legacyMarker && mode === 'crash-legacy-marker') process.exit(82);
+    if (legacyMarker && mode === 'pause-recovery') await pause('legacy-recovery-marker');
     if (mode === 'crash-resource' && destination.includes(`${path.sep}addons${path.sep}workbench_interaction${path.sep}`)) {
       await new Promise(resolve => process.send({ type: 'resource-written', file: destination }, resolve));
       process.exit(76);
@@ -62,9 +72,8 @@ async function childInstall(options) {
   };
   const unlink = fs.unlink;
   fs.unlink = async (file) => {
-    if (mode === 'pause-recovery' && typeof file === 'string' && file.endsWith(`${path.sep}${oldToken}.json`))
-      await pause('before-recovery-unlink');
-    return unlink(file);
+    await unlink(file);
+    if (mode === 'crash-after-release' && path.basename(file) === 'install.lock') process.exit(81);
   };
   if (mode === 'unknown-process') process.kill = () => { throw Object.assign(new Error('permission denied'), { code: 'EPERM' }); };
   syncBuiltinESMExports();
@@ -134,9 +143,7 @@ if (process.argv[2] === '--child') {
   }
   async function absent(file) { await assert.rejects(fs.lstat(file), { code: 'ENOENT' }); }
   async function ownerAt(lock) {
-    const names = await fs.readdir(lock);
-    assert.equal(names.length, 1);
-    return JSON.parse(await fs.readFile(path.join(lock, names[0]), 'utf8'));
+    return JSON.parse(await fs.readFile(lock, 'utf8'));
   }
   async function deadLock(f) {
     const crashed = launch(f, 'crash-owner');
@@ -144,7 +151,15 @@ if (process.argv[2] === '--child') {
     const owner = await ownerAt(f.lock);
     assert.equal(owner.pid, crashed.child.pid);
     assert.equal(owner.host, hostname());
+    assert.equal(owner.version, 2);
     assert.match(owner.token, /^[a-f0-9-]{36}$/);
+    return owner;
+  }
+  async function legacyDeadLock(f) {
+    const owner = { ...await deadLock(f), version: 1 };
+    await fs.unlink(f.lock);
+    await fs.mkdir(f.lock);
+    await fs.writeFile(path.join(f.lock, `${owner.token}.json`), JSON.stringify(owner));
     return owner;
   }
   const tests = [];
@@ -158,12 +173,29 @@ if (process.argv[2] === '--child') {
     assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
     assert.deepEqual((await installGameExport(f.root, manifest, f.input)).changedFiles, []);
   });
-  test('owner publication failures clean the newly created empty lock', async () => {
+  test('owner staging failures leave no lock and release the OS gate', async () => {
     const f = await fixture('owner-failure'), child = launch(f, 'fail-owner');
     assert.equal((await child.message('result')).code, 'EIO');
     assert.equal((await child.exited).code, 0);
     await absent(f.lock);
     assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
+  });
+  test('aborted staging, unsupported links, and exit after release leave the next owner able to proceed', async () => {
+    const f = await fixture('atomic-lock-publication');
+    const staging = launch(f, 'crash-before-publication');
+    assert.equal((await staging.exited).code, 74);
+    await absent(f.lock);
+    const unsupported = launch(f, 'unsupported-filesystem');
+    const rejected = await unsupported.message('result');
+    assert.equal(rejected.code, 'INSTALL_LOCK_PUBLICATION_UNAVAILABLE');
+    assert.match(rejected.error, /支持硬链接/);
+    assert.equal((await unsupported.exited).code, 0);
+    await absent(f.lock);
+    await absent(path.join(f.game, scene));
+    const released = launch(f, 'crash-after-release');
+    assert.equal((await released.exited).code, 81);
+    await absent(f.lock);
+    assert.deepEqual((await installGameExport(f.root, manifest, f.input)).changedFiles, []);
   });
   test('a real exited holder is recovered and already published files are reused', async () => {
     const f = await fixture('crash-recovery');
@@ -205,6 +237,7 @@ if (process.argv[2] === '--child') {
     const f = await fixture('live-holder'), child = launch(f, 'hold-owner');
     const { owner } = await child.message('owner-written');
     await assert.rejects(installGameExport(f.root, manifest, f.input), busy);
+    await assert.rejects(fs.mkdir(f.lock));
     assert.deepEqual(await ownerAt(f.lock), owner);
     child.release();
     const { result } = await child.message('result');
@@ -212,6 +245,13 @@ if (process.argv[2] === '--child') {
     assert.ok(result.changedFiles.length > 0);
     assert.equal((await child.exited).code, 0);
     assert.deepEqual((await installGameExport(f.root, manifest, f.input)).changedFiles, []);
+  });
+  test('a replacement SQLite gate cannot inherit ownership of an existing marker', async () => {
+    const f = await fixture('replaced-os-gate'), owner = await deadLock(f);
+    await fs.unlink(path.join(f.game, 'forge_imports/.install-gate.sqlite'));
+    await assert.rejects(installGameExport(f.root, manifest, f.input), busy);
+    assert.deepEqual(await ownerAt(f.lock), owner);
+    await absent(path.join(f.game, scene));
   });
   test('legacy, empty, malformed, foreign and unprovable process locks remain untouched', async () => {
     const f = await fixture('unknown-holder');
@@ -230,25 +270,31 @@ if (process.argv[2] === '--child') {
     }
     await fs.unlink(file);
     await fs.rmdir(f.lock);
-    await deadLock(f);
-    const contents = await ownerAt(f.lock), child = launch(f, 'unknown-process');
+    const legacy = await legacyDeadLock(f);
+    const legacyFile = path.join(f.lock, `${legacy.token}.json`);
+    const contents = await fs.readFile(legacyFile, 'utf8'), child = launch(f, 'unknown-process');
     assert.match((await child.message('result')).error, busy);
     assert.equal((await child.exited).code, 0);
-    assert.deepEqual(await ownerAt(f.lock), contents);
+    assert.deepEqual(await fs.readFile(legacyFile, 'utf8'), contents);
   });
-  test('a delayed competing recovery cannot remove a replacement holder', async () => {
-    const f = await fixture('concurrent-recovery'), previous = await deadLock(f);
-    const delayed = launch(f, 'pause-recovery', { oldToken: previous.token });
-    await delayed.message('before-recovery-unlink');
-    const winner = launch(f, 'hold-owner'), { owner } = await winner.message('owner-written');
-    assert.notEqual(owner.token, previous.token);
+  test('legacy dead-lock recovery holds its evidence across interrupted migration and competing old writers', async () => {
+    for (const [mode, exitCode] of [['crash-legacy-marker', 82], ['crash-legacy-move', 83]]) {
+      const f = await fixture(mode);
+      await legacyDeadLock(f);
+      assert.equal((await launch(f, mode).exited).code, exitCode);
+      assert.equal((await installGameExport(f.root, manifest, f.input)).installed, true);
+      await absent(f.lock);
+    }
+    const f = await fixture('concurrent-recovery'), previous = await legacyDeadLock(f);
+    const delayed = launch(f, 'pause-recovery');
+    await delayed.message('legacy-recovery-marker');
+    await assert.rejects(installGameExport(f.root, manifest, f.input), busy);
+    // An old process started from the dead v1 owner can unlink only that entry.
+    await fs.unlink(path.join(f.lock, `${previous.token}.json`));
+    await assert.rejects(fs.rmdir(f.lock));
     delayed.release();
-    assert.match((await delayed.message('result')).error, busy);
+    assert.equal((await delayed.message('result')).result.installed, true);
     assert.equal((await delayed.exited).code, 0);
-    assert.deepEqual(await ownerAt(f.lock), owner);
-    winner.release();
-    assert.equal((await winner.message('result')).result.installed, true);
-    assert.equal((await winner.exited).code, 0);
     await absent(f.lock);
     assert.deepEqual((await installGameExport(f.root, manifest, f.input)).changedFiles, []);
   });

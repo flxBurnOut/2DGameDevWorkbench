@@ -183,6 +183,33 @@ def repair_window(count):
     return (1, size) if size >= 4 else None
 
 
+def _real_verdict(report):
+    if report and report.get('state') == 'complete' and report.get('verdict') in ('pass', 'fail', 'uncertain'):
+        return report['verdict']
+    return None
+
+
+def _repair_interruption(attempts, stage, reports):
+    if not attempts:
+        return None
+    attempt = attempts[-1]
+    state = attempt['state']
+    error = attempt.get('error') or {}
+    details = error.get('details') or {}
+    if state == 'unknown':
+        reason = 'repair_submission_unknown'
+    elif state == 'failed':
+        reason = details.get('reason') or details.get('code') or error.get('code') or 'repair_failed'
+    elif state == 'rejected' or (state == 'accepted' and not _real_verdict(reports[-1])):
+        reason = 'repair_review_unavailable'
+    else:
+        return None
+    last_verdict = next((verdict for report in reversed(reports) if (verdict := _real_verdict(report))), None)
+    return {'kind': 'provider_failure', 'reason': reason, 'stage': stage,
+            'repair_state': state, 'repair_request_key': attempt['request_key'],
+            'provider_job_id': attempt.get('provider_job_id'), 'last_review_verdict': last_verdict}
+
+
 def drive_model_only(service, work_id, provider, *, authorized, allow_unsupported_motion=False, max_steps=40):
     """Decide a ``model_only`` copy from the pipeline reviewer alone.
 
@@ -190,6 +217,7 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
     interior redraw is requested with the reviewer's own findings as the
     instruction and the segment is reviewed again; a second non-pass, or a
     segment too short or too costly to redraw, rejects it and stops the run.
+    Failed or uncertain drawing requests interrupt the run at the last real review.
     No person looks at any frame.
     """
     from .checkpoints import Checkpoints
@@ -224,6 +252,12 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
                 raise
         candidate = job.candidates[0]
         runs = candidate.plan_execution.stages
+        interruptions = (_repair_interruption(run.repairs, i, [*run.review_history, run.review])
+                         for i, run in enumerate(runs) if run.state in ('awaiting_review', 'rejected'))
+        failure = next((found for found in interruptions if found), None)
+        if failure and not candidate.frames:
+            status, outcome = 'interrupted', failure
+            break
         stage = next((i for i, r in enumerate(runs) if r.state == 'awaiting_review'), None)
         if stage is None:
             if candidate.frames:
@@ -260,12 +294,20 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
         if refusal is None:
             findings = [c['evidence'] for c in (run.review or {}).get('checks', []) if c.get('status') != 'pass']
             note = ('Fix: ' + (' '.join(findings) or 'the defects reported by the reviewer'))[:700]
+            redraw = {'stage': stage, 'action': 'redraw', 'verdict': verdict, 'window': list(window)}
             try:
                 repairs.create(job_id, 1, stage, token=view['token'], start=window[0], end=window[1], note=note,
                                mode='transition', request_key=f'model-only-s{stage}', authorized=True, provider=provider)
-                decisions.append({'stage': stage, 'action': 'redraw', 'verdict': verdict, 'window': list(window)})
+                decisions.append(redraw)
                 continue
-            except ValidationHarnessError as exc:
+            except Exception as exc:
+                current = checkpoints.run_record(service.store.load(job_id), 1, stage)
+                if failure := _repair_interruption(current.repairs, stage, [*current.review_history, current.review]):
+                    decisions.append(redraw)
+                    status, outcome = 'interrupted', failure
+                    break
+                if not isinstance(exc, ValidationHarnessError):
+                    raise
                 refusal = str(exc)  # Budget or tool limits; never widen them here.
         checkpoints.decide(job_id, 1, stage, token=view['token'], decision='reject', reviewer=MODEL_ONLY_REVIEWER,
                            note='Fixed policy: reviewer did not pass; ' + refusal)
@@ -516,8 +558,13 @@ def retrospective(job_dir, work, adjustments, out):
         'clips': _playback(job, job_dir, out), 'stages': rows, 'alternatives': alternatives,
         'tool_usage': tools, 'cost': cost}
     if current_protocol:
+        interruptions = (_repair_interruption(row['repairs'], row['stage'], row['review_history'])
+                         for row in rows if row['state'] in ('awaiting_review', 'rejected'))
+        repair_outcome = next((found for found in interruptions if found), None)
         if result['clips']:
             result['outcome'] = {'kind': 'complete', 'reason': 'playable'}
+        elif (work.get('experiment') or {}).get('arm') == 'model_only' and repair_outcome:
+            result['outcome'] = repair_outcome
         elif any(row['state'] == 'rejected' for row in rows):
             result['outcome'] = {'kind': 'review_stopped', 'reason': 'segment_rejected'}
         elif failed := next((row for row in rows if row['drawing_error']), None):

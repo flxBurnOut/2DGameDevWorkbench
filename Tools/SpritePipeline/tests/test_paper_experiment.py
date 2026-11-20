@@ -453,7 +453,8 @@ def test_retrospective_budget_and_human_time(chain, tmp_path):
     assert len(clips) == 2 and not excluded
 
 
-def test_model_only_redraws_once_then_accepts(tmp_path, monkeypatch):
+@pytest.mark.parametrize('scenario', ['accepted', 'second_non_pass', 'failed', 'unknown_submission'])
+def test_model_only_redraw_preserves_actual_review_and_drawing_outcome(tmp_path, monkeypatch, scenario):
     from sprite_pipeline.collaboration.contracts import TaskSpec
     from test_interactable_motion import workspace_for
     from test_interactable_state_chain import LampPlanner
@@ -472,18 +473,31 @@ def test_model_only_redraws_once_then_accepts(tmp_path, monkeypatch):
         def __init__(self):
             super().__init__()
             self.outputs = {}
+            self.attempts = 0
+            self.repair_id = None
 
         def submit(self, request):
+            self.attempts += 1
             receipt = super().submit(request)
             # Segment one (input frame + 6), its interior redraw, then segment two from the kept last frame.
             slices = [self.archive[:7], self.archive[1:5], self.archive[6:11]]
-            self.outputs[receipt.provider_job_id] = slices[len(self.outputs)]
-            if len(self.outputs) == 2:
-                service.open_motion_review_registry.clean = True  # the redraw satisfies the scripted reviewer
+            self.outputs[receipt.provider_job_id] = slices[self.attempts - 1]
+            if self.attempts == 2:
+                self.repair_id = receipt.provider_job_id
+                if scenario == 'unknown_submission':
+                    raise ProviderTemporaryError('fixture charged without a confirmed repair result', details={
+                        'submission_unknown': True, 'provider_job_id': self.repair_id,
+                        'response': {'usage': {'type': 'usd', 'usd': 2.5}},
+                    })
+                service.open_motion_review_registry.clean = scenario == 'accepted'
             return replace(receipt, diagnostic_only=False)
 
         def poll(self, identity):
-            return replace(super().poll(identity), images=self.outputs[identity], diagnostic_only=False)
+            result = super().poll(identity)
+            if identity == self.repair_id and scenario == 'failed':
+                return replace(result, status=PollStatus.failed, provider_status='failed', images=[],
+                               error={'code': 'provider_job_failed'}, usage={'type': 'usd', 'usd': 2.5})
+            return replace(result, images=self.outputs[identity], diagnostic_only=False)
 
     service, ws = workspace_for(tmp_path, 'lamp', seed=2202)
     ws.model = LongFirstSegment('lamp')
@@ -496,14 +510,47 @@ def test_model_only_redraws_once_then_accepts(tmp_path, monkeypatch):
     copy = clone_for_arm(service, plan.id, None, 'model_only', 'paper-model-only-redraw')
     service.open_motion_review_registry.clean = False
     summary = drive_model_only(service, copy.id, provider, authorized=True)
-    assert [(d['stage'], d['action']) for d in summary['decisions']] == [
-        (0, 'redraw'), (0, 'adopt_repair'), (0, 'accept'), (1, 'accept')], summary
-    assert summary['status'] == 'complete' and summary['decisions'][0]['window'] == [1, 4]
     job = service.store.load(summary['job_id'])
-    attempt = job.candidates[0].plan_execution.stages[0].repairs[0]
-    assert attempt['repair_level'] == 'window_redraw' and attempt['state'] == 'accepted'
+    run = job.candidates[0].plan_execution.stages[0]
+    [attempt] = run.repairs
+    actions = [(d['stage'], d['action']) for d in summary['decisions']]
+    assert attempt['repair_level'] == 'window_redraw' and summary['decisions'][0]['window'] == [1, 4]
     assert attempt['seed'] == stage_seed(77, 0) and job.candidates[0].seed == 77
+    if scenario == 'accepted':
+        assert actions == [(0, 'redraw'), (0, 'adopt_repair'), (0, 'accept'), (1, 'accept')]
+        assert summary['status'] == 'complete' and attempt['state'] == 'accepted' and provider.attempts == 3
+    elif scenario == 'second_non_pass':
+        assert actions == [(0, 'redraw'), (0, 'adopt_repair'), (0, 'reject')]
+        assert summary['status'] == 'stopped_by_review' and provider.attempts == 2
+        assert attempt['state'] == 'accepted' and run.state == 'rejected'
+        assert run.review['state'] == run.review_history[0]['state'] == 'complete'
+        assert run.review['token'] != run.review_history[0]['token']
+        assert summary['decisions'][-1]['reason'] == 'second non-pass verdict'
+        assert summary['decisions'][-1]['verdict'] == run.review['verdict'] == 'fail'
+    else:
+        state = 'unknown' if scenario == 'unknown_submission' else 'failed'
+        assert actions == [(0, 'redraw')] and summary['status'] == 'interrupted'
+        assert provider.attempts == generation_calls(job) == 2
+        assert run.state == 'awaiting_review' and attempt['state'] == state
+        assert not run.review_history and 'human_decision' not in run.review
+        assert run.review['state'] == 'complete' and run.review['verdict'] == 'fail'
+        assert attempt['provider_job_id'] == provider.repair_id
+        assert attempt['usage']['usd'] == 2.5
+        assert summary['outcome'] == {'kind': 'provider_failure', 'stage': 0,
+                                      'reason': 'repair_submission_unknown' if state == 'unknown' else 'provider_job_failed',
+                                      'repair_state': state, 'repair_request_key': 'model-only-s0',
+                                      'provider_job_id': provider.repair_id, 'last_review_verdict': 'fail'}
+        repeated = drive_model_only(service, copy.id, provider, authorized=True)
+        assert repeated['outcome'] == summary['outcome'] and provider.attempts == 2
+        assert service.store.load(job.job_id).candidates[0].plan_execution.stages[0] == run
     export = tmp_path / 'export'
     retrospective(service.store.job_dir(job.job_id), ws.load(copy.id).model_dump(mode='json'), tmp_path / 'none', export)
     result = json.loads((export / 'retrospective.json').read_bytes())
     assert result['tool_usage'] == {'window_redraw': 1} and result['experiment']['arm'] == 'model_only'
+    assert result['outcome'] == summary['outcome']
+    if scenario != 'accepted':
+        clips, excluded = collect_clips([export])
+        assert not clips and excluded[0]['outcome'] == summary['outcome']
+        blind_pack(clips, tmp_path / 'blind', excluded=excluded)
+        key = json.loads((tmp_path / 'blind-private-key.json').read_bytes())
+        assert key['runs'] == 1 and key['excluded'] == excluded

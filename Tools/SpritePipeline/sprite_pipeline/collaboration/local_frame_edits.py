@@ -65,8 +65,11 @@ def create_local(manager, work_id, body):
                 raise ConflictError('同一命令的内容已改变')
             manager.verify(prior)
             return prior
-        from .experiment_policy import policy_for, REFUSAL
-        if policy_for(manager.s, work_id) == 'redraw_only':
+        from .experiment_policy import experiment_for, REFUSAL
+        experiment = experiment_for(manager.s, work_id)
+        if experiment.get('arm') == 'model_only':
+            raise ConflictError('model_only 实验副本由自动策略裁决，禁止人工局部像素编辑')
+        if experiment.get('repair_policy') == 'redraw_only':
             raise ValidationHarnessError(REFUSAL)
         context = manager.context(work_id, body.expected_revision, body.candidate_index, body.stage_index)
         if context['token'] != body.token:
@@ -116,6 +119,8 @@ def create_local(manager, work_id, body):
             proposed[i] = png
             regions.append(region)
             stats.append({'frame': i + 1, 'changed_inside_pixels': changed, 'protected_changed_pixels': 0, 'editable_pixels': sum((bool(b) for b in bits))})
+        if not sum(item['changed_inside_pixels'] for item in stats):
+            raise ValidationHarnessError('选区内没有任何像素发生变化，未创建空修改备选')
         intent = {'method': 'deterministic', 'goal': body.description, 'preserve': '保持未授权的帧、像素和播放时序'}
         task = {'version': 1, 'id': task_id, 'work_id': work_id, 'revision': work.revision, 'candidate': body.candidate_index, 'stage': body.stage_index, 'source_job': job.job_id, 'source_token': token, 'source_frames': frames, 'fps': job.action.fps, 'loop': job.action.loop, 'start': indices[0], 'end': indices[-1], 'local_frames': indices, 'user_request': body.description, 'expert_suggestions': [], 'intent_source': 'user', 'methods': ['deterministic'], 'intent': intent, 'intent_sha256': digest(intent), 'budget': {'planning': 0, 'generation': 0, 'review': 0}, 'models': {}, 'protocol': 'local_pixels_v1', 'diagnostic': c.diagnostic_only, 'seed': c.seed, 'reference_sha256': hashlib.sha256(ref).hexdigest(), 'state': 'ready', 'created_at': now(), 'updated_at': now(), 'request_key': body.request_key, 'request_identity': identity, 'edit_regions': regions, 'spatial_protection': {'frames': stats, 'regions_sha256': digest(regions)}, 'repair_level': 'deterministic', 'planning_calls': [], 'generation_calls': [], 'review_calls': [], 'usage': {'cost_usd': 0, 'units': 0}, 'provider_job_id': None, 'source_goal': work.spec.description, 'review': {'state': 'local_verified', 'verdict': 'uncertain', 'checks': [], 'summary': '已验证选区外像素；修改目标与播放效果需要人工检查。'}, 'message': '本地备选已保存，请播放后决定是否采用。'}
         task['protection_digest'] = digest(task['spatial_protection'])

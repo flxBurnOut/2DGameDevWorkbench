@@ -171,6 +171,7 @@ class Adjustments:
             # source() already requires an unlocked segment and no submitted
             # continuation. This endpoint is not a frozen checkpoint yet.
             locked.remove(len(frames)-1)
+        pinned = None
         if stage is not None and c.plan_execution.stages[stage].state_checkpoint:
             pinned = c.plan_execution.stages[stage].state_checkpoint['frame']
             locked.add(pinned)
@@ -188,6 +189,7 @@ class Adjustments:
         legacy=frame_attempts(len(frames),c.plan_execution.stages[stage].repairs if stage is not None else [],legacy=True)
         drawings=frame_attempts(len(frames),tasks)
         return {'token':token,'frames':frames,'job_revision':job.revision,'fps':job.action.fps,'locked_frames':sorted(locked),
+                **({'state_checkpoint_frame': pinned} if pinned is not None else {}),
                 'width':job.character.cell_width,'height':job.character.cell_height,
                 'editable_stage_end':editable_end,
                 'attempt_scope':'selected_frames','attempt_limit':ATTEMPT_LIMIT,
@@ -220,6 +222,9 @@ class Adjustments:
                 previous=read_json(receipt)
                 if previous['identity']!=digest(raw):raise ConflictError('同一请求编号用于不同修改，不能重复提交')
                 return self.load(work_id,previous['id'])
+            from .experiment_policy import experiment_for
+            if experiment_for(self.s, work_id).get('arm') == 'model_only':
+                raise ConflictError('model_only 实验副本由自动策略裁决，禁止人工创建修改备选')
             context=self.context(work_id,body.expected_revision,body.candidate_index,body.stage_index)
             if context['token']!=body.token:raise ConflictError('实际画面已改变，请重新选择修改范围')
             methods=self.validate_range(context,body.start,body.end)

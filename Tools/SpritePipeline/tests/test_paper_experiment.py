@@ -398,34 +398,52 @@ def test_redraw_only_copy_refuses_other_repair_tools(chain):
     assert response.status_code >= 400 and REFUSAL in response.text
     assert api.get('adjustments', params={'revision': 1, 'candidate': 1, 'stage': 0}).json()['tasks'] == []
     # The unrestricted source work is untouched by the copy's policy.
-    assert client.post('local-frame-edits', json={**body, 'token': client.get(
-        'adjustments', params={'revision': 1, 'candidate': 1, 'stage': 0}).json()['token']}).status_code == 200
+    src_ctx = client.get('adjustments', params={'revision': 1, 'candidate': 1, 'stage': 0}).json()
+    frame_bytes = client.get('edit-source/1', params={'revision': 1, 'candidate': 1, 'stage': 0, 'token': src_ctx['token']}).content
+    pixels = list(Image.open(io.BytesIO(frame_bytes)).convert('RGBA').getdata())
+    vis_idx, vis_px = next((idx, px) for idx, px in enumerate(pixels) if px[3])
+    vis_hex = '#%02x%02x%02x' % vis_px[:3]
+    target_hex = '#00ff00' if vis_hex != '#00ff00' else '#ff00ff'
+    vis_region = {'frame': 1, 'source_sha256': src_ctx['frames'][1]['sha256'], 'spans': [{'start': vis_idx, 'length': 1}]}
+    # Zero-pixel no-op edits (transparent pixel or identical RGB mapping) are rejected.
+    assert client.post('local-frame-edits', json={**body, 'token': src_ctx['token'], 'request_key': 'noop-transparent'}).status_code == 422
+    assert client.post('local-frame-edits', json={
+        **body, 'token': src_ctx['token'], 'request_key': 'noop-same-color',
+        'palette': [{'source': vis_hex, 'target': vis_hex}], 'frames': [{'region': vis_region}],
+    }).status_code == 422
+    assert client.post('local-frame-edits', json={
+        **body, 'token': src_ctx['token'], 'request_key': 'unrestricted-real-pixel',
+        'palette': [{'source': vis_hex, 'target': target_hex}], 'frames': [{'region': vis_region}],
+    }).status_code == 200
 
 
 def test_review_ablation_is_recomputed_from_the_stored_report():
+    from sprite_pipeline.collaboration.adjustment_comparison import bind_report
     from sprite_pipeline.collaboration.prop_measurements import guard_measurements
 
-    def check(dimension, status, confidence=.95):
-        return {'dimension': dimension, 'status': status, 'confidence': confidence, 'frames': [1, 2], 'evidence': 'e'}
+    def check(dimension, status, confidence=.95, frames=None):
+        return {'dimension': dimension, 'status': status, 'confidence': confidence,
+                'frames': [1, 2] if frames is None else frames, 'evidence': 'e'}
     held = check('transition', 'uncertain', 0)
     report = {'verdict': 'uncertain', 'checks': [check('state_frame', 'pass'), held, check('fixed_parts', 'pass')],
               'expert_review': {'state': 'complete', 'baseline': {'verdict': 'fail'}, 'requires_human_adjudication': [
                   {'dimension': 'transition', 'prior': check('transition', 'fail'), 'proposal': check('transition', 'pass')}]}}
-    assert counterfactual_verdicts(report) == {
+    ablation = counterfactual_verdicts(report)
+    assert {k: v for k, v in ablation.items() if k != 'checks_by_condition'} == {
         'full': 'uncertain', 'baseline_only': 'fail', 'without_probes': 'uncertain',
-        'final_review_wins': 'pass', 'retained_contradictions': 1,
-        'probe_overrides': 0, 'probe_override_details': [],
+        'without_retention': 'pass', 'final_review_wins': 'pass',
+        'retained_contradictions': 1, 'probe_overrides': 0, 'probe_override_details': [],
     }
     plain = {'verdict': 'pass', 'checks': [check('state_frame', 'pass'), check('transition', 'pass'), check('fixed_parts', 'pass')]}
-    assert counterfactual_verdicts(plain) == {
+    plain_ablation = counterfactual_verdicts(plain)
+    assert {k: v for k, v in plain_ablation.items() if k != 'checks_by_condition'} == {
         'full': 'pass', 'baseline_only': None, 'without_probes': 'pass',
-        'final_review_wins': None, 'retained_contradictions': 0,
-        'probe_overrides': 0, 'probe_override_details': [],
+        'without_retention': None, 'final_review_wins': None,
+        'retained_contradictions': 0, 'probe_overrides': 0, 'probe_override_details': [],
     }
     assert counterfactual_verdicts({}) is None
 
-    # Probe override merged into expert_review.requires_human_adjudication (production_review.py path)
-    # must never KeyError and must decouple probe overrides from retained review contradictions.
+    # 2x2 decoupling: retained contradiction on transition + probe override on fixed_parts.
     guarded = guard_measurements(report, {'flags': {'fixed_parts': [3, 4]}})
     guarded['expert_review'] = {**report['expert_review'],
                                 'requires_human_adjudication': [
@@ -436,11 +454,68 @@ def test_review_ablation_is_recomputed_from_the_stored_report():
     assert ablation['full'] == 'uncertain'
     assert ablation['baseline_only'] == 'fail'
     assert ablation['without_probes'] == 'uncertain'
+    assert ablation['without_retention'] == 'uncertain'
     assert ablation['final_review_wins'] == 'pass'
     assert ablation['retained_contradictions'] == 1
     assert ablation['probe_overrides'] == 1
     assert ablation['probe_override_details'][0]['dimension'] == 'fixed_parts'
     assert ablation['probe_override_details'][0]['frames'] == [3, 4]
+
+    # Probe-only expert report: without_probes flips to pass while without_retention stays uncertain.
+    probe_only = guard_measurements(
+        {'verdict': 'pass', 'checks': [check('state_frame', 'pass'), check('transition', 'pass'), check('fixed_parts', 'pass')],
+         'expert_review': {'state': 'complete', 'baseline': {'verdict': 'pass'}, 'requires_human_adjudication': []}},
+        {'flags': {'transition': [4, 5]}},
+    )
+    po = counterfactual_verdicts(probe_only)
+    assert (po['full'], po['without_probes'], po['without_retention'], po['final_review_wins']) == (
+        'uncertain', 'pass', 'uncertain', 'pass')
+
+    # Orthogonal adjustment comparison failure must never be washed out to pass when probe_overrides == 0.
+    compared_fail = bind_report(
+        {'state': 'complete', 'verdict': 'pass',
+         'checks': [check('state_frame', 'pass'), check('transition', 'pass'), check('fixed_parts', 'pass')],
+         'expert_review': {'state': 'complete', 'baseline': {'verdict': 'pass'}, 'requires_human_adjudication': []}},
+        {'state': 'complete', 'verdict': 'fail', 'findings': {
+            'change': {'status': 'pass', 'evidence': 'ok'},
+            'preservation': {'status': 'fail', 'evidence': 'regressed'},
+        }},
+    )
+    cf = counterfactual_verdicts(compared_fail)
+    assert cf['probe_overrides'] == 0
+    assert (cf['full'], cf['without_probes'], cf['without_retention'], cf['final_review_wins']) == (
+        'fail', 'fail', 'fail', 'fail')
+
+    # Dispute proposals must still satisfy grounded_audit distinct-frame minimums.
+    thin_proposal = {'verdict': 'uncertain',
+                     'checks': [check('state_frame', 'pass'), check('transition', 'uncertain', 0), check('fixed_parts', 'pass')],
+                     'expert_review': {'state': 'complete', 'baseline': {'verdict': 'fail'},
+                                       'requires_human_adjudication': [
+                                           {'dimension': 'transition', 'prior': check('transition', 'fail'),
+                                            'proposal': check('transition', 'pass', .99, frames=[2])}]}}
+    thin = counterfactual_verdicts(thin_proposal, frame_count=4)
+    assert thin['without_retention'] == 'uncertain' and thin['final_review_wins'] == 'uncertain'
+
+    # Distinct probe frames on the same dimension are both counted; probe rollback cannot erase a retained contradiction.
+    merged_archive = {
+        'verdict': 'uncertain',
+        'checks': [check('state_frame', 'pass'), check('transition', 'uncertain', 0), check('fixed_parts', 'pass')],
+        'requires_human_adjudication': [
+            {'source': 'deterministic_probe', 'dimension': 'transition', 'frames': [4, 5],
+             'prior': check('transition', 'pass'), 'reason': '测量冲突'},
+        ],
+        'expert_review': {
+            'state': 'complete', 'baseline': {'verdict': 'fail'},
+            'requires_human_adjudication': [
+                {'dimension': 'transition', 'prior': check('transition', 'fail'), 'proposal': check('transition', 'pass')},
+                {'source': 'deterministic_probe', 'dimension': 'transition', 'frames': [2, 3],
+                 'prior': check('transition', 'pass'), 'reason': '测量冲突'},
+            ],
+        },
+    }
+    ma = counterfactual_verdicts(merged_archive)
+    assert ma['probe_overrides'] == 2 and ma['retained_contradictions'] == 1
+    assert ma['without_probes'] == 'uncertain'
 
     # Legacy probe record without explicit source tag on a baseline-only report.
     legacy_probe = {'verdict': 'uncertain',
@@ -937,3 +1012,159 @@ def test_retrospective_refuses_historical_receipt_with_foreign_inner_id(chain, t
     assert failure.value.details['response_job_id'] == 'foreign'
     assert failure.value.details['requested_job_id'] == archived['provider_job_id']
     assert not (tmp_path / 'refused' / 'retrospective.json').exists()
+
+
+def test_v2_replay_keeps_legacy_prompts_and_pose_prompt_boundaries(tmp_path):
+    from sprite_pipeline.collaboration.experiment_requests import _pose_arm_prompt, _single_arm_prompt
+
+    def brief(action, poses, end, pad=''):
+        return '\n'.join([
+            'Appearance: Pixel-art bronze knight holding a straight silver sword' + pad,
+            f'Action: {action}',
+            'Camera: Fixed side-view 2D pixel art camera',
+            'Facing: Body faces screen right',
+            'Drive: Shoulders coil cleanly',
+            'Support: Both boots planted firmly',
+            'Path: Blade arcs smoothly forward',
+            'Timing: Smooth acceleration across frames',
+            f'Poses: {poses}',
+            'Relations: Sword hilt stays gripped in right gauntlet',
+            f'End: {end}',
+            'Boundary: Settle cleanly on front foot',
+        ])
+
+    # Trailing space at exact 1000-char boundary must not trigger prompt rewriting.
+    b = brief('Wind up overhead', 'f2: bend; f6: raise', 'Coiled overhead pose')
+    exact_982 = b + ('x' * (982 - len(b)))
+    assert len(exact_982) == 982
+    assert _pose_arm_prompt(exact_982 + '   ') == 'Hold ending pose: ' + exact_982
+
+    # Long End field is not duplicated in Action, keeping compact pose prompt <= 1000 chars.
+    long_end = 'E' * 260
+    long_brief = brief('Wind up overhead', 'f2: bend; f6: raise', long_end, pad=' ' + 'p' * 360)
+    assert len('Hold ending pose: ' + long_brief) > 1000
+    compact = _pose_arm_prompt(long_brief)
+    assert len(compact) <= 1000 and compact.count(long_end) == 1 and 'Action: Hold ending pose\n' in compact
+
+    # _single_arm_prompt shifts pose-entry fN: landmarks without rewriting mid-prose references.
+    s0 = brief('Wind up overhead', 'f2: knees bend; f6: sword raised', 'Coiled pose', pad=' ' + 'x' * 220)
+    s1 = brief('Slash down', 'f2: compare f4: label stays; f6: low stance', 'Low stance', pad=' ' + 'x' * 220)
+    merged = _single_arm_prompt([{'prompt': s0, 'frames': 8}, {'prompt': s1, 'frames': 8}])
+    assert 'f10: compare f4: label stays; f14: low stance' in merged
+
+    # Legacy protocol v2 keeps verbatim legacy concatenation instead of v3 deduplication.
+    source = (ARCHIVE / 'lamp/A.png').read_bytes()
+    v2_protocol = {'protocol': 2, 'seed': 7, 'fps': 8,
+                   'stages': [{'prompt': s0, 'frames': 8}, {'prompt': s1, 'frames': 8}],
+                   'reference_sha256': sha(source), 'source': {'work_id': 'legacy-v2', 'revision': 1}}
+    recorder = Recording()
+    run_arm('single', source, v2_protocol['stages'], 7, recorder, None, tmp_path / 'v2-single', protocol=v2_protocol)
+    assert recorder.requests[0].prompt == f'{s0} {s1}'
+
+
+def test_redraw_only_handles_internal_state_checkpoint_and_model_only_blocks_human(chain, tmp_path):
+    from sprite_pipeline.collaboration.experiment_policy import is_stage_redraw_range
+    from sprite_pipeline.errors import ConflictError
+
+    # Internal state_checkpoint at frame 5 on an 8-frame stage leaves [1..4] as the valid redraw span.
+    ctx_pinned = {'frames': [{}] * 8, 'locked_frames': [0, 5], 'state_checkpoint_frame': 5}
+    assert is_stage_redraw_range(ctx_pinned, 1, 4)
+    assert not is_stage_redraw_range(ctx_pinned, 6, 7)
+    assert is_stage_redraw_range({'frames': [{}] * 8, 'locked_frames': [0, 5, 7]}, 1, 4)
+    assert not is_stage_redraw_range({'frames': [{}] * 8, 'locked_frames': [0, 4]}, 1, 3)
+    assert is_stage_redraw_range({'frames': [{}] * 16, 'locked_frames': [0, 7], 'state_checkpoint_frame': 7}, 1, 6)
+    assert not is_stage_redraw_range({'frames': [{}] * 16, 'locked_frames': [0, 7], 'state_checkpoint_frame': 7}, 8, 15)
+
+    # Human intervention on a model_only copy is rejected at both API and Checkpoints layers.
+    service, work, engine, _, _ = chain
+    copy = clone_for_arm(service, work.id, None, 'model_only', 'model-only-human-guard')
+    ws = OpenMotionWorkspace(service)
+    started = ws.start(copy.id, 1, copy.plan_sha256)
+    engine.advance(started.job_id, ArchiveProvider(), wait=True)
+    api = TestClient(create_api(service=service), base_url='http://testserver/v1/open-motion/' + copy.id + '/')
+    view = api.get('candidates/1/stages/0').json()
+    assert api.post('review-stage', json={
+        'expected_revision': 1, 'candidate_index': 1, 'stage_index': 0, 'token': view['token'],
+        'decision': 'accept', 'note': 'Attempt human override', 'acknowledge_warnings': True,
+    }).status_code == 409
+    with pytest.raises(ConflictError, match='model_only'):
+        Checkpoints(service).decide(started.job_id, 1, 0, token=view['token'],
+                                    note='Direct human override', decision='accept', acknowledge=True)
+    ctx = api.get('adjustments', params={'revision': 1, 'candidate': 1, 'stage': 0}).json()
+    assert api.post('adjustments', json={
+        'expected_revision': 1, 'candidate_index': 1, 'stage_index': 0, 'token': ctx['token'],
+        'start': 1, 'end': 2, 'user_request': 'Human tweak', 'request_key': 'mo-adj-blocked',
+        'authorized': True, 'max_planning_calls': 1, 'max_generation_calls': 1, 'max_review_calls': 5,
+    }).status_code == 409
+
+
+def test_retrospective_handles_inherited_repairs_rejected_human_seconds_and_blind_pack_guards(chain, tmp_path):
+    service, work, engine, provider, client = chain
+    ws = OpenMotionWorkspace(service)
+    finish(chain)
+    job = service.store.load(work.job_id)
+
+    # Simulate an inherited adjustment job whose stage repair folder is absent (not copied to target job)
+    # and a rejected adjustment with empty decision_note + recorded human_seconds.
+    with service.store.locked_job(job.job_id) as current:
+        current.request.request_key = 'adjustment-inherited-test'
+        current.candidates[0].plan_execution.stages[0].repairs.append({
+            'number': 1, 'mode': 'transition', 'repair_level': 'window_redraw',
+            'state': 'rejected', 'folder': 'provider/missing-repair-folder',
+            'proposed_frames': [{'path': 'provider/missing-repair-folder/000.png', 'sha256': '0' * 64}],
+            'raw_frames': [{'path': 'provider/missing-repair-folder/raw_000.png', 'sha256': '0' * 64}],
+        })
+    adj_dir = ws.directory(work.id) / 'adjustments' / 'rejected-empty-note'
+    adj_dir.mkdir(parents=True)
+    (adj_dir / 'task.json').write_text(json.dumps({
+        'id': 'rejected-empty-note', 'source_job': job.job_id, 'state': 'rejected',
+        'decision_note': '', 'human_seconds': 23, 'repair_level': 'deterministic',
+        'proposed_frames': [], 'raw_frames': [],
+        'planning_calls': [], 'generation_calls': [], 'review_calls': [],
+    }), encoding='utf8')
+    export_dir = tmp_path / 'inherited-export'
+    cost = retrospective(service.store.job_dir(job.job_id), ws.load(work.id).model_dump(mode='json'),
+                         ws.directory(work.id) / 'adjustments', export_dir)
+    assert cost['known_human_seconds'] == 23
+    exported = json.loads((export_dir / 'retrospective.json').read_bytes())
+    assert exported['stages'][0]['repairs'][0]['proposed_archive_unavailable'] is True
+    assert exported['stages'][0]['repairs'][0]['original_archive_unavailable'] is True
+
+    # collect_clips rejects duplicates and recognizes no-job model_only blocked_preflight experiment-run.json.
+    with pytest.raises(ValueError, match='duplicate run directory'):
+        collect_clips([export_dir, export_dir])
+    preflight_dir = tmp_path / 'model-only-preflight'
+    preflight_dir.mkdir()
+    (preflight_dir / 'experiment-run.json').write_text(json.dumps({
+        'work_id': 'w1', 'job_id': None, 'arm': 'model_only', 'protocol': 3,
+        'status': 'blocked_preflight', 'outcome': {'kind': 'local_preflight', 'reason': 'max_total_frames'},
+        'decisions': [],
+    }), encoding='utf8')
+    clips, excluded = collect_clips([export_dir, preflight_dir])
+    assert len(clips) == 1 and len(excluded) == 1
+    assert excluded[0]['status'] == 'blocked_preflight' and excluded[0]['arm'] == 'model_only'
+
+    # blind_pack rejects duplicate clip sources and mixed-dimension frames within a single clip.
+    with pytest.raises(ValueError, match='duplicate clip source'):
+        blind_pack([clips[0], clips[0]], tmp_path / 'dup-pack')
+    mixed_root = tmp_path / 'mixed'
+    mixed_root.mkdir()
+    buf_a, buf_b = io.BytesIO(), io.BytesIO()
+    Image.new('RGBA', (64, 64), (10, 20, 30, 255)).save(buf_a, 'PNG')
+    Image.new('RGBA', (128, 64), (10, 20, 30, 255)).save(buf_b, 'PNG')
+    (mixed_root / '000.png').write_bytes(buf_a.getvalue())
+    (mixed_root / '001.png').write_bytes(buf_b.getvalue())
+    mixed_frames = [{'file': '000.png', 'sha256': sha(buf_a.getvalue())},
+                    {'file': '001.png', 'sha256': sha(buf_b.getvalue())}]
+    with pytest.raises(ValueError, match='size mismatch'):
+        blind_pack([(mixed_root, mixed_frames, 8, {'arm': 'blind'})], tmp_path / 'mixed-pack')
+
+    # blind_pack emits loop metadata, responsive zoom, non-looping default control, and zero leaked arm names.
+    pack = tmp_path / 'clean-pack'
+    blind_pack(clips, pack, excluded=excluded)
+    public = (pack / 'clips.json').read_bytes() + (pack / 'index.html').read_bytes()
+    assert not any(arm.encode() in public for arm in ARMS)
+    items = json.loads((pack / 'clips.json').read_bytes())
+    assert items[0]['loop'] is False
+    html = (pack / 'index.html').read_text(encoding='utf8')
+    assert '播完即停' in html and 'resize' in html

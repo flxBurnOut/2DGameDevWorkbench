@@ -126,7 +126,7 @@ def guard_measurements(report, cues):
             message = f'{labels[dimension]}：模型判通过，' + (
                 '测量有冲突（第 ' + '、'.join(map(str, frames)) + ' 帧）' if frames else str(cues['unavailable']))
             conflicts.append({'source': 'deterministic_probe', 'dimension': dimension, 'frames': frames, 'prior': check, 'reason': message})
-            check = {**check, 'status': 'uncertain', 'confidence': 0, 'evidence': message + '。' + check['evidence']}
+            check = {**check, 'status': 'uncertain', 'confidence': 0, 'evidence': (message + '。' + check['evidence'])[:500]}
         checks.append(check)
     if not conflicts:
         return report

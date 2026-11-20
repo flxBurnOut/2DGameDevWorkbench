@@ -84,12 +84,22 @@ export function maskedDifference(a: Uint8Array, b: Uint8Array, mask: Mask): numb
   return n;
 }
 
-/** T3: integer shift that best realigns the fixed parts of a frame with the reference. */
+/** T3: integer shift that best realigns the fixed parts of a frame with the reference without cropping visible pixels. */
 export function detectOffset(reference: Uint8Array, frame: Uint8Array, width: number, height: number, mask: Mask, radius = 3): Point & { before: number; after: number } {
   const before = maskedDifference(reference, frame, mask);
+  let minX = width, maxX = -1, minY = height, maxY = -1;
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    if (!frame[(y * width + x) * 4 + 3]) continue;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const hasVisible = maxX >= 0;
   let best = { x: 0, y: 0, after: before };
   for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
     if (!dx && !dy) continue;
+    if (hasVisible && (minX + dx < 0 || maxX + dx >= width || minY + dy < 0 || maxY + dy >= height)) continue;
     const score = maskedDifference(reference, translate(frame, width, height, dx, dy), mask);
     if (score < best.after || (score === best.after && Math.abs(dx) + Math.abs(dy) < Math.abs(best.x) + Math.abs(best.y))) best = { x: dx, y: dy, after: score };
   }

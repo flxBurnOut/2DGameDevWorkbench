@@ -164,3 +164,55 @@ def test_fixture_derivations_never_enter_library(chain):
     assert not [r for r in catalog.get('/v1/artworks').json()['data']['assets'] if r.get('derivation')]
     # The hold of the final stage is part of the accepted transition that is reversed.
     assert len(record['frames']) == 6
+
+
+@pytest.mark.parametrize('chain', ['catalog'], indirect=True)
+def test_derived_assets_verify_reverse_hashes_reject_empty_rotation_and_noop_palette_and_stage_atomically(chain, monkeypatch):
+    service, work, provider, client = finish_chain(chain)
+    source = client.get('reference').content
+    base = Image.open(io.BytesIO(source)).convert('RGBA')
+    blank = Image.new('RGBA', base.size, (0, 0, 0, 0))
+
+    # 1. Rotation rejects all-transparent frames after frame 0.
+    rot_body = {
+        'expected_revision': 1, 'candidate_index': 1, 'request_key': 'rot-blank-frame',
+        'method': 'rotation', 'stage_index': 0, 'params': {'angle': 15},
+        'frames_png': [base64.b64encode(png(base)).decode(), base64.b64encode(png(blank)).decode()],
+    }
+    assert client.post('derived', json=rot_body).status_code == 422
+
+    # 2. Palette rejects no-op identity mapping (#RRGGBB -> #RRGGBB).
+    colour = next(p for p in base.getdata() if p[3])
+    hex_colour = '#%02x%02x%02x' % colour[:3]
+    assert client.post('derived', json={
+        'expected_revision': 1, 'candidate_index': 1, 'request_key': 'palette-identity-noop',
+        'method': 'palette', 'state_index': 0, 'name': '无变化',
+        'palette': [{'source': hex_colour, 'target': hex_colour}],
+    }).status_code == 422
+
+    # 3. Atomic staging: interrupted record write leaves no partial folder so retry with same key succeeds.
+    import sprite_pipeline.collaboration.derived_assets as da
+    real_write = da.atomic_write_json
+    called = {'n': 0}
+    def fail_once(*args, **kwargs):
+        called['n'] += 1
+        if called['n'] == 1:
+            raise OSError('simulated write interruption')
+        return real_write(*args, **kwargs)
+    monkeypatch.setattr(da, 'atomic_write_json', fail_once)
+    retry_body = {'expected_revision': 1, 'candidate_index': 1, 'request_key': 'atomic-retry-key',
+                  'method': 'reverse', 'stage_index': 0}
+    with pytest.raises(OSError, match='simulated write interruption'):
+        client.post('derived', json=retry_body)
+    monkeypatch.setattr(da, 'atomic_write_json', real_write)
+    recovered = client.post('derived', json=retry_body)
+    assert recovered.status_code == 200, recovered.text
+
+    # 4. Reverse verifies accepted['frames'] hashes against stored files.
+    job = service.store.load(work.job_id)
+    first_path = service.store.resolve_job_path(job.job_id, job.candidates[0].plan_execution.stages[0].accepted['frames'][0]['path'])
+    first_path.write_bytes(provider.archive[0])
+    assert client.post('derived', json={
+        'expected_revision': 1, 'candidate_index': 1, 'request_key': 'reverse-tampered-source',
+        'method': 'reverse', 'stage_index': 0,
+    }).status_code == 409

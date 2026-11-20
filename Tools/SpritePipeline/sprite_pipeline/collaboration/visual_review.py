@@ -72,7 +72,7 @@ def grounded_audit(result, count):
         c=item.model_dump(mode='json')
         minimum=2 if c['dimension'] in {'rhythm','transition','fixed_parts'} else min(count,3) if c['dimension']=='completeness' else 1
         if len(set(c['frames']))<minimum:
-            c.update(status='uncertain',confidence=0,evidence='帧证据不足以支持这一时序结论；请人工核对。模型原意见：'+c['evidence'])
+            c.update(status='uncertain',confidence=0,evidence=('帧证据不足以支持这一时序结论；请人工核对。模型原意见：'+c['evidence'])[:500])
         checks.append(c)
     verdict=audit_verdict(checks)
     labels={'state_frame':'状态帧可用','transition':'过渡可用','fixed_parts':'固定内容保持','completeness':'完整性','equipment':'装备一致性','rhythm':'节奏'};states={'pass':'模型判定通过','fail':'模型发现问题','uncertain':'证据不足'}

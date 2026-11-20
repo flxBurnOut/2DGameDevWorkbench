@@ -68,7 +68,8 @@ class Replay:
                 pass
             self.input_problems.append({'reason': 'invalid_last_frame', 'stage': i})
         drawing = (protocol['drawing'] if protocol and self.version == PROTOCOL else
-                   freeze_drawing(stages, seed, sha(source), self.size, last_hashes))
+                   freeze_drawing(stages, seed, sha(source), self.size, last_hashes,
+                                  legacy_prompts=(self.version == 2)))
         if drawing['reference_size'] != list(self.size):
             self.input_problems.append({'reason': 'reference_size_mismatch'})
         key = 'model_only_diagnostic' if arm == 'model_only' else arm

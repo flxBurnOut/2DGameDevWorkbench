@@ -37,21 +37,40 @@ def is_stage_redraw_range(context, start, end):
     frame must be selected. When only frame 0 is locked on an even-length stage,
     editable frames are odd (N-1); PixelLab transition redraws require even counts
     (4..16), so the largest legal even span (N-2, anchored at either the first or
-    last editable frame) qualifies as a whole-stage redraw.
+    last editable frame) qualifies as a whole-stage redraw. When an internal
+    ``state_checkpoint`` pins an earlier endpoint, the active playable prefix
+    before that checkpoint defines the eligible interval; otherwise maximal
+    contiguous editable intervals are split around locked frames and the largest
+    legal even span qualifies.
     """
-    editable = sorted(set(range(len(context['frames']))) - set(context['locked_frames']))
+    total = len(context['frames'])
+    locked = set(context['locked_frames'])
     selected = list(range(start, end + 1))
-    if len(selected) < 4 or len(selected) % 2 != 0:
+    if len(selected) < 4 or len(selected) > 16 or len(selected) % 2 != 0:
         return False
+    checkpoint = context.get('state_checkpoint_frame')
+    if checkpoint is None:
+        internal = [f for f in sorted(locked) if 0 < f < total - 1]
+        if len(internal) == 1:
+            checkpoint = internal[0]
+    scope = range(checkpoint) if checkpoint is not None else range(total)
+    editable = [i for i in scope if i not in locked]
     if not editable:
         return False
-    contiguous = editable == list(range(editable[0], editable[-1] + 1))
-    if not contiguous:
-        return selected == editable
-    target_len = len(editable) if len(editable) % 2 == 0 else len(editable) - 1
-    if target_len < 4 or len(selected) != target_len:
+    intervals = []
+    for idx in editable:
+        if not intervals or idx != intervals[-1][-1] + 1:
+            intervals.append([idx])
+        else:
+            intervals[-1].append(idx)
+    candidates = [(min(16, len(span) // 2 * 2), span) for span in intervals]
+    best = max((size for size, _ in candidates), default=0)
+    if best < 4 or len(selected) != best:
         return False
-    return selected == editable[:target_len] or selected == editable[-target_len:]
+    return any(
+        selected == span[:best] or selected == span[-best:]
+        for size, span in candidates if size == best
+    )
 
 
 def require_redraw_scope(service, work_id, body, context, methods):

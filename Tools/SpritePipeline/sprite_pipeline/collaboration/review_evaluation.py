@@ -16,12 +16,12 @@ from ..errors import ConflictError, ValidationHarnessError
 from ..jsonio import atomic_write_json, read_json, inside
 from ..store import JobStore
 from ..vision_evidence import image_part, raster
-from .contracts import digest
+from .contracts import CHARACTER_DIMENSIONS, PROP_DIMENSIONS, digest
 from .motion_evidence import measurements
 from .review_inputs import review_dimensions, observation_content, audit_content
 from .visual_review import Observations, Audit, evidence_panels, grounded_audit
 
-DIMENSIONS = ('completeness', 'equipment', 'rhythm')
+DIMENSIONS = CHARACTER_DIMENSIONS
 CONTEXT_KEYS = {'interactable', 'user_request', 'quality_contract', 'segment_motion_constraints',
                 'actual_stage_boundaries', 'timing_note', 'segment', 'appearance',
                 'seconds_per_frame', 'pixel_cues_not_verdict'}
@@ -249,8 +249,22 @@ class ReviewExperiment:
             return self.record
 
 
-def score_reviews(labels, reports):
-    """Labels are local-only and never part of model inputs. No cherry-picking."""
+def _case_dimensions(expected, dimensions=None):
+    if dimensions is not None:
+        return tuple(dimensions)
+    if set(expected) == set(PROP_DIMENSIONS):
+        return PROP_DIMENSIONS
+    return DIMENSIONS
+
+
+def score_reviews(labels, reports, *, dimensions=None):
+    """Labels are local-only and never part of model inputs. No cherry-picking.
+
+    Supports both character (``CHARACTER_DIMENSIONS``) and interactable
+    (``PROP_DIMENSIONS``) review rubrics. Note metric polarity:
+    ``false_positive`` counts false rejects (truth=pass, pred=fail), while
+    ``false_negative`` counts false accepts (truth=fail, pred=pass).
+    """
     totals = {k: 0 for k in ('criteria', 'correct', 'false_positive', 'false_negative',
         'abstentions', 'missed_defects', 'unnecessary_blocks', 'disputed_overconfidence', 'failed_reports')}
     rows = []
@@ -259,7 +273,7 @@ def score_reviews(labels, reports):
         if report.get('state') != 'complete':
             totals['failed_reports'] += 1
         checks = {c['dimension']: c for c in report.get('checks', [])} if report.get('state') == 'complete' else {}
-        for dimension in DIMENSIONS:
+        for dimension in _case_dimensions(expected, dimensions):
             truth = expected[dimension]['status']
             prediction = criterion_status(checks[dimension]) if dimension in checks else 'uncertain'
             totals['criteria'] += 1

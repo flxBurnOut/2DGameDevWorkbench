@@ -222,22 +222,33 @@ class VisionReviewer:
                 hint='；参数：'+failure['provider_error_parameter'] if failure.get('provider_error_parameter') else ''
                 raise ValidationHarnessError(f"视觉检查请求失败（HTTP {response.status_code}{hint}）；未自动重试", details=failure)
             data=response.json()
+            if not isinstance(data, dict):
+                raise ValueError("incomplete visual review")
+            response_model=data.get("model") if isinstance(data.get("model"), str) else None
+            response_id=data.get("id") if isinstance(data.get("id"), str) else None
+            usage=data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            receipt={"requested_model":info["model"], "response_model":response_model,
+                     "response_id":response_id,"usage":usage}
             if provider == "hunyuan":
                 choices=data.get("choices",[])
-                if len(choices)!=1:
+                if not isinstance(choices, list) or len(choices)!=1 or not isinstance(choices[0], dict):
+                    if on_response is not None:
+                        on_response({**receipt, "output_characters":0, "output_sha256":None})
                     raise ValueError("incomplete visual review")
+                receipt['finish_reason'] = choices[0].get('finish_reason')
                 message=choices[0].get("message",{})
-                if message.get("refusal") or message.get("tool_calls"):
+                if not isinstance(message, dict) or message.get("refusal") or message.get("tool_calls"):
+                    if on_response is not None:
+                        on_response({**receipt, "output_characters":0, "output_sha256":None})
                     raise ValueError("visual review refused")
                 output=message.get("content")
             else:
                 if data.get("status") != "completed":
+                    if on_response is not None:
+                        extra = {"response_status": data["status"]} if isinstance(data.get("status"), str) else {}
+                        on_response({**receipt, **extra, "output_characters":0, "output_sha256":None})
                     raise ValueError("incomplete visual review")
                 output="".join(part.get("text", "") for item in data.get("output", []) if item.get("type")=="message" for part in item.get("content", []) if part.get("type")=="output_text")
-            response_model=data.get("model")
-            receipt={"requested_model":info["model"], "response_model":response_model,
-                     "response_id":data.get("id"),"usage":data.get("usage",{})}
-            if provider == 'hunyuan': receipt['finish_reason'] = choices[0].get('finish_reason')
             if on_response is not None:
                 on_response({**receipt, "output_characters":len(output) if isinstance(output,str) else 0,
                              "output_sha256":hashlib.sha256(output.encode()).hexdigest() if isinstance(output,str) else None})

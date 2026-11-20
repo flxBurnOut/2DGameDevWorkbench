@@ -117,9 +117,11 @@ def guard(result,count,*,resolution=False,version=1):
     def grounded_absence(item):
         return bool(item.contradiction_frames) and item.finding=='unexplained_absence' and (
             item.expected_visibility=='supported' and item.explanation=='none')
+    def has_external_context(item):
+        return bool((set(item.before_frames) | set(item.after_frames)) - set(item.frames))
     definite=any(visible_contradiction(i) or grounded_absence(i) for i in evidence.items)
     unresolved=any(i.finding=='uncertain' or i.observation=='ambiguous' or (
-        i.observation=='not_visible' and (i.explanation in {'none','uncertain'} or not (i.before_frames or i.after_frames)))
+        i.observation=='not_visible' and (i.explanation in {'none','uncertain'} or not has_external_context(i)))
         for i in evidence.items)
     reason=None
     if state==defect_state and not definite:reason='no_grounded_visible_contradiction_or_unexplained_absence'
@@ -127,7 +129,7 @@ def guard(result,count,*,resolution=False,version=1):
     if reason:
         check['classification' if resolution else 'status']='insufficient_evidence' if resolution else 'uncertain'
         check['confidence']=0
-        check['evidence']='当前可见性证据不足以确定外观是否断裂，需结合遮挡、投影和前后帧确认。'+check['evidence'][:420]
+        check['evidence']=('当前可见性证据不足以确定外观是否断裂，需结合遮挡、投影和前后帧确认。'+check['evidence'])[:500]
     # The call's schema can extend Audit/Resolution (e.g. adjustment comparison).
     # Consumers retain their other fields; this only changes the equipment check.
     base=Resolution if resolution else Audit
@@ -143,31 +145,44 @@ def retain_visible_disagreement(selected,traces,count):
     """A lone clearance cannot erase a grounded independent contradiction.
 
     This is an uncertainty gate, not voting for the two experts. Their claim may
-    be mistaken; the visible frames still need a human decision. Keep the raw
-    resolution and all original model responses alongside the guarded result.
+    be mistaken; the visible frames still need a human decision. Also prevent an
+    empty dispute visibility payload (``items=[]``) from silently clearing an
+    independent expert's visibility concern. Keep the raw resolution and all
+    original model responses alongside the guarded result.
     """
     from .visual_review import grounded_audit
     dimension = 'fixed_parts' if any(c['dimension'] == 'fixed_parts' for c in selected['checks']) else 'equipment'
     check=next(c for c in selected['checks'] if c['dimension']==dimension)
     if check['status']!='pass':return selected
-    conflicting=[];frames=set()
+    dispute_items=((traces.get('dispute') or {}).get('equipment_visibility') or {}).get('items') or []
+    conflicting=[];unaddressed=[];frames=set()
     for name,trace in traces.items():
         if not name.startswith('expert_'):continue
         raw=next(c for c in trace['raw_opinion']['checks'] if c['dimension']==dimension)
         if raw.get('status')=='fail' and raw.get('confidence',0)>=.8 and trace['definite_contradiction_reported']:
             conflicting.append(name);frames.update(raw['frames'])
-    if not conflicting:return selected
+        elif not dispute_items and (trace.get('unresolved_visibility') or trace.get('guard_reason') or raw.get('status')!='pass'):
+            unaddressed.append(name);frames.update(raw['frames'])
+            for finding_item in (trace.get('equipment_visibility') or {}).get('items') or []:
+                frames.update(finding_item.get('frames') or [])
+    triggered=conflicting or unaddressed
+    if not triggered:return selected
     value=copy.deepcopy(selected)
     item=next(c for c in value['checks'] if c['dimension']==dimension)
+    prefix=('独立专家提出了具体帧中的外观矛盾，复核意见相反，尚未由实际画面裁定；不能直接通过。' if conflicting
+            else '独立专家提出了可见性疑点，复核未提供具体对象的可见性核对证据；不能直接通过。')
+    reason=('clearing_independent_visible_contradiction_requires_actual_frame_adjudication' if conflicting
+            else 'clearing_independent_visibility_concern_without_evidence')
     item.update(status='uncertain',confidence=0,frames=sorted(frames|set(item['frames'])),
-        evidence='独立专家提出了具体帧中的外观矛盾，复核意见相反，尚未由实际画面裁定；不能直接通过。'+item['evidence'][:400])
+        evidence=(prefix+item['evidence'])[:500])
     pending=value.setdefault('requires_human_adjudication',[])
     if not any(p['dimension']==dimension for p in pending):
-        prior=next(c for c in traces[conflicting[0]]['raw_opinion']['checks'] if c['dimension']==dimension)
+        prior=next(c for c in traces[triggered[0]]['raw_opinion']['checks'] if c['dimension']==dimension)
         pending.append({'dimension':dimension,'prior':copy.deepcopy(prior),'proposal':copy.deepcopy(check),
-            'reason':'clearing_independent_visible_contradiction_requires_actual_frame_adjudication'})
+            'reason':reason})
     value['visibility_conflict']={'state':'needs_human_adjudication','dimension':dimension,
-        'independent_opinions':conflicting,'frames':item['frames'],'rule':'retain_conflicting_evidence_not_majority_vote'}
+        'independent_opinions':triggered,'frames':item['frames'],
+        'rule':'retain_conflicting_evidence_not_majority_vote' if conflicting else 'require_visibility_evidence_to_clear_expert_uncertainty'}
     verdict,checks,summary=grounded_audit(Audit.model_validate({k:value[k] for k in ('summary','checks')}),count)
     value.update(verdict=verdict,checks=checks,summary=summary)
     return value

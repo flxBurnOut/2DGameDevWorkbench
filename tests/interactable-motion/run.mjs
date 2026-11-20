@@ -74,6 +74,16 @@ try {
     const realigned = tools.translate(shifted, width, height, offset.x, offset.y);
     assert.equal(tools.maskedDifference(reference.pixels, realigned, tools.boxMask(width, height, [{ x0: 2, y0: 0, x1: width - 2, y1: height - 1 }])), 0);
 
+    // T3 must skip shifts that would crop visible foreground pixels off the canvas edge.
+    const edgeRef = new Uint8Array(4 * 32 * 32);
+    const edgeFrame = new Uint8Array(4 * 32 * 32);
+    edgeRef.set([200, 100, 50, 255], (10 * 32 + 10) * 4);
+    edgeFrame.set([200, 100, 50, 255], (10 * 32 + 11) * 4);
+    edgeFrame.set([90, 90, 220, 255], (15 * 32 + 0) * 4); // visible pixel at x=0
+    const edgeFixed = tools.boxMask(32, 32, [{ x0: 8, y0: 8, x1: 14, y1: 14 }]);
+    const edgeOffset = tools.detectOffset(edgeRef, edgeFrame, 32, 32, edgeFixed, 2);
+    assert.equal(edgeOffset.x, 0, 'detectOffset must not crop visible pixel at x=0');
+
     const noisy = new Uint8Array(4 * 25);
     noisy.set([9, 9, 9, 255], 4 * 12); // isolated pixel
     noisy.set([9, 9, 9, 10], 0);   // faint pixel

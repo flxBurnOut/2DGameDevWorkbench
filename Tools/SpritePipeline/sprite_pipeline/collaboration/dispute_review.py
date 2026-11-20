@@ -131,7 +131,7 @@ def apply_resolution(augmented, result, count):
                 human_adjudication.append({'dimension':item.dimension,'prior':copy.deepcopy(prior),
                     'proposal':copy.deepcopy(proposed),'reason':'clearing_previous_concern_requires_actual_frame_adjudication'})
                 proposed.update(status='uncertain',confidence=0,
-                    evidence='复核建议取消原有问题或疑点，仍须实际画面确认；未自动变为通过。'+item.evidence[:420])
+                    evidence=('复核建议取消原有问题或疑点，仍须实际画面确认；未自动变为通过。'+item.evidence)[:500])
             checks[index]=proposed
     verdict,checked,summary=grounded_audit(Audit(summary=result.summary,checks=checks),count)
     return {'checks':checked,'verdict':verdict,'summary':summary,'resolution':result.model_dump(mode='json'),

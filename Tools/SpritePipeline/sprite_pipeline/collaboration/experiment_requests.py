@@ -11,7 +11,7 @@ from .execution import stage_seed
 
 
 PROTOCOL = 3
-_POSE_FRAME = re.compile(r'\bf(\d+):')
+_POSE_FRAME = re.compile(r'(^|;\s*)f(\d+):')
 _BRIEF_ORDER = ('appearance', 'action', 'camera', 'facing', 'drive', 'support',
                 'path', 'timing', 'poses', 'relations', 'end', 'boundary')
 _FINAL_LABELS = {'end', 'boundary'}
@@ -51,7 +51,7 @@ def _single_arm_prompt(stages):
     when naively joined are deterministically deduplicated across shared lines.
     Never truncates; over-cap prompts still fail local preflight transparently.
     """
-    joined = ' '.join(stage['prompt'] for stage in stages)
+    joined = ' '.join(stage['prompt'].strip() for stage in stages).strip()
     if len(stages) <= 1 or len(joined) <= PIXELLAB_ACTION_MAX_CHARACTERS:
         return joined
     parsed = [_parse_structured_brief(stage['prompt']) for stage in stages]
@@ -61,7 +61,7 @@ def _single_arm_prompt(stages):
     offset = 0
     pose_parts = []
     for stage, fields in zip(stages, parsed):
-        shifted = _POSE_FRAME.sub(lambda m, base=offset: f'f{int(m.group(1)) + base}:', fields['poses'])
+        shifted = _POSE_FRAME.sub(lambda m, base=offset: f'{m.group(1)}f{int(m.group(2)) + base}:', fields['poses'])
         pose_parts.append(shifted)
         offset += stage['frames']
     for key in _BRIEF_ORDER:
@@ -82,15 +82,16 @@ def _pose_arm_prompt(prompt):
     the prefix pushes a structured 12-line brief past the provider cap, extract
     its endpoint-defining lines deterministically without silent truncation.
     """
-    raw = 'Hold ending pose: ' + prompt
+    cleaned = prompt.strip()
+    raw = 'Hold ending pose: ' + cleaned
     if len(raw) <= PIXELLAB_ACTION_MAX_CHARACTERS:
         return raw
-    fields = _parse_structured_brief(prompt)
+    fields = _parse_structured_brief(cleaned)
     if not fields:
         return raw
     lines = [
         f"Appearance: {fields['appearance']}",
-        f"Action: Hold ending pose: {fields['end']}",
+        'Action: Hold ending pose',
         f"Camera: {fields['camera']}",
         f"Facing: {fields['facing']}",
         f"Relations: {fields['relations']}",
@@ -139,7 +140,7 @@ def pipeline_prompts(work):
     return [call['prompt'] for call in requests]
 
 
-def freeze_drawing(stages, seed, reference_sha256, size, last_sha256, *, budget=None):
+def freeze_drawing(stages, seed, reference_sha256, size, last_sha256, *, budget=None, legacy_prompts=False):
     """Record static payloads and how dynamic inputs will be selected."""
     def request(kind, stage, count, prompt, first, last):
         return {'kind': kind, 'stage': stage, 'count': count, 'prompt': prompt.strip(),
@@ -155,7 +156,9 @@ def freeze_drawing(stages, seed, reference_sha256, size, last_sha256, *, budget=
                         {'kind': input_kind, 'stage': i - 1} if i else reference, end_conditions[i])
                 for i, stage in enumerate(stages)]
 
-    poses = [request('pose', i, 4, _pose_arm_prompt(stage['prompt']), reference, None)
+    pose_prompt = (lambda p: 'Hold ending pose: ' + p) if legacy_prompts else _pose_arm_prompt
+    single_prompt = (lambda st: ' '.join(s['prompt'] for s in st)) if legacy_prompts else _single_arm_prompt
+    poses = [request('pose', i, 4, pose_prompt(stage['prompt']), reference, None)
              for i, stage in enumerate(stages) if targets[i] is None]
     pose_targets = [target or {'kind': 'pose_endpoint', 'stage': i} for i, target in enumerate(targets)]
     blind = segments(targets, 'playback_endpoint')
@@ -164,7 +167,7 @@ def freeze_drawing(stages, seed, reference_sha256, size, last_sha256, *, budget=
     checked = segments(targets, 'accepted_endpoint')
     schedules = {
         'single': [request('clip', 0, sum(s['frames'] for s in stages),
-                           _single_arm_prompt(stages), reference, targets[-1])],
+                           single_prompt(stages), reference, targets[-1])],
         'blind': blind,
         'keyframe_first': [*poses, *segments(pose_targets, 'playback_endpoint')],
         'model_only': checked,

@@ -14,6 +14,8 @@ import binascii
 import hashlib
 import io
 import re
+import tempfile
+from pathlib import Path
 from typing import Literal
 
 from PIL import Image
@@ -153,7 +155,14 @@ class DerivedAssets:
             raise ConflictError('只能从已接受的过渡派生')
         hold = job.request.open_plan.plan.quality.interactable.hold_frames if stage == len(job.request.open_plan.plan.stages) - 1 else 0
         frames = run.accepted['frames']
-        return [self.s.store.resolve_job_path(job.job_id, f['path']) for f in frames + [frames[-1]] * hold], run.accepted
+        items = []
+        for entry in frames + [frames[-1]] * hold:
+            path = self.s.store.resolve_job_path(job.job_id, entry['path'])
+            blob = path.read_bytes()
+            if hashlib.sha256(blob).hexdigest() != entry['sha256']:
+                raise ConflictError('来源过渡帧内容已改变，不能派生倒放')
+            items.append(blob)
+        return items, run.accepted
 
     def _state_bytes(self, job, candidate, state):
         if state['stage'] is None:
@@ -181,11 +190,15 @@ class DerivedAssets:
             chain = state_images(job, candidate)
             source, params, kind = {}, dict(body.params), 'transition'
             if body.method == 'reverse':
-                paths, accepted = self._chain_frames(job, candidate, body.stage_index)
-                data = [p.read_bytes() for p in reversed(paths)]
+                forward, accepted = self._chain_frames(job, candidate, body.stage_index)
+                data = list(reversed(forward))
                 edge = transition(plan, body.stage_index)
                 name = f"{edge['to_state']} → {edge['from_state']}"
-                source = {'stage': body.stage_index, 'checkpoint_token': accepted['token'], 'frames': [hashlib.sha256(d).hexdigest() for d in reversed(data)]}
+                base = next((s for s in chain if s['stage'] == (body.stage_index - 1 if body.stage_index else None)), None)
+                start_match = bool(base and hashlib.sha256(data[-1]).hexdigest() == base['sha256'])
+                source = {'stage': body.stage_index, 'checkpoint_token': accepted['token'],
+                          'frames': [hashlib.sha256(d).hexdigest() for d in forward],
+                          'endpoint_matches_start_state': start_match}
             elif body.method == 'rotation':
                 edge = transition(plan, body.stage_index)
                 base = next((s for s in chain if s['stage'] == (body.stage_index - 1 if body.stage_index else None)), None)
@@ -197,6 +210,8 @@ class DerivedAssets:
                 # Provenance: the draft must start exactly at the confirmed starting state.
                 if images[0].tobytes() != _rgba(base_bytes, size).tobytes():
                     raise ConflictError('旋转草稿的首帧必须与起始状态图逐像素一致')
+                if any(im.getchannel('A').getbbox() is None for im in images):
+                    raise ValidationHarnessError('旋转草稿不能包含全透明空白帧')
                 data = [_png(i) for i in images]
                 name = f"{edge['from_state']} → {edge['to_state']}（旋转草稿）"
                 source = {'stage': body.stage_index, 'base_state': base['name'], 'base_sha256': base['sha256']}
@@ -219,11 +234,11 @@ class DerivedAssets:
                 changed = 0
                 for i in range(count):
                     rgb = bytes(pixels[4 * i:4 * i + 3])
-                    if mask[i] and pixels[4 * i + 3] and rgb in pairs:
+                    if mask[i] and pixels[4 * i + 3] and rgb in pairs and pairs[rgb] != rgb:
                         pixels[4 * i:4 * i + 3] = pairs[rgb]
                         changed += 1
                 if not changed:
-                    raise ValidationHarnessError('所选颜色在区域内没有出现，未生成新的状态图')
+                    raise ValidationHarnessError('所选颜色在区域内没有实际变化，未生成新的状态图')
                 image.frombytes(bytes(pixels))
                 data = [_png(image)]
                 name = body.name.strip()
@@ -240,28 +255,33 @@ class DerivedAssets:
                 source = {'upload_sha256': hashlib.sha256(payload).hexdigest()}
             if kind == 'transition' and not 2 <= len(data) <= 64:
                 raise ValidationHarnessError('派生过渡需要 2–64 帧')
-            folder.mkdir(parents=True)
-            frames = []
-            for i, item in enumerate(data):
-                file = f'{i:03d}.png'
-                self.s._atomic_write_bytes(folder / file, item)
-                frames.append({'file': file, 'sha256': hashlib.sha256(item).hexdigest()})
-            record = {
-                'version': 1, 'id': derived_id, 'work_id': work_id, 'revision': work.revision, 'job_id': job.job_id,
-                'candidate': body.candidate_index, 'plan_sha256': job.request.open_plan.plan_sha256,
-                'kind': kind, 'method': body.method, 'method_label': METHODS[body.method], 'name': name[:120],
-                'source': source, 'source_stage': body.stage_index if kind == 'transition' else source.get('stage'),
-                'params': params, 'note': body.note.strip(), 'frames': frames,
-                'fps': job.action.fps, 'loop': False, 'width': size[0], 'height': size[1],
-                'state': 'ready', 'review': None, 'created_at': now(), 'updated_at': now(),
-                'request_key': body.request_key, 'request_identity': identity,
-                'usage': {'planning': 0, 'generation': 0, 'review': 0},
-                # Fixture jobs never enter the library, like their state chains.
-                'diagnostic': job.request.provider == 'fixture',
-            }
-            record['token'] = digest({'frames': frames, 'source': source, 'method': body.method, 'params': params})
-            record['asset_id'] = f"{ASSET_PREFIX}{work_id}:{derived_id}"
-            atomic_write_json(folder / 'record.json', record)
+            staging = self.root(work_id) / 'staging'
+            staging.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=staging) as tmp:
+                tmp_folder = Path(tmp) / 'derived'
+                tmp_folder.mkdir()
+                frames = []
+                for i, item in enumerate(data):
+                    file = f'{i:03d}.png'
+                    self.s._atomic_write_bytes(tmp_folder / file, item)
+                    frames.append({'file': file, 'sha256': hashlib.sha256(item).hexdigest()})
+                record = {
+                    'version': 1, 'id': derived_id, 'work_id': work_id, 'revision': work.revision, 'job_id': job.job_id,
+                    'candidate': body.candidate_index, 'plan_sha256': job.request.open_plan.plan_sha256,
+                    'kind': kind, 'method': body.method, 'method_label': METHODS[body.method], 'name': name[:120],
+                    'source': source, 'source_stage': body.stage_index if kind == 'transition' else source.get('stage'),
+                    'params': params, 'note': body.note.strip(), 'frames': frames,
+                    'fps': job.action.fps, 'loop': False, 'width': size[0], 'height': size[1],
+                    'state': 'ready', 'review': None, 'created_at': now(), 'updated_at': now(),
+                    'request_key': body.request_key, 'request_identity': identity,
+                    'usage': {'planning': 0, 'generation': 0, 'review': 0},
+                    # Fixture jobs never enter the library, like their state chains.
+                    'diagnostic': job.request.provider == 'fixture',
+                }
+                record['token'] = digest({'frames': frames, 'source': source, 'method': body.method, 'params': params})
+                record['asset_id'] = f"{ASSET_PREFIX}{work_id}:{derived_id}"
+                atomic_write_json(tmp_folder / 'record.json', record)
+                tmp_folder.rename(folder)
             return record
 
     def decide(self, work_id, derived_id, body: DerivedDecision):

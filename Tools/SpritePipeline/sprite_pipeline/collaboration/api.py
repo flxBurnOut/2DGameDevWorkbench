@@ -394,6 +394,8 @@ def create_router(service):
     def review(work_id: str, body: Review):
         with workspace.lock(work_id):
             work = current(work_id, body.expected_revision)
+            if (work.experiment or {}).get('arm') == 'model_only':
+                raise ConflictError('model_only 实验副本由自动策略裁决，禁止人工通过候选')
             job = service.approve_candidate(work.job_id, body.candidate_index, reviewer="open-motion-user",
                 acknowledge_warnings=body.acknowledge_warnings, expected_frames=body.candidate_sha256, review_note=body.note,human_seconds=body.human_seconds)
         return command('review', work, job=job)
@@ -415,6 +417,8 @@ def create_router(service):
         from .checkpoints import Checkpoints
         with workspace.lock(work_id):
             work = current(work_id,body.expected_revision)
+            if (work.experiment or {}).get('arm') == 'model_only':
+                raise ConflictError('model_only 实验副本由自动策略裁决，禁止人工裁决分段')
             job = Checkpoints(service).decide(work.job_id,body.candidate_index,body.stage_index,
                 token=body.token,note=body.note,decision=body.decision,acknowledge=body.acknowledge_warnings,
                 anchor_frame=body.anchor_frame,acknowledge_trim=body.acknowledge_trim,human_seconds=body.human_seconds)
@@ -432,6 +436,8 @@ def create_router(service):
         from ..providers import get_provider
         with workspace.lock(work_id):
             work=current(work_id,body.expected_revision)
+            if (work.experiment or {}).get('arm') == 'model_only':
+                raise ConflictError('model_only 实验副本由自动策略裁决，禁止人工发起局部修复')
             _, job = LocalRepairs(service).create(work.job_id,body.candidate_index,body.stage_index,token=body.token,
                 start=body.start,end=body.end,note=body.note,mode=body.mode,request_key=body.request_key,
                 authorized=body.generation_authorized,provider=get_provider(work.spec.provider,service.settings),with_job=True)
@@ -442,6 +448,8 @@ def create_router(service):
         from .repairs import LocalRepairs
         with workspace.lock(work_id):
             work=current(work_id,body.expected_revision)
+            if (work.experiment or {}).get('arm') == 'model_only':
+                raise ConflictError('model_only 实验副本由自动策略裁决，禁止人工裁决局部修复')
             job = LocalRepairs(service).decide(work.job_id,body.candidate_index,body.stage_index,body.attempt,body.token,body.note,body.decision)
         return command('review-repair', work, job=job)
 

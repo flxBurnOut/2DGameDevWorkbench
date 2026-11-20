@@ -172,7 +172,7 @@ class Checkpoints:
                 from .adjustment_review import add_accepted_goals
                 contract=add_accepted_goals(contract,self.s._candidate(job,index),stage)
                 audit = self.call(job_id,index,stage,'audit',audit_content(pictures,contract,job.action.fps,segment=True),Audit,len(paths))
-                if {c.dimension for c in audit.checks} != set(review_dimensions(prop_context)) or any(f > len(paths) for c in audit.checks for f in c.frames):
+                if {c.dimension for c in audit.checks} != set(review_dimensions(prop_context)) or any(f < 1 or f > len(paths) for c in audit.checks for f in c.frames):
                     raise ValidationHarnessError('分段验收证据无效')
                 verdict,checks,summary = grounded_audit(audit,len(paths))
                 report = {'state':'complete','verdict':verdict,'checks':checks,'summary':summary,'model_audit':audit.model_dump(mode='json')}
@@ -220,6 +220,10 @@ class Checkpoints:
             raise ValidationHarnessError('请填写实际检查结论并选择确认或不合格')
         with self.s.store.operation_lock(job_id,'open_plan',timeout_seconds=0.2):
             job = self.s.store.load(job_id); run = self.run_record(job,index,stage)
+            from .experiment_policy import experiment_for
+            from .experiment import MODEL_ONLY_REVIEWER
+            if job.request.open_plan and experiment_for(self.s, job.request.open_plan.work_id).get('arm') == 'model_only' and reviewer != MODEL_ONLY_REVIEWER:
+                raise ConflictError('model_only 实验副本由自动策略裁决，禁止人工介入解锁分段')
             evidence = self.evidence(job,index,stage)
             end = len(evidence['frames']) - 1 if anchor_frame is None else anchor_frame
             if type(end) is not int or not 0 <= end < len(evidence['frames']):

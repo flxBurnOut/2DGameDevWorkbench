@@ -241,6 +241,16 @@ def _model_interruption(job, experiment, frame_budget):
         return None
     for candidate in job.candidates:
         for stage, run in enumerate(candidate.plan_execution.stages):
+            if run.state_checkpoint and run.state_checkpoint.get('reviewer') != MODEL_ONLY_REVIEWER:
+                return {'kind': 'protocol_violation', 'reason': 'human_intervention_in_model_only', 'stage': stage}
+            if run.accepted and run.accepted.get('reviewer') != MODEL_ONLY_REVIEWER:
+                return {'kind': 'protocol_violation', 'reason': 'human_intervention_in_model_only', 'stage': stage}
+            if run.adjustment_history:
+                return {'kind': 'protocol_violation', 'reason': 'human_intervention_in_model_only', 'stage': stage}
+            for rep in [*run.review_history, run.review or {}]:
+                decision = rep.get('human_decision')
+                if decision and decision.get('reviewer') != MODEL_ONLY_REVIEWER:
+                    return {'kind': 'protocol_violation', 'reason': 'human_intervention_in_model_only', 'stage': stage}
             if run.state in ('awaiting_review', 'rejected', 'accepted', 'repairing'):
                 if failure := _model_review_interruption(run.repairs, stage, [*run.review_history, run.review]):
                     return failure
@@ -379,21 +389,67 @@ def _adjudication_items(report, expert):
         for item in source:
             if not isinstance(item, dict):
                 continue
-            key = (item.get('dimension'), _is_probe_override(item), item.get('reason'))
+            frames_key = tuple(sorted(set(item.get('frames') or [])))
+            key = (item.get('dimension'), _is_probe_override(item), item.get('reason'), frames_key)
             if key not in seen:
                 seen.add(key)
                 combined.append(item)
     return combined
 
 
-def counterfactual_verdicts(report):
+def _combine_verdicts(*verdicts):
+    present = [v for v in verdicts if v is not None]
+    if not present:
+        return None
+    if 'fail' in present:
+        return 'fail'
+    if 'uncertain' in present:
+        return 'uncertain'
+    return 'pass'
+
+
+def _ground_check(check, frame_count):
+    """Apply the same distinct-frame evidence floor as ``grounded_audit``."""
+    item = dict(check)
+    dim = item.get('dimension')
+    frames = item.get('frames') or []
+    if dim in {'rhythm', 'transition', 'fixed_parts'}:
+        minimum = 2
+    elif dim == 'completeness':
+        minimum = min(frame_count, 3) if frame_count else min(max(frames, default=0), 3)
+    else:
+        minimum = 1
+    if len(set(frames)) < minimum:
+        item.update(status='uncertain', confidence=0)
+    return item
+
+
+def _infer_frame_count(report, checks, frame_count):
+    if frame_count is not None:
+        return frame_count
+    obs = (report.get('observations') or {}).get('frames') or []
+    if obs:
+        return len(obs)
+    tracked = ((report.get('motion_evidence') or {}).get('tracked_parts') or {}).get('frames') or []
+    if tracked:
+        return len(tracked)
+    return max((f for c in checks for f in (c.get('frames') or [])), default=0)
+
+
+def counterfactual_verdicts(report, *, frame_count=None):
     """Verdicts the same recorded opinions give with parts of the review removed.
 
-    ``baseline_only`` drops the independent experts and deterministic probes.
-    ``without_probes`` removes deterministic measurement overrides while keeping
-    retained review contradictions intact. ``final_review_wins`` drops both the
-    retained-contradiction rule and deterministic probes: where the dispute
-    review proposed clearing an earlier concern, its proposal is taken as is.
+    Produces the full 2x2 ablation matrix over contradiction retention and
+    deterministic probe overrides (plus ``baseline_only``):
+
+    * ``full``: retention ON, probes ON (stored verdict).
+    * ``without_probes``: retention ON, probes OFF.
+    * ``without_retention``: retention OFF, probes ON (when expert review ran).
+    * ``final_review_wins``: retention OFF, probes OFF (when expert review ran).
+    * ``baseline_only``: independent experts, dispute review, and probes dropped.
+
+    Preserves orthogonal gates (such as adjustment ``comparison.verdict``) and
+    re-applies ``grounded_audit`` frame-evidence floors to dispute proposals.
     Computed from the stored report; no model is called.
     """
     expert = (report or {}).get('expert_review') or {}
@@ -403,24 +459,86 @@ def counterfactual_verdicts(report):
     probe_items = [item for item in items if _is_probe_override(item)]
     review_items = [item for item in items if not _is_probe_override(item) and 'proposal' in item]
     checks = report.get('checks') or []
-    probe_priors = {item['dimension']: item['prior'] for item in probe_items if isinstance(item.get('prior'), dict)}
+    comparison_verdict = (report.get('comparison') or {}).get('verdict')
+    eff_count = _infer_frame_count(report, checks, frame_count)
+
+    review_dims = {item['dimension'] for item in review_items if item.get('dimension')}
+    probe_priors = {}
+    probe_by_dim = {}
+    for item in probe_items:
+        dim = item.get('dimension')
+        if not dim:
+            continue
+        probe_by_dim.setdefault(dim, item)
+        if dim not in review_dims and dim not in probe_priors and isinstance(item.get('prior'), dict):
+            probe_priors[dim] = item['prior']
+
     pre_probe_checks = [probe_priors.get(c['dimension'], c) for c in checks]
-    result = {
+    if not checks:
+        without_probes_verdict = None
+        without_probes_checks = None
+    elif not probe_items:
+        without_probes_verdict = report['verdict']
+        without_probes_checks = [dict(c) for c in checks]
+    else:
+        without_probes_verdict = _combine_verdicts(audit_verdict(pre_probe_checks), comparison_verdict)
+        without_probes_checks = [dict(c) for c in pre_probe_checks]
+
+    without_retention_verdict = None
+    without_retention_checks = None
+    final_review_wins_verdict = None
+    final_review_wins_checks = None
+    if checks and expert.get('state') == 'complete':
+        proposals = {item['dimension']: item['proposal'] for item in review_items if item.get('dimension')}
+        final_review_wins_checks = [
+            _ground_check(proposals[c['dimension']], eff_count) if c['dimension'] in proposals else dict(c)
+            for c in pre_probe_checks
+        ]
+        if not probe_items and not proposals:
+            final_review_wins_verdict = report['verdict']
+        else:
+            final_review_wins_verdict = _combine_verdicts(audit_verdict(final_review_wins_checks), comparison_verdict)
+
+        # Retention OFF, probes ON: start from unretained proposals, then re-apply probe overrides.
+        ret_off_checks = []
+        for c in final_review_wins_checks:
+            dim = c['dimension']
+            if dim in probe_by_dim and c.get('status') == 'pass':
+                ret_off_checks.append({**c, 'status': 'uncertain', 'confidence': 0})
+            else:
+                ret_off_checks.append(dict(c))
+        tracked_cues = (report.get('motion_evidence') or {}).get('tracked_parts')
+        if tracked_cues:
+            from .prop_measurements import guard_measurements
+            guarded = guard_measurements({'checks': ret_off_checks, 'verdict': audit_verdict(ret_off_checks)}, tracked_cues)
+            ret_off_checks = [dict(c) for c in guarded['checks']]
+        without_retention_checks = ret_off_checks
+        if not proposals:
+            without_retention_verdict = report['verdict']
+        else:
+            without_retention_verdict = _combine_verdicts(audit_verdict(without_retention_checks), comparison_verdict)
+
+    baseline_checks = (expert.get('baseline') or {}).get('checks')
+    return {
         'full': report['verdict'],
         'baseline_only': (expert.get('baseline') or {}).get('verdict'),
-        'without_probes': audit_verdict(pre_probe_checks) if checks else None,
-        'final_review_wins': None,
+        'without_probes': without_probes_verdict,
+        'without_retention': without_retention_verdict,
+        'final_review_wins': final_review_wins_verdict,
         'retained_contradictions': len(review_items),
         'probe_overrides': len(probe_items),
         'probe_override_details': [
             {'dimension': item['dimension'], 'frames': list(item.get('frames') or []), 'reason': item.get('reason', '')}
             for item in probe_items
         ],
+        'checks_by_condition': {
+            'full': [dict(c) for c in checks] if checks else None,
+            'baseline_only': [dict(c) for c in baseline_checks] if baseline_checks else None,
+            'without_probes': without_probes_checks,
+            'without_retention': without_retention_checks,
+            'final_review_wins': final_review_wins_checks,
+        },
     }
-    if checks and expert.get('state') == 'complete':
-        proposals = {item['dimension']: item['proposal'] for item in review_items}
-        result['final_review_wins'] = audit_verdict([proposals.get(c['dimension'], c) for c in pre_probe_checks])
-    return result
 
 
 def _playback(job, job_dir, out):
@@ -431,7 +549,7 @@ def _playback(job, job_dir, out):
         (out / name).parent.mkdir(parents=True, exist_ok=True)
         (out / name).write_bytes(data)
         return {'file': name, 'sha256': frame.sha256}
-    return [{'candidate': c.candidate_index, 'fps': job.action.fps, 'status': c.status.value,
+    return [{'candidate': c.candidate_index, 'fps': job.action.fps, 'loop': job.action.loop, 'status': c.status.value,
              'frames': [copy(f, f'candidate-{c.candidate_index}/playback/{n:03}.png') for n, f in enumerate(c.frames)]}
             for c in job.candidates if c.frames]
 
@@ -545,10 +663,17 @@ def retrospective(job_dir, work, adjustments, out):
             for n, attempt in enumerate(run.repairs):
                 level = attempt.get('repair_level') or REPAIR_LEVELS[attempt['mode']]
                 note_tool(level)
-                frames = [copy_png(f, f'{folder}/repair-{n}/{j:03}.png') for j, f in enumerate(attempt.get('proposed_frames', []))]
                 repair_root = inside(job_dir, job_dir / attempt['folder']) if attempt.get('folder') else None
-                usage, returned = drawing_record(attempt, repair_root, 'response.json')
                 inherited = job.request.request_key.startswith('adjustment-') and repair_root is not None and not repair_root.is_dir()
+                proposed_entries = attempt.get('proposed_frames', [])
+                proposed_unavailable = inherited and any(
+                    not inside(job_dir, job_dir / (f['path'] if 'path' in f else f['file'])).is_file()
+                    for f in proposed_entries
+                )
+                frames = [] if proposed_unavailable else [
+                    copy_png(f, f'{folder}/repair-{n}/{j:03}.png') for j, f in enumerate(proposed_entries)
+                ]
+                usage, returned = drawing_record(attempt, repair_root, 'response.json')
                 raw_entries = [] if inherited else attempt.get('raw_frames', [])
                 raw_frames = [
                     copy_png(f, f'{folder}/repair-{n}/raw/{f["raw_index"]:03}.png', root=repair_root)
@@ -557,6 +682,7 @@ def retrospective(job_dir, work, adjustments, out):
                     copy_png(f, f'{folder}/repair-{n}/raw/{j:03}.png') for j, f in enumerate(raw_entries)
                 ]
                 repairs.append({**attempt, 'repair_level': level, 'images': frames, 'usage': usage, 'original_images': raw_frames,
+                                **({'proposed_archive_unavailable': True} if proposed_unavailable else {}),
                                 **({'original_archive_unavailable': True} if inherited and attempt.get('raw_frames') else {})})
                 drawing_usage.append(usage)
             stage_usage = (response_usage(saved_stage) or run.usage)
@@ -583,7 +709,8 @@ def retrospective(job_dir, work, adjustments, out):
                          'frame_normalization': (run.accepted or {}).get('frame_normalization'),
                          'accepted': [{**copy_png(f, f'{folder}/accepted/{j:03}.png'), 'raw_index': f.get('raw_index')}
                                       for j, f in enumerate((run.accepted or {}).get('frames', []))],
-                         'review_history': reports, 'review_ablation': [counterfactual_verdicts(r) for r in reports],
+                         'review_history': reports,
+                         'review_ablation': [counterfactual_verdicts(r, frame_count=plan.plan.stages[i].frame_count) for r in reports],
                          'human_decisions': decisions, 'repairs': repairs, 'adjustment_history': run.adjustment_history})
     timings.extend(e.get('human_seconds') for e in job.events
                    if e.get('event') == 'candidate_approved' and e.get('reviewer') == 'open-motion-user')
@@ -619,7 +746,7 @@ def retrospective(job_dir, work, adjustments, out):
                              **({'usage': alternative_usage[-1]} if alternative_usage else {})})
         if task.get('repair_level'):
             note_tool(task['repair_level'])
-        if task.get('decision_note'):
+        if task.get('state') in ('adopted', 'rejected') or task.get('decision_note') or task.get('human_seconds') is not None:
             timings.append(task.get('human_seconds'))
         drawing_usage.extend(alternative_usage)
 
@@ -685,15 +812,23 @@ def blind_pack(clips, out, *, excluded=()):
     key = out.with_name(out.name + '-private-key.json')
     if key.exists():
         raise FileExistsError(key)
-    out.mkdir(parents=True, exist_ok=False)
-    order = list(clips)
-    secrets.SystemRandom().shuffle(order)
-    answers, items = {}, []
-    for root, frames, fps, *details in order:
+    seen_clips = set()
+    order = []
+    for entry in clips:
+        root, frames, fps, *details = entry
         if not frames or not 1 <= fps <= 60:
             raise ValueError('clip requires frames and valid FPS')
+        clip_key = (str(Path(root).resolve()), frames[0]['file'])
+        if clip_key in seen_clips:
+            raise ValueError(f'duplicate clip source: {root}')
+        seen_clips.add(clip_key)
+        order.append((root, frames, fps, details[0] if details else {}))
+    out.mkdir(parents=True, exist_ok=False)
+    secrets.SystemRandom().shuffle(order)
+    answers, items = {}, []
+    for root, frames, fps, meta in order:
         label = secrets.token_hex(8)
-        answers[label] = {'source': str(root), 'first_frame': frames[0]['file'], **(details[0] if details else {})}
+        answers[label] = {'source': str(root), 'first_frame': frames[0]['file'], **meta}
         (out / label).mkdir()
         size = None
         for i, frame in enumerate(frames):
@@ -704,8 +839,11 @@ def blind_pack(clips, out, *, excluded=()):
                 rgba = image.convert('RGBA')
                 if size is None:
                     size = rgba.size
+                elif rgba.size != size:
+                    raise ValueError(f'clip frame size mismatch: expected {size}, got {rgba.size}')
                 Image.frombytes('RGBA', rgba.size, rgba.tobytes()).save(out / label / f'{i:03}.png')
-        items.append({'id': label, 'frames': len(frames), 'fps': fps, 'width': size[0], 'height': size[1]})
+        items.append({'id': label, 'frames': len(frames), 'fps': fps, 'width': size[0], 'height': size[1],
+                      'loop': bool(meta.get('loop', False))})
     atomic_write_json(out / 'clips.json', items)
     atomic_write_json(key, {'clips': answers, 'excluded': list(excluded), 'runs': len(order) + len(excluded)})
     (out / 'index.html').write_text(PLAYER.replace('__CLIPS__', json.dumps(items)), encoding='utf8')
@@ -715,10 +853,10 @@ PLAYER = '''<!doctype html><meta charset=utf-8><title>匿名动画评审</title>
 body{font-family:system-ui,sans-serif;margin:16px;background:#181c24;color:#eef2f7}
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
 .grid{display:grid;gap:16px}
-.card{border:1px solid #334155;border-radius:8px;padding:12px;background:#0f172a}
+.card{border:1px solid #334155;border-radius:8px;padding:12px;background:#0f172a;max-width:100%;box-sizing:border-box}
 .views{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin:10px 0}
-.pane{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#94a3b8}
-.stage{display:inline-flex;align-items:center;justify-content:center;padding:8px;border:1px solid #334155;border-radius:4px}
+.pane{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#94a3b8;max-width:100%}
+.stage{display:inline-flex;align-items:center;justify-content:center;padding:8px;border:1px solid #334155;border-radius:4px;max-width:100%;overflow:auto;box-sizing:border-box}
 .stage img{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
 body[data-bg=checker] .stage{background:repeating-conic-gradient(#cbd5e1 0 25%,#94a3b8 0 50%) 50%/16px 16px}
 body[data-bg=light] .stage{background:#d4d8df}
@@ -732,15 +870,19 @@ button[aria-pressed=true]{background:#334155;border-color:#94a3b8}
 <button data-set-bg=dark aria-pressed=false>深灰</button>
 </div><main class=grid></main><script>
 const clips=__CLIPS__;
-const scaleFor=(w,h)=>Math.max(2,Math.min(4,Math.floor(256/Math.max(w||128,h||128))*2||4));
+const scaleFor=(w,h,avail)=>{
+  const target=Math.max(2,Math.min(4,Math.floor(256/Math.max(w||128,h||128))*2||4));
+  const fit=Math.max(1,Math.floor(Math.max(w||1,avail||512)/Math.max(1,w||1)));
+  return Math.min(target,fit);
+};
 document.querySelectorAll('[data-set-bg]').forEach(btn=>{
   btn.onclick=()=>{
     document.body.dataset.bg=btn.dataset.setBg;
     document.querySelectorAll('[data-set-bg]').forEach(x=>x.setAttribute('aria-pressed',String(x===btn)));
   };
 });
+const resizers=[];
 for(const c of clips){
-  const zoom=scaleFor(c.width,c.height);
   const p=document.createElement('section');p.className='card';
   const h=document.createElement('h2');h.textContent=c.id;
   const views=document.createElement('div');views.className='views';
@@ -749,35 +891,59 @@ for(const c of clips){
     const cap=document.createElement('span');cap.textContent=title;
     const box=document.createElement('div');box.className='stage';
     const im=new Image();im.width=w;im.height=hpx;im.style.width=w+'px';im.style.height=hpx+'px';
-    box.append(im);d.append(cap,box);views.append(d);return im;
+    box.append(im);d.append(cap,box);views.append(d);return {im,cap};
   };
-  const im1=mkPane('1x 原尺寸 ('+c.width+'x'+c.height+')',c.width,c.height);
-  const imZ=mkPane(zoom+'x 最近邻放大 ('+(c.width*zoom)+'x'+(c.height*zoom)+')',c.width*zoom,c.height*zoom);
+  const pane1=mkPane('1x 原尺寸 ('+c.width+'x'+c.height+')',c.width,c.height);
+  const paneZ=mkPane('',c.width,c.height);
   const ctrls=document.createElement('div');ctrls.className='ctrls';
   const play=document.createElement('button');play.textContent='播放 / 暂停';
   const prev=document.createElement('button');prev.textContent='上一帧';
   const next=document.createElement('button');next.textContent='下一帧';
+  let loopOn=Boolean(c.loop);
+  const loopBtn=document.createElement('button');
+  const syncLoop=()=>{loopBtn.setAttribute('aria-pressed',String(loopOn));loopBtn.textContent=loopOn?'循环：开':'循环：关（播完即停）';};
+  syncLoop();
   const info=document.createElement('span');
-  ctrls.append(play,prev,next,info);p.append(h,views,ctrls);document.querySelector('main').append(p);
+  ctrls.append(play,prev,next,loopBtn,info);p.append(h,views,ctrls);document.querySelector('main').append(p);
+  const applyZoom=()=>{
+    const avail=(p.clientWidth||window.innerWidth||960)-48;
+    const z=scaleFor(c.width,c.height,avail);
+    const zw=c.width*z,zh=c.height*z;
+    paneZ.im.width=zw;paneZ.im.height=zh;paneZ.im.style.width=zw+'px';paneZ.im.style.height=zh+'px';
+    paneZ.cap.textContent=z+'x 最近邻放大 ('+zw+'x'+zh+')';
+  };
+  applyZoom();resizers.push(applyZoom);
   let i=0,t=0;
+  function stop(){if(t){clearInterval(t);t=0;}}
   function render(idx){
-    i=(idx+c.frames)%c.frames;
+    i=Math.max(0,Math.min(c.frames-1,idx));
     const src=c.id+'/'+String(i).padStart(3,'0')+'.png';
-    im1.src=src;imZ.src=src;
+    pane1.im.src=src;paneZ.im.src=src;
     info.textContent='帧 '+(i+1)+' / '+c.frames+' · '+c.fps+' FPS';
   }
   render(0);
-  play.onclick=()=>{if(t){clearInterval(t);t=0}else{render(i+1);t=setInterval(()=>render(i+1),1000/c.fps)}};
-  prev.onclick=()=>{if(t){clearInterval(t);t=0}render(i-1)};
-  next.onclick=()=>{if(t){clearInterval(t);t=0}render(i+1)};
+  const step=()=>{
+    if(i+1<c.frames){render(i+1);}
+    else if(loopOn){render(0);}
+    else{stop();}
+  };
+  play.onclick=()=>{if(t){stop();}else{if(!loopOn&&i>=c.frames-1){render(0);}else{step();}if(loopOn||i<c.frames-1){t=setInterval(step,1000/c.fps);}}};
+  prev.onclick=()=>{stop();render(loopOn?(i-1+c.frames)%c.frames:i-1);};
+  next.onclick=()=>{stop();render(loopOn?(i+1)%c.frames:i+1);};
+  loopBtn.onclick=()=>{loopOn=!loopOn;syncLoop();};
 }
+window.addEventListener('resize',()=>resizers.forEach(fn=>fn()));
 </script></body>'''
 
 
 def collect_clips(roots):
     """Clips and unusable runs from simulation or export directories."""
-    clips, excluded = [], []
+    clips, excluded, seen = [], [], set()
     for root in roots:
+        resolved = Path(root).resolve()
+        if resolved in seen:
+            raise ValueError(f'duplicate run directory: {root}')
+        seen.add(resolved)
         if (root / 'retrospective.json').exists():
             export = json.loads((root / 'retrospective.json').read_bytes())
             arm = (export.get('experiment') or {}).get('arm')
@@ -791,7 +957,19 @@ def collect_clips(roots):
                 excluded.append(exclusion)
                 continue
             for clip in export['clips']:
-                clips.append((root, clip['frames'], clip['fps'], {'arm': arm, 'candidate': clip['candidate']}))
+                clips.append((root, clip['frames'], clip['fps'],
+                              {'arm': arm, 'candidate': clip['candidate'], 'loop': bool(clip.get('loop', False))}))
+            continue
+        if (root / 'experiment-run.json').exists() and not (root / 'run.json').exists():
+            summary = json.loads((root / 'experiment-run.json').read_bytes())
+            if summary.get('job_id'):
+                raise ValueError(f'export job via retrospective before collecting: {root}')
+            if summary.get('status') == 'running':
+                raise ValueError(f'run is still in progress: {root}')
+            exclusion = {'source': str(root), 'arm': summary.get('arm'), 'status': summary.get('status', 'no_playable_clip')}
+            if summary.get('protocol') == PROTOCOL and summary.get('outcome'):
+                exclusion.update(protocol=PROTOCOL, outcome=summary['outcome'])
+            excluded.append(exclusion)
             continue
         run = json.loads((root / 'run.json').read_bytes())
         if run['status'] == 'running':
@@ -802,7 +980,8 @@ def collect_clips(roots):
                 exclusion.update(protocol=PROTOCOL, outcome=run['outcome'])
             excluded.append(exclusion)
         else:
-            details = {'arm': run['arm']}
+            stages = run.get('stages') or []
+            details = {'arm': run['arm'], 'loop': bool(stages and stages[-1].get('last') == 'original')}
             if run.get('protocol') == PROTOCOL:
                 details['protocol'] = PROTOCOL
             clips.append((root, run['frames'], run['fps'], details))

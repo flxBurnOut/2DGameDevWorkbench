@@ -168,13 +168,12 @@ def test_old_and_new_objects_plan_resume_and_export_without_identity_migration(o
         catalog = AssetCatalog(service)
         asset_id = f"animation:{job.job_id}:1"
         assert not any(row["id"] == asset_id for row in catalog.list()["assets"])
-        row = {"kind": "animation", "job_id": job.job_id, "candidate_index": 1}
         source = service.store.resolve_job_path(job.job_id, job.candidates[0].frames[0].active_path)
-        exported_paths = {"source": source,
-            "sheet": service.settings.resolve_record_path(result.export.sheet_path),
-            "godot": service.settings.resolve_record_path(result.export.godot_package_path)}
-        # Exercise metadata without promoting diagnostic fixtures into the library.
-        with patch.object(catalog, "list", return_value={"assets": [{"id": asset_id}]}), patch.object(catalog, "paths", return_value=(row, exported_paths)):
+        row = {"id": asset_id, "kind": "animation", "job_id": job.job_id, "candidate_index": 1,
+               "title": "Fixture animation", "status_label": "Exported", "updated_at": summary["updated_at"],
+               "source": str(source), "fallback": str(source)}
+        # Inject only inventory eligibility. The exact-ID metadata, files and archive are real.
+        with patch.object(catalog.library, "get", return_value=row):
             detail = catalog.detail(asset_id)
         if spec.object_type == "interactable":
             assert detail["objectId"] == spec.object_id and detail["objectType"] == "interactable"

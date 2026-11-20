@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -29,25 +29,29 @@ jobs:
       - run: npm run ui-manifest:check && npm run theme:check
       - run: node tests/frontend-service/web-smoke.mjs dev
       - run: npm run build
-      - run: node tests/frontend-service/web-smoke.mjs production
+      - run: node tests/frontend-service/web-smoke.mjs production && node tests/interactable-editor/http.mjs --web
       - run: npm run test:mcp && npm run test:http && npm run test:adapters
-      - run: npm run test:task-isolation && node tests/task-isolation/history.mjs
-      - run: node tests/image-edit/transport.mjs && npm run test:game-export
+      - run: npm run test:task-isolation && node tests/task-isolation/dependency-graph.mjs
+      - run: npm run test:image-edit && npm run test:game-export && npm run test:assets && npm run test:preview-follow
 
   native:
+    strategy:
+      matrix:
+        python: ['3.11', '3.13']
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python }}
       - run: python --version && git rev-parse HEAD
-      - run: python -m pip install -e ./Tools/PixelProp -e './Tools/SpritePipeline[api,dev]'
-      - run: python -m pytest -q Tools/PixelProp/tests Tools/SpritePipeline/tests/test_paper_experiment.py Tools/SpritePipeline/tests/test_open_motion_checkpoints.py
+      - run: python -m pip install -c Tools/SpritePipeline/requirements.lock -e ./Tools/PixelProp -e './Tools/SpritePipeline[api,dev]'
+      - run: python -c "import importlib.util; assert importlib.util.find_spec('gradio') is None"
+      - run: python -m pytest -q Tools/PixelProp/tests Tools/SpritePipeline/tests/test_paper_experiment.py Tools/SpritePipeline/tests/test_open_motion_checkpoints.py Tools/SpritePipeline/tests/test_open_motion_recovery_media.py Tools/SpritePipeline/tests/test_artwork_library.py Tools/SpritePipeline/tests/test_quota_result_safety.py
 
   platform:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[platform-ci]'))
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +60,8 @@ jobs:
     timeout-minutes: 40
     env:
       PYTHONUTF8: '1'
+      SPRITE_TEST_PYTHON: python
+      WORKBENCH_TEST_PYTHON: python
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -66,6 +72,14 @@ jobs:
         with:
           python-version: '3.13'
       - run: npm ci
-      - run: python -m pip install -e ./Tools/PixelProp -e "./Tools/SpritePipeline[api,ui,dev]"
+      - run: python -m pip install -c Tools/SpritePipeline/requirements.lock -e ./Tools/PixelProp -e "./Tools/SpritePipeline[api,ui,dev]"
+      - run: node tests/frontend-service/web-smoke.mjs dev
+      - run: npm run build
+      - run: node tests/frontend-service/web-smoke.mjs production
+      - run: npm run test:open-motion
+      - run: npm run test:agent-acceptance
+      - run: node tests/task-isolation/benchmark.mjs 100 2048 0
+      - run: node tests/task-isolation/benchmark.mjs 1000 128 25
+      - run: node tests/task-isolation/benchmark.mjs 10000 8 50
       - run: node tests/game-export/install-lock.mjs
       - run: python -m pytest -q Tools/SpritePipeline/tests

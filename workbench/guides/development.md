@@ -44,3 +44,7 @@ Windows 上运行会启动 Python 子进程的 Node 回归前，设置 `$env:PYT
 共享文档和图片编辑使用 Bridge 的版本检查与稳定 commandId；冲突后重读，未知提交恢复原记录。付费异步作业保留请求意图、上游 ID 与用量。前端草稿、保存版本、生产候选和游戏交付各有身份，跨层修改时使用对应来源及当前版本。
 
 源模块结构见[架构](../../docs/architecture.md)，服务维护见[操作手册](../../docs/operations-manual.md)。涉及指导文档时使用[维护指南](guidance-maintenance.md)。
+
+任务执行使用 `task-runtime.mjs`，清单与路径使用 `workbench-manifest.mjs`。内部调用按领域导入；`runtime.mjs` 保留公共导出。运行 `node tests/task-isolation/dependency-graph.mjs` 检查生产静态依赖环。任务目录性能可用 `node tests/task-isolation/benchmark.mjs 1000 128 25` 重测，参数依次为记录数、每条载荷 KiB、归档百分比。
+
+向论文分支推送会运行 Linux 功能门禁和 Python 3.11 / 3.13 API-only 回归。在推送顶端提交说明中加入 `[platform-ci]` 或手动运行 CI，可追加 Linux、macOS、Windows 的完整原生测试、Web 启动、代理、离线 Agent 接入和任务历史基准。

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { rm } from 'node:fs/promises';
+import path from 'node:path';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -17,7 +19,8 @@ const origin = 'http://127.0.0.1:' + port;
 const args = mode === 'dev'
   ? ['node_modules/vinext/dist/cli.js', 'dev', '--hostname', '127.0.0.1', '--port', String(port)]
   : ['node_modules/wrangler/bin/wrangler.js', 'dev', '--config', 'dist/server/wrangler.json', '--ip', '127.0.0.1', '--port', String(port), '--var', 'WORKBENCH_FRONTEND_URL:' + origin];
-const child = spawn(process.execPath, args, { env: { ...process.env, WORKBENCH_TEST_RUN: 'smoke-' + randomUUID(),
+const testRun = 'smoke-' + randomUUID();
+const child = spawn(process.execPath, args, { env: { ...process.env, WORKBENCH_TEST_RUN: testRun,
   WORKBENCH_FRONTEND_URL: origin, WRANGLER_SEND_METRICS: 'false' },
   detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
 let output = '';
@@ -53,4 +56,5 @@ try {
       try { await done; } finally { clearTimeout(timeout); }
     }
   }
+  await rm(path.resolve('work', 'test-runs', testRun), { recursive: true, force: true });
 }

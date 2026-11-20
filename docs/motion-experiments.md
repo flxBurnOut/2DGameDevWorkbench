@@ -26,7 +26,7 @@ EXP freeze ROOT WORK_ID /absolute/new-protocol
 
 作品须已有可执行方案并指定了种子。已开始制作的作品取其候选的实际种子。目录内含 `protocol.json`、`reference.png` 和各段的末帧目标图，回放前逐个核验哈希。历史版本加 `--revision N`。
 
-协议 v3 记录每组必需的最终绘图请求、请求与合计帧数上限、绘图和复核调用上限，以及规划时已知的绘图额度。预检以最终提示词的 1,000 字符上限及各项帧数、像素和调用上限为准。任一必需请求超限时，该组记为 `blocked_preflight`，同时保存具体原因。v2 冻结协议可继续按历史规则回放。
+协议 v3 记录每组必需的最终绘图请求、请求与合计帧数上限、绘图和复核调用上限，以及规划时已知的绘图额度。预检以最终提示词的 1,000 字符上限及各项帧数、像素和调用上限为准。当各段使用策略 6 的 12 行结构化简报且简单拼接或添加 `Hold ending pose: ` 前缀超过 1,000 字符时，`single` 组确定性地去重共享标签（`Appearance / Camera / Facing / Relations` 等）并将局部 `fN:` 帧号平移为全片帧号，`keyframe_first` 组确定性提取终态核心行（`Appearance / Action / Camera / Facing / Relations / End`），不调用额外模型、不静默截断；合并或提取后仍超限、或非结构化提示超限时，该组记为 `blocked_preflight` 并保存具体原因。v2 冻结协议可继续按历史规则回放。
 
 ### 第二步：回放三个对照组
 
@@ -71,11 +71,12 @@ EXP model-only ROOT COPY_ID --authorize-paid-calls
 | 消融 | 做法 | 是否需要新的生成 |
 | --- | --- | --- |
 | 去掉独立专家 | 导出中每份复核报告的 `review_ablation.baseline_only`，即同一批画面上基础检查自己的结论 | 否 |
-| 去掉保留矛盾规则 | `review_ablation.final_review_wins`：争议复核提议取消原有疑点时，直接按提议计结论。`retained_contradictions` 是被规则拦下的条数 | 否 |
-| 只允许整段重画 | `EXP clone … --repair-policy redraw_only`。副本上确定性编辑、受限生成和段内重画一律拒绝，只能对一段的全部可编辑帧重画 | 是 |
+| 去掉确定性探针 | `review_ablation.without_probes`：仅撤回 `guard_measurements` 的探针降级，保留评审内部矛盾。`probe_overrides` 与 `probe_override_details` 记录探针拦截条数、维度与帧号 | 否 |
+| 去掉保留矛盾规则 | `review_ablation.final_review_wins`：基于探针改写前的原始检查状态，争议复核提议取消原有疑点时直接按提议计结论。`retained_contradictions` 只计被保留的评审矛盾条数，与 `probe_overrides` 解耦 | 否 |
+| 只允许整段重画 | `EXP clone … --repair-policy redraw_only`。副本上确定性编辑、受限生成和局部段内重画一律拒绝，只允许覆盖当前段最大合法偶数可编辑窗口的重画（首尾都锁时为全部 $N-2$ 帧；常规未锁段尾可编辑帧为奇数 $N-1$ 时，允许头对齐或尾对齐的最大偶数 $N-2$ 帧，且需 $\ge 4$ 帧） | 是 |
 | 加 / 不加角色结构 | 规划作品时是否附带视觉结构，各建一个作品 | 是 |
 
-前两项由已保存的复核报告重新计算，不调用模型。只有采用专家协议且复核完整结束的报告才有这两项，其余为 `null`。
+前三项由已保存的复核报告重新计算，不调用模型。其中 `without_probes` 只要报告含 `checks` 即可计算；`baseline_only` 与 `final_review_wins` 仅在采用专家协议且复核完整结束时非 `null`。
 
 ## 人工时间与回顾性导出
 
@@ -111,7 +112,7 @@ EXP export-legacy /absolute/jobs/JOB /absolute/new-export
 EXP blind /absolute/new-blind-pack /absolute/run-A /absolute/export-B
 ```
 
-输入可以是回放运行目录或回顾性导出目录。每个片段随机命名、打乱顺序，PNG 重新编码清除元数据；公开包只含匿名编号、帧数、FPS、像素和离线播放页面，打开 `index.html` 即可播放。
+输入可以是回放运行目录或回顾性导出目录。每个片段随机命名、打乱顺序，PNG 重新编码清除元数据；公开包只含匿名编号、帧数、FPS、画布宽高、像素和离线播放页面，打开 `index.html` 即可同时查看 **1× 原尺寸与整数倍最近邻放大双视图**，支持棋盘格/浅灰/深灰背景切换及播放/暂停与单帧步进。
 
 编号对应表写到包目录旁的 `new-blind-pack-private-key.json`，由实验人员保存。每组每次比较应提供一份运行或单候选导出。以私密表中的 `runs` 为可用率分母，包含预检拦截、未提交、提供方失败或结果未知、审查叫停及无完整候选的条目。v3 私密表保存各类排除原因。仍在进行中的回放运行会被拒绝打包。
 

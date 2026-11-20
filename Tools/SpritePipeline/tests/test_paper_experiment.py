@@ -110,6 +110,10 @@ def test_four_offline_arms_and_anonymous_playback(tmp_path):
     assert sorted(v['arm'] for v in key['clips'].values()) == sorted(ARMS)
     public = (pack / 'clips.json').read_bytes() + (pack / 'index.html').read_bytes()
     assert not any(arm.encode() in public for arm in ARMS) and str(tmp_path).encode() not in public
+    items = json.loads((pack / 'clips.json').read_bytes())
+    assert all(item['width'] == 128 and item['height'] == 128 for item in items)
+    html = (pack / 'index.html').read_text(encoding='utf8')
+    assert 'image-rendering:pixelated' in html and '1x 原尺寸' in html and '最近邻放大' in html and 'data-set-bg=checker' in html
 
 
 def test_control_arms_send_the_pipeline_requests(chain, tmp_path):
@@ -399,18 +403,188 @@ def test_redraw_only_copy_refuses_other_repair_tools(chain):
 
 
 def test_review_ablation_is_recomputed_from_the_stored_report():
+    from sprite_pipeline.collaboration.prop_measurements import guard_measurements
+
     def check(dimension, status, confidence=.95):
         return {'dimension': dimension, 'status': status, 'confidence': confidence, 'frames': [1, 2], 'evidence': 'e'}
     held = check('transition', 'uncertain', 0)
     report = {'verdict': 'uncertain', 'checks': [check('state_frame', 'pass'), held, check('fixed_parts', 'pass')],
               'expert_review': {'state': 'complete', 'baseline': {'verdict': 'fail'}, 'requires_human_adjudication': [
                   {'dimension': 'transition', 'prior': check('transition', 'fail'), 'proposal': check('transition', 'pass')}]}}
-    assert counterfactual_verdicts(report) == {'full': 'uncertain', 'baseline_only': 'fail',
-                                               'final_review_wins': 'pass', 'retained_contradictions': 1}
-    plain = {'verdict': 'pass', 'checks': report['checks']}
-    assert counterfactual_verdicts(plain) == {'full': 'pass', 'baseline_only': None, 'final_review_wins': None,
-                                              'retained_contradictions': 0}
+    assert counterfactual_verdicts(report) == {
+        'full': 'uncertain', 'baseline_only': 'fail', 'without_probes': 'uncertain',
+        'final_review_wins': 'pass', 'retained_contradictions': 1,
+        'probe_overrides': 0, 'probe_override_details': [],
+    }
+    plain = {'verdict': 'pass', 'checks': [check('state_frame', 'pass'), check('transition', 'pass'), check('fixed_parts', 'pass')]}
+    assert counterfactual_verdicts(plain) == {
+        'full': 'pass', 'baseline_only': None, 'without_probes': 'pass',
+        'final_review_wins': None, 'retained_contradictions': 0,
+        'probe_overrides': 0, 'probe_override_details': [],
+    }
     assert counterfactual_verdicts({}) is None
+
+    # Probe override merged into expert_review.requires_human_adjudication (production_review.py path)
+    # must never KeyError and must decouple probe overrides from retained review contradictions.
+    guarded = guard_measurements(report, {'flags': {'fixed_parts': [3, 4]}})
+    guarded['expert_review'] = {**report['expert_review'],
+                                'requires_human_adjudication': [
+                                    *report['expert_review']['requires_human_adjudication'],
+                                    *guarded['requires_human_adjudication'],
+                                ]}
+    ablation = counterfactual_verdicts(guarded)
+    assert ablation['full'] == 'uncertain'
+    assert ablation['baseline_only'] == 'fail'
+    assert ablation['without_probes'] == 'uncertain'
+    assert ablation['final_review_wins'] == 'pass'
+    assert ablation['retained_contradictions'] == 1
+    assert ablation['probe_overrides'] == 1
+    assert ablation['probe_override_details'][0]['dimension'] == 'fixed_parts'
+    assert ablation['probe_override_details'][0]['frames'] == [3, 4]
+
+    # Legacy probe record without explicit source tag on a baseline-only report.
+    legacy_probe = {'verdict': 'uncertain',
+                    'checks': [check('state_frame', 'pass'), check('transition', 'uncertain', 0), check('fixed_parts', 'pass')],
+                    'requires_human_adjudication': [
+                        {'dimension': 'transition', 'frames': [4, 5, 6], 'prior': check('transition', 'pass'), 'reason': '测量冲突'}]}
+    legacy_ablation = counterfactual_verdicts(legacy_probe)
+    assert legacy_ablation['full'] == 'uncertain'
+    assert legacy_ablation['without_probes'] == 'pass'
+    assert legacy_ablation['probe_overrides'] == 1
+    assert legacy_ablation['retained_contradictions'] == 0
+
+
+def test_structured_brief_arms_deduplicate_single_and_extract_pose_without_truncation(tmp_path):
+    source = (ARCHIVE / 'lamp/A.png').read_bytes()
+
+    def brief(action, drive, path, poses, end, boundary, pad=''):
+        return '\n'.join([
+            'Appearance: Pixel-art bronze knight holding a straight silver sword in right hand with blue cape' + pad,
+            f'Action: {action}',
+            'Camera: Fixed side-view 2D pixel art camera centered on knight',
+            'Facing: Body faces screen right while blade angle tracks swing arc',
+            f'Drive: {drive}',
+            'Support: Both boots planted firmly on ground shifting weight forward',
+            f'Path: {path}',
+            'Timing: Smooth acceleration across all segment frames without extra holds',
+            f'Poses: {poses}',
+            'Relations: Sword hilt stays gripped in right gauntlet while cape trails torso',
+            f'End: {end}',
+            f'Boundary: {boundary}',
+        ])
+
+    s0 = brief('Wind up overhead and draw sword back',
+               'Shoulders coil back cleanly', 'Blade arcs upward behind head',
+               'f2: knees bend; f6: sword raised behind shoulder',
+               'Coiled overhead windup pose ready to strike', 'Continue. Momentum builds into strike')
+    s1 = brief('Slash downward across torso and follow through low',
+               'Hips drive right arm downward', 'Blade sweeps diagonally down in front',
+               'f2: blade passes eye level; f6: low follow-through stance',
+               'Low forward-leaning follow-through stance with sword down-right',
+               'Settle. Weight stabilizes on front foot')
+    assert len(s0) > 600 and len(s1) > 600 and len(s0) + len(s1) + 1 > 1000
+    stages = [{'prompt': s0, 'frames': 8}, {'prompt': s1, 'frames': 8}]
+    recorder = Recording()
+    run = run_arm('single', source, stages, 42, recorder, None, tmp_path / 'single-structured')
+    assert run['status'] == 'complete' and len(recorder.requests) == 1
+    merged_prompt = recorder.requests[0].prompt
+    assert len(merged_prompt) <= 1000 and merged_prompt.count('Appearance:') == 1
+    assert 'f10: blade passes eye level' in merged_prompt and 'f14: low follow-through stance' in merged_prompt
+
+    # If even deduplicated 12-line brief exceeds 1000 chars, never truncate silently.
+    oversized = [
+        {'prompt': brief('Wind up overhead and draw long sword back over shoulder with wide coil',
+                         'Shoulders and waist coil back sharply before torso unwinds',
+                         'Blade arcs smoothly upward and behind helmet in wide curve',
+                         'f2: knees bend low; f6: sword raised high behind shoulder',
+                         'Coiled overhead windup pose ready to strike', 'Continue. Momentum builds',
+                         pad=' wearing weathered iron shoulder plates and embroidered sash'), 'frames': 8},
+        {'prompt': brief('Slash diagonally downward across torso and follow through low to right',
+                         'Hips, chest and shoulder drive right arm forcefully downward',
+                         'Blade sweeps diagonally down in front of body toward ground',
+                         'f2: blade passes eye level; f6: low follow-through stance',
+                         'Low forward-leaning follow-through stance with sword extended down-right',
+                         'Settle. Weight stabilizes cleanly on front foot',
+                         pad=' wearing weathered iron shoulder plates and embroidered sash'), 'frames': 8},
+    ]
+    blocked_rec = Recording()
+    blocked_run = run_arm('single', source, oversized, 42, blocked_rec, None, tmp_path / 'single-oversized')
+    assert blocked_run['status'] == 'blocked_preflight' and blocked_run['outcome']['reason'] == 'prompt_length'
+    assert blocked_rec.requests == []
+
+    # Near-limit single stage (983..1000 chars) must not fail keyframe_first due to 18-char prefix.
+    base_stage = s0
+    pad_len = 990 - len(base_stage)
+    long_stage = brief('Wind up overhead and draw sword back',
+                       'Shoulders coil back cleanly', 'Blade arcs upward behind head',
+                       'f2: knees bend; f6: sword raised behind shoulder',
+                       'Coiled overhead windup pose ready to strike', 'Continue. Momentum builds into strike',
+                       pad=' ' + ('x' * (pad_len - 1)))
+    assert len(long_stage) == 990
+    kf_rec = Recording()
+    kf_run = run_arm('keyframe_first', source, [{'prompt': long_stage, 'frames': 8}], 42, kf_rec, None, tmp_path / 'kf-structured')
+    assert kf_run['status'] == 'complete' and len(kf_rec.requests) == 2
+    assert len(kf_rec.requests[0].prompt) <= 1000 and 'End: Coiled overhead windup pose ready to strike' in kf_rec.requests[0].prompt
+
+
+def test_redraw_only_allows_maximal_even_stage_redraw_on_unlocked_even_segment(tmp_path, monkeypatch):
+    from sprite_pipeline.collaboration.adjustments import Adjustments
+    from sprite_pipeline.collaboration.contracts import TaskSpec
+    from test_interactable_motion import workspace_for
+    from test_interactable_state_chain import LampPlanner
+
+    class EightFrameFirstStage(LampPlanner):
+        def __call__(self, role, work, reference, **kwargs):
+            result, receipt = super().__call__(role, work, reference, **kwargs)
+            if role == 'coordinator':
+                result['plan']['stages'][0]['frame_count'] = 8
+            return result, receipt
+
+    service, ws = workspace_for(tmp_path, 'lamp', seed=2202)
+    ws.model = EightFrameFirstStage('lamp')
+    spec = TaskSpec(object_type='interactable', object_id='lamp', provider='fixture', seed=42,
+                    description='Light the grey lens in two steps, from partly lit to fully green.')
+    plan = ws.plan(ws.create(spec, 'redraw-only-8f', planning_authorized=True).id)
+    assert plan.status == 'ready', plan.message
+    copy = clone_for_arm(service, plan.id, None, 'human_verified', 'paper-redraw-only-8f', repair_policy='redraw_only')
+    started = ws.start(copy.id, 1, copy.plan_sha256)
+    provider = FixtureProvider()
+    from sprite_pipeline.collaboration.execution import PlanGeneration
+    PlanGeneration(service).advance(started.job_id, provider, wait=True)
+
+    api = TestClient(create_api(service=service), base_url='http://testserver/v1/open-motion/' + copy.id + '/')
+    context = api.get('adjustments', params={'revision': 1, 'candidate': 1, 'stage': 0}).json()
+    assert context['locked_frames'] == [0] and len(context['frames']) == 8
+
+    # Interior partial 4-frame window is still refused under redraw_only.
+    partial = {'expected_revision': 1, 'candidate_index': 1, 'stage_index': 0, 'token': context['token'],
+               'start': 1, 'end': 4, 'user_request': 'Fix glow', 'request_key': 'redraw-partial-refused',
+               'authorized': True, 'max_planning_calls': 1, 'max_generation_calls': 1, 'max_review_calls': 5}
+    assert api.post('adjustments', json=partial).status_code >= 400
+
+    # Maximal legal even window (6 editable frames [1..6], or unlocked tail [2..7]) succeeds and records stage_redraw.
+    whole = {**partial, 'start': 1, 'end': 6, 'request_key': 'redraw-whole-allowed'}
+    created = api.post('adjustments', json=whole)
+    assert created.status_code == 200, created.text
+    task = created.json()['adjustment']
+    manager = Adjustments(service)
+    finished = manager.advance(copy.id, task['id'], provider)
+    assert finished['state'] == 'ready' and finished['repair_level'] == 'stage_redraw'
+    # Reject first attempt and confirm tail-anchored maximal even window [2..7] also qualifies.
+    rejected = api.post(f"adjustments/{task['id']}/decision", json={
+        'token': finished['preview_token'], 'decision': 'reject', 'note': 'Try tail redraw'})
+    assert rejected.status_code == 200, rejected.text
+    tail_ctx = api.get('adjustments', params={'revision': 1, 'candidate': 1, 'stage': 0}).json()
+    tail_whole = {**partial, 'token': tail_ctx['token'], 'start': 2, 'end': 7, 'request_key': 'redraw-tail-allowed'}
+    tail_created = api.post('adjustments', json=tail_whole)
+    assert tail_created.status_code == 200, tail_created.text
+    tail_done = manager.advance(copy.id, tail_created.json()['adjustment']['id'], provider)
+    assert tail_done['state'] == 'ready' and tail_done['repair_level'] == 'stage_redraw'
+    export = tmp_path / 'redraw-only-export'
+    retrospective(service.store.job_dir(started.job_id), ws.load(copy.id).model_dump(mode='json'),
+                  ws.directory(copy.id) / 'adjustments', export)
+    summary = json.loads((export / 'retrospective.json').read_bytes())
+    assert summary['tool_usage'] == {'stage_redraw': 2}
 
 
 def test_retrospective_budget_and_human_time(chain, tmp_path):

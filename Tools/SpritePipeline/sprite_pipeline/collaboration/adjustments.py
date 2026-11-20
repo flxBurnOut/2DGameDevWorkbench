@@ -417,9 +417,10 @@ class Adjustments:
             goal=task['user_request'] or task['expert_suggestions'][0]['text']
             intent=AdjustmentIntent(goal=goal,preserve='保持其他帧、时长和首尾衔接',method=task['methods'][0],provider_prompt=goal[:700])
         else:intent=self.model_call(task,'coordinator','intent',[{'type':'input_text','text':prompt+json.dumps(data,ensure_ascii=False)},*pictures],schema,len(task['source_frames']))
-        editable={i for i in range(len(task['source_frames'])) if i not in self.context(task['work_id'],task['revision'],task['candidate'],task['stage'])['locked_frames']}
-        whole=editable==set(range(task['start'],task['end']+1))
-        task['repair_level']='restricted_generation' if intent.method=='appearance' else 'stage_redraw' if whole and task['stage'] is not None else 'window_redraw'
+        from .experiment_policy import is_stage_redraw_range
+        stage_context = self.context(task['work_id'], task['revision'], task['candidate'], task['stage'])
+        whole = task['stage'] is not None and is_stage_redraw_range(stage_context, task['start'], task['end'])
+        task['repair_level']='restricted_generation' if intent.method=='appearance' else 'stage_redraw' if whole else 'window_redraw'
         task['intent']=intent.model_dump(mode='json');task['intent_sha256']=digest(task['intent']);self.save(task)
         if intent.conflict:task.update(state='needs_input',message=intent.conflict);self.save(task);return False
         if intent.method not in task['methods']:raise ValidationHarnessError('建议方法不支持当前选帧；不会扩展范围或提交绘图')

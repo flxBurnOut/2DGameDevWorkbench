@@ -366,22 +366,60 @@ def drive_model_only(service, work_id, provider, *, authorized, allow_unsupporte
 
 # --------------------------------------------------------------- exports
 
+def _is_probe_override(item):
+    return (isinstance(item, dict)
+            and (item.get('source') == 'deterministic_probe'
+                 or ('proposal' not in item and 'prior' in item and 'frames' in item)))
+
+
+def _adjudication_items(report, expert):
+    combined = []
+    seen = set()
+    for source in (expert.get('requires_human_adjudication') or [], report.get('requires_human_adjudication') or []):
+        for item in source:
+            if not isinstance(item, dict):
+                continue
+            key = (item.get('dimension'), _is_probe_override(item), item.get('reason'))
+            if key not in seen:
+                seen.add(key)
+                combined.append(item)
+    return combined
+
+
 def counterfactual_verdicts(report):
     """Verdicts the same recorded opinions give with parts of the review removed.
 
-    ``baseline_only`` drops the independent experts. ``final_review_wins``
-    drops the retained-contradiction rule: where the dispute review proposed
-    clearing an earlier concern, its proposal is taken as is. Computed from the
-    stored report; no model is called.
+    ``baseline_only`` drops the independent experts and deterministic probes.
+    ``without_probes`` removes deterministic measurement overrides while keeping
+    retained review contradictions intact. ``final_review_wins`` drops both the
+    retained-contradiction rule and deterministic probes: where the dispute
+    review proposed clearing an earlier concern, its proposal is taken as is.
+    Computed from the stored report; no model is called.
     """
     expert = (report or {}).get('expert_review') or {}
     if not report or report.get('verdict') is None or ('state' in report and not _real_verdict(report)):
         return None
-    result = {'full': report['verdict'], 'baseline_only': (expert.get('baseline') or {}).get('verdict'),
-              'final_review_wins': None, 'retained_contradictions': len(expert.get('requires_human_adjudication') or [])}
-    if report.get('checks') and expert.get('state') == 'complete':
-        proposals = {item['dimension']: item['proposal'] for item in expert.get('requires_human_adjudication') or []}
-        result['final_review_wins'] = audit_verdict([proposals.get(c['dimension'], c) for c in report['checks']])
+    items = _adjudication_items(report, expert)
+    probe_items = [item for item in items if _is_probe_override(item)]
+    review_items = [item for item in items if not _is_probe_override(item) and 'proposal' in item]
+    checks = report.get('checks') or []
+    probe_priors = {item['dimension']: item['prior'] for item in probe_items if isinstance(item.get('prior'), dict)}
+    pre_probe_checks = [probe_priors.get(c['dimension'], c) for c in checks]
+    result = {
+        'full': report['verdict'],
+        'baseline_only': (expert.get('baseline') or {}).get('verdict'),
+        'without_probes': audit_verdict(pre_probe_checks) if checks else None,
+        'final_review_wins': None,
+        'retained_contradictions': len(review_items),
+        'probe_overrides': len(probe_items),
+        'probe_override_details': [
+            {'dimension': item['dimension'], 'frames': list(item.get('frames') or []), 'reason': item.get('reason', '')}
+            for item in probe_items
+        ],
+    }
+    if checks and expert.get('state') == 'complete':
+        proposals = {item['dimension']: item['proposal'] for item in review_items}
+        result['final_review_wins'] = audit_verdict([proposals.get(c['dimension'], c) for c in pre_probe_checks])
     return result
 
 
@@ -657,30 +695,83 @@ def blind_pack(clips, out, *, excluded=()):
         label = secrets.token_hex(8)
         answers[label] = {'source': str(root), 'first_frame': frames[0]['file'], **(details[0] if details else {})}
         (out / label).mkdir()
+        size = None
         for i, frame in enumerate(frames):
             data = inside(root, root / frame['file']).read_bytes()
             if sha(data) != frame['sha256']:
                 raise ValueError('clip frame hash mismatch')
             with Image.open(io.BytesIO(data)) as image:
                 rgba = image.convert('RGBA')
+                if size is None:
+                    size = rgba.size
                 Image.frombytes('RGBA', rgba.size, rgba.tobytes()).save(out / label / f'{i:03}.png')
-        items.append({'id': label, 'frames': len(frames), 'fps': fps})
+        items.append({'id': label, 'frames': len(frames), 'fps': fps, 'width': size[0], 'height': size[1]})
     atomic_write_json(out / 'clips.json', items)
     atomic_write_json(key, {'clips': answers, 'excluded': list(excluded), 'runs': len(order) + len(excluded)})
     (out / 'index.html').write_text(PLAYER.replace('__CLIPS__', json.dumps(items)), encoding='utf8')
 
 
-PLAYER = '''<!doctype html><meta charset=utf-8><title>匿名动画评审</title><main></main><script>
+PLAYER = '''<!doctype html><meta charset=utf-8><title>匿名动画评审</title><style>
+body{font-family:system-ui,sans-serif;margin:16px;background:#181c24;color:#eef2f7}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.grid{display:grid;gap:16px}
+.card{border:1px solid #334155;border-radius:8px;padding:12px;background:#0f172a}
+.views{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin:10px 0}
+.pane{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#94a3b8}
+.stage{display:inline-flex;align-items:center;justify-content:center;padding:8px;border:1px solid #334155;border-radius:4px}
+.stage img{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
+body[data-bg=checker] .stage{background:repeating-conic-gradient(#cbd5e1 0 25%,#94a3b8 0 50%) 50%/16px 16px}
+body[data-bg=light] .stage{background:#d4d8df}
+body[data-bg=dark] .stage{background:#1e2430}
+.ctrls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}
+button{padding:4px 10px;border-radius:4px;border:1px solid #475569;background:#1e293b;color:#f8fafc;cursor:pointer}
+button[aria-pressed=true]{background:#334155;border-color:#94a3b8}
+</style><body data-bg=checker><div class=bar><strong>匿名动画评审</strong><span>背景：</span>
+<button data-set-bg=checker aria-pressed=true>棋盘格</button>
+<button data-set-bg=light aria-pressed=false>浅灰</button>
+<button data-set-bg=dark aria-pressed=false>深灰</button>
+</div><main class=grid></main><script>
 const clips=__CLIPS__;
+const scaleFor=(w,h)=>Math.max(2,Math.min(4,Math.floor(256/Math.max(w||128,h||128))*2||4));
+document.querySelectorAll('[data-set-bg]').forEach(btn=>{
+  btn.onclick=()=>{
+    document.body.dataset.bg=btn.dataset.setBg;
+    document.querySelectorAll('[data-set-bg]').forEach(x=>x.setAttribute('aria-pressed',String(x===btn)));
+  };
+});
 for(const c of clips){
-  const p=document.createElement('section'),h=document.createElement('h2'),im=new Image(),b=document.createElement('button');
-  h.textContent=c.id;b.textContent='播放 / 暂停';p.append(h,im,b);document.querySelector('main').append(p);
-  let i=0,t;
-  function draw(){im.src=c.id+'/'+String(i).padStart(3,'0')+'.png';i=(i+1)%c.frames}
-  draw();
-  b.onclick=()=>{if(t){clearInterval(t);t=0}else{draw();t=setInterval(draw,1000/c.fps)}};
+  const zoom=scaleFor(c.width,c.height);
+  const p=document.createElement('section');p.className='card';
+  const h=document.createElement('h2');h.textContent=c.id;
+  const views=document.createElement('div');views.className='views';
+  const mkPane=(title,w,hpx)=>{
+    const d=document.createElement('div');d.className='pane';
+    const cap=document.createElement('span');cap.textContent=title;
+    const box=document.createElement('div');box.className='stage';
+    const im=new Image();im.width=w;im.height=hpx;im.style.width=w+'px';im.style.height=hpx+'px';
+    box.append(im);d.append(cap,box);views.append(d);return im;
+  };
+  const im1=mkPane('1x 原尺寸 ('+c.width+'x'+c.height+')',c.width,c.height);
+  const imZ=mkPane(zoom+'x 最近邻放大 ('+(c.width*zoom)+'x'+(c.height*zoom)+')',c.width*zoom,c.height*zoom);
+  const ctrls=document.createElement('div');ctrls.className='ctrls';
+  const play=document.createElement('button');play.textContent='播放 / 暂停';
+  const prev=document.createElement('button');prev.textContent='上一帧';
+  const next=document.createElement('button');next.textContent='下一帧';
+  const info=document.createElement('span');
+  ctrls.append(play,prev,next,info);p.append(h,views,ctrls);document.querySelector('main').append(p);
+  let i=0,t=0;
+  function render(idx){
+    i=(idx+c.frames)%c.frames;
+    const src=c.id+'/'+String(i).padStart(3,'0')+'.png';
+    im1.src=src;imZ.src=src;
+    info.textContent='帧 '+(i+1)+' / '+c.frames+' · '+c.fps+' FPS';
+  }
+  render(0);
+  play.onclick=()=>{if(t){clearInterval(t);t=0}else{render(i+1);t=setInterval(()=>render(i+1),1000/c.fps)}};
+  prev.onclick=()=>{if(t){clearInterval(t);t=0}render(i-1)};
+  next.onclick=()=>{if(t){clearInterval(t);t=0}render(i+1)};
 }
-</script>'''
+</script></body>'''
 
 
 def collect_clips(roots):

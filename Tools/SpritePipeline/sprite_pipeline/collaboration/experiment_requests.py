@@ -1,14 +1,103 @@
 """Freeze the provider-facing portions of every paper experiment arm."""
 import hashlib
+import re
 
 from ..errors import ConflictError, ValidationHarnessError
 from ..providers.pixellab import PIXELLAB_ACTION_MAX_CHARACTERS, PIXELLAB_TOTAL_PIXEL_BUDGET
 from .contracts import digest
 from .drawing_frames import FRAME_NORMALIZATION
+from .executable_brief import PATTERN as BRIEF_PATTERN, SECTIONS as BRIEF_SECTIONS
 from .execution import stage_seed
 
 
 PROTOCOL = 3
+_POSE_FRAME = re.compile(r'\bf(\d+):')
+_BRIEF_ORDER = ('appearance', 'action', 'camera', 'facing', 'drive', 'support',
+                'path', 'timing', 'poses', 'relations', 'end', 'boundary')
+_FINAL_LABELS = {'end', 'boundary'}
+
+
+def _parse_structured_brief(text):
+    matches = list(BRIEF_PATTERN.finditer(text))
+    names = [m.group(1).lower() for m in matches]
+    if set(names) != set(BRIEF_SECTIONS) or len(names) != len(BRIEF_SECTIONS) or text[:matches[0].start()].strip():
+        return None
+    parsed = {}
+    for i, match in enumerate(matches):
+        key = match.group(1).lower()
+        stop = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        value = match.group(0) and text[match.end():stop].strip()
+        if not value:
+            return None
+        parsed[key] = value
+    return parsed
+
+
+def _dedup_join(values):
+    seen, ordered = set(), []
+    for item in values:
+        norm = item.strip()
+        if norm and norm.lower() not in seen:
+            seen.add(norm.lower())
+            ordered.append(norm)
+    return '; '.join(ordered)
+
+
+def _single_arm_prompt(stages):
+    """Build the single-shot prompt without duplicating 12-line structured headers.
+
+    Plain prompts and short briefs keep verbatim space-joined text for backward
+    compatibility; only structured 12-line briefs that exceed the provider cap
+    when naively joined are deterministically deduplicated across shared lines.
+    Never truncates; over-cap prompts still fail local preflight transparently.
+    """
+    joined = ' '.join(stage['prompt'] for stage in stages)
+    if len(stages) <= 1 or len(joined) <= PIXELLAB_ACTION_MAX_CHARACTERS:
+        return joined
+    parsed = [_parse_structured_brief(stage['prompt']) for stage in stages]
+    if not all(parsed):
+        return joined
+    merged = {}
+    offset = 0
+    pose_parts = []
+    for stage, fields in zip(stages, parsed):
+        shifted = _POSE_FRAME.sub(lambda m, base=offset: f'f{int(m.group(1)) + base}:', fields['poses'])
+        pose_parts.append(shifted)
+        offset += stage['frames']
+    for key in _BRIEF_ORDER:
+        if key in _FINAL_LABELS:
+            merged[key] = parsed[-1][key]
+        elif key == 'poses':
+            merged[key] = _dedup_join(pose_parts)
+        else:
+            merged[key] = _dedup_join([fields[key] for fields in parsed])
+    candidate = '\n'.join(f'{BRIEF_SECTIONS[key][0]}: {merged[key]}' for key in _BRIEF_ORDER)
+    return candidate if len(candidate) < len(joined) else joined
+
+
+def _pose_arm_prompt(prompt):
+    """Build the 4-frame endpoint proposal prompt for keyframe_first.
+
+    Short prompts keep the verbatim ``Hold ending pose: `` prefix. When adding
+    the prefix pushes a structured 12-line brief past the provider cap, extract
+    its endpoint-defining lines deterministically without silent truncation.
+    """
+    raw = 'Hold ending pose: ' + prompt
+    if len(raw) <= PIXELLAB_ACTION_MAX_CHARACTERS:
+        return raw
+    fields = _parse_structured_brief(prompt)
+    if not fields:
+        return raw
+    lines = [
+        f"Appearance: {fields['appearance']}",
+        f"Action: Hold ending pose: {fields['end']}",
+        f"Camera: {fields['camera']}",
+        f"Facing: {fields['facing']}",
+        f"Relations: {fields['relations']}",
+        f"End: {fields['end']}",
+    ]
+    compact = '\n'.join(lines)
+    return compact if len(compact) < len(raw) else raw
 
 
 def sha(data):
@@ -66,7 +155,7 @@ def freeze_drawing(stages, seed, reference_sha256, size, last_sha256, *, budget=
                         {'kind': input_kind, 'stage': i - 1} if i else reference, end_conditions[i])
                 for i, stage in enumerate(stages)]
 
-    poses = [request('pose', i, 4, 'Hold ending pose: ' + stage['prompt'], reference, None)
+    poses = [request('pose', i, 4, _pose_arm_prompt(stage['prompt']), reference, None)
              for i, stage in enumerate(stages) if targets[i] is None]
     pose_targets = [target or {'kind': 'pose_endpoint', 'stage': i} for i, target in enumerate(targets)]
     blind = segments(targets, 'playback_endpoint')
@@ -75,7 +164,7 @@ def freeze_drawing(stages, seed, reference_sha256, size, last_sha256, *, budget=
     checked = segments(targets, 'accepted_endpoint')
     schedules = {
         'single': [request('clip', 0, sum(s['frames'] for s in stages),
-                           ' '.join(s['prompt'] for s in stages), reference, targets[-1])],
+                           _single_arm_prompt(stages), reference, targets[-1])],
         'blind': blind,
         'keyframe_first': [*poses, *segments(pose_targets, 'playback_endpoint')],
         'model_only': checked,

@@ -10,7 +10,8 @@ import JSZip from 'jszip';
 import { createProject } from '../../features/interactable-editor/contract.mjs';
 import { buildGodotPackage } from '../../features/interactable-editor/godot-builder.mjs';
 import {
-  deliverGodotPackage, getGameExport, installGameExport,
+  completeGameExport, deliverGodotPackage, getGameExport, installGameExport,
+  listGameExports, readGameExportSummary,
 } from '../../lib/workbench/game-export.mjs';
 
 async function childInstall(options) {
@@ -19,6 +20,22 @@ async function childInstall(options) {
     process.once('message', resolve);
     process.send({ type, ...value });
   });
+  const mkdir = fs.mkdir;
+  fs.mkdir = async (file, ...args) => {
+    if (mode.endsWith('before-lock') && path.basename(file) === 'install.lock')
+      await pause('before-lock');
+    return mkdir(file, ...args);
+  };
+  const rename = fs.rename;
+  fs.rename = async (file, destination) => {
+    const name = path.basename(destination);
+    if ((mode.endsWith('fail-registry') && name === input.deliveryId + '.json') ||
+        (mode === 'install-fail-project' && name === 'delivery.json'))
+      throw Object.assign(new Error('receipt write failed'), { code: 'EIO' });
+    if (mode === 'complete-crash-mirror' && name === input.deliveryId + '.json') process.exit(78);
+    if (mode === 'install-crash-project' && name === 'delivery.json') process.exit(79);
+    return rename(file, destination);
+  };
   const writeFile = fs.writeFile;
   fs.writeFile = async (file, ...args) => {
     const name = typeof file === 'string' ? file : '';
@@ -54,10 +71,10 @@ async function childInstall(options) {
   try {
     const result = mode === 'partial-zip'
       ? await deliverGodotPackage(root, manifest, { bytes: await fs.readFile(packagePath), projectPath })
-      : await installGameExport(root, manifest, input);
+      : await (mode.startsWith('complete-') ? completeGameExport : installGameExport)(root, manifest, input);
     process.send({ type: 'result', result }, () => process.disconnect());
   } catch (error) {
-    process.send({ type: 'result', error: error.message, code: error.code }, () => process.disconnect());
+    process.send({ type: 'result', error: error.message, code: error.code, status: error.status }, () => process.disconnect());
   }
 }
 
@@ -269,11 +286,155 @@ if (process.argv[2] === '--child') {
     const next = await deliverGodotPackage(update.root, manifest, { bytes: await zip.generateAsync({ type: 'nodebuffer' }), projectPath: update.game });
     const nextInput = { ...next, projectRevision: returnTo.projectRevision };
     assert.equal((await installGameExport(update.root, manifest, nextInput)).installed, true);
-    assert.equal((await installGameExport(update.root, manifest, returnTo)).installed, true);
+    await assert.rejects(installGameExport(update.root, manifest, returnTo), { status: 409 });
+    const current = await getGameExport(update.root, manifest, { deliveryId: returnTo.deliveryId });
+    const refreshed = { ...returnTo, deliveryRevision: current.deliveryRevision };
+    assert.equal((await installGameExport(update.root, manifest, refreshed)).installed, true);
     assert.deepEqual(await fs.readFile(path.join(delivery.inboxPath, 'backups', scene)), before);
     const backups = path.join(delivery.inboxPath, 'backups-by-sha256');
     const [digest] = await fs.readdir(backups);
     assert.deepEqual(await fs.readFile(path.join(backups, digest, scene)), nextBytes);
+  });
+  async function evidenceFor(f) {
+    await fs.writeFile(path.join(f.game, 'Proof.gd'), 'extends Node2D\n');
+    return {
+      deliveryId: f.delivery.deliveryId, packageSha256: f.delivery.packageSha256,
+      status: 'integrated', files: ['res://Proof.gd'], summary: 'Connected the fixture scene.',
+      engine: { status: 'not_run', evidence: 'Fixture exercises only the delivery receipt.' },
+    };
+  }
+  function copies(f) {
+    return [path.join(f.delivery.inboxPath, 'delivery.json'), path.join(f.root, 'registry', f.delivery.deliveryId + '.json')];
+  }
+  async function assertCopies(f, expected) {
+    for (const file of copies(f)) {
+      const record = JSON.parse(await fs.readFile(file));
+      assert.equal(record.packageSha256, f.delivery.packageSha256);
+      assert.equal(record.deliveryRevision, expected.deliveryRevision);
+      assert.equal(record.status, expected.status);
+      assert.deepEqual(record.integration, expected.integration);
+    }
+  }
+  test('a pending no-op install cannot erase integration committed before lock acquisition', async () => {
+    const f = await fixture('complete-before-install');
+    const installed = await installGameExport(f.root, manifest, f.input);
+    const retry = launch(f, 'install-before-lock');
+    await retry.message('before-lock');
+    const input = { ...await evidenceFor(f), deliveryRevision: installed.deliveryRevision };
+    const completed = await completeGameExport(f.root, manifest, input);
+    const ledgerPath = path.join(f.game, 'forge_imports/install-ledger.json');
+    const ledger = await fs.readFile(ledgerPath);
+    retry.release();
+    const { result } = await retry.message('result');
+    assert.equal((await retry.exited).code, 0);
+    assert.deepEqual(result.changedFiles, []);
+    assert.deepEqual(result.integration, completed.integration);
+    assert.equal(result.deliveryRevision, completed.deliveryRevision);
+    await assertCopies(f, completed);
+    assert.deepEqual(await fs.readFile(ledgerPath), ledger);
+  });
+  test('completion shares the install lock and rereads installation after acquiring it', async () => {
+    const f = await fixture('install-before-complete');
+    const proof = await evidenceFor(f);
+    const pending = launch(f, 'complete-before-lock', { input: proof });
+    await pending.message('before-lock');
+    const installing = launch(f, 'hold-owner');
+    await installing.message('owner-written');
+    await assert.rejects(completeGameExport(f.root, manifest, proof), busy);
+    installing.release();
+    assert.equal((await installing.message('result')).result.status, 'assets_installed');
+    assert.equal((await installing.exited).code, 0);
+    pending.release();
+    const { result } = await pending.message('result');
+    assert.equal((await pending.exited).code, 0);
+    assert.equal(result.status, 'integrated');
+    await assertCopies(f, result);
+    await fs.writeFile(path.join(f.game, scene), 'edited by the game developer');
+    await assert.rejects(completeGameExport(f.root, manifest, proof), /交付资源发生变化/);
+    assert.equal((await installGameExport(f.root, manifest, f.input)).installed, false);
+    assert.equal(await fs.readFile(path.join(f.game, scene), 'utf8'), 'edited by the game developer');
+    await assertCopies(f, result);
+  });
+  test('a failed authoritative receipt rolls back the install before a successful retry', async () => {
+    const f = await fixture('authoritative-write-failed');
+    const failed = launch(f, 'install-fail-project');
+    assert.equal((await failed.message('result')).code, 'EIO');
+    assert.equal((await failed.exited).code, 0);
+    await absent(path.join(f.game, scene));
+    await absent(path.join(f.game, 'forge_imports/install-ledger.json'));
+    await assertCopies(f, f.delivery);
+    assert.equal((await installGameExport(f.root, manifest, f.input)).status, 'assets_installed');
+  });
+  test('history reads the committed project after mirror failures and retries republish the same receipts', async () => {
+    const f = await fixture('interrupted-mirror');
+    const failed = launch(f, 'install-fail-registry');
+    assert.equal((await failed.message('result')).code, 'EIO');
+    assert.equal((await failed.exited).code, 0);
+    const [authoritative, mirror] = copies(f);
+    assert.equal(JSON.parse(await fs.readFile(mirror)).status, 'awaiting_agent');
+    const installed = await getGameExport(f.root, manifest, f.input);
+    assert.equal(installed.status, 'assets_installed');
+    const ledgerFile = path.join(f.game, 'forge_imports/install-ledger.json');
+    const ledger = await fs.readFile(ledgerFile);
+    const retry = await installGameExport(f.root, manifest, f.input);
+    assert.equal(retry.deliveryRevision, installed.deliveryRevision);
+    assert.deepEqual(retry.changedFiles, []);
+    await assertCopies(f, retry);
+
+    const proof = { ...await evidenceFor(f), deliveryRevision: retry.deliveryRevision };
+    const crashed = launch(f, 'complete-crash-mirror', { input: proof });
+    assert.equal((await crashed.exited).code, 78);
+    assert.equal(JSON.parse(await fs.readFile(mirror)).status, 'assets_installed');
+    const committed = JSON.parse(await fs.readFile(authoritative));
+    const exact = await readGameExportSummary(f.root, manifest, f.input);
+    assert.equal(exact.status, 'integrated');
+    assert.deepEqual(exact.integration, committed.integration);
+    assert.equal((await listGameExports(f.root, manifest)).total, 0);
+    assert.deepEqual(await fs.readFile(ledgerFile), ledger);
+    await assert.rejects(completeGameExport(f.root, manifest, { ...proof, summary: 'Stale verdict' }), { status: 409 });
+    const recovered = await completeGameExport(f.root, manifest, proof);
+    assert.deepEqual(recovered.integration, committed.integration);
+    assert.equal(recovered.deliveryRevision, committed.deliveryRevision);
+    await assertCopies(f, recovered);
+  });
+  test('a recovered earlier package install requires fresh integration evidence', async () => {
+    const f = await fixture('older-package-install-recovery');
+    const before = await installGameExport(f.root, manifest, f.input);
+    const proof = { ...await evidenceFor(f), deliveryRevision: before.deliveryRevision };
+    const completed = await completeGameExport(f.root, manifest, proof);
+    const original = await fs.readFile(path.join(f.game, scene));
+    const zip = await JSZip.loadAsync(packageBytes);
+    const nextBytes = Buffer.concat([original, Buffer.from('\n; a later managed version\n')]);
+    zip.file(scene, nextBytes);
+    const update = await deliverGodotPackage(f.root, manifest, {
+      bytes: await zip.generateAsync({ type: 'nodebuffer' }), projectPath: f.game,
+    });
+    await installGameExport(f.root, manifest, { ...update, projectRevision: f.input.projectRevision });
+    await assert.rejects(installGameExport(f.root, manifest, f.input), { status: 409 });
+    const reinstall = { ...f.input, deliveryRevision: completed.deliveryRevision };
+    const crashed = launch(f, 'install-crash-project', { input: reinstall });
+    assert.equal((await crashed.exited).code, 79);
+    await assertCopies(f, completed);
+    assert.deepEqual(await fs.readFile(path.join(f.game, scene)), original);
+    await assert.rejects(completeGameExport(f.root, manifest, proof), /交付资源发生变化/);
+    const recovered = await installGameExport(f.root, manifest, reinstall);
+    assert.equal(recovered.status, 'assets_installed');
+    assert.equal(recovered.integration, null);
+    assert.equal(recovered.deliveryRevision, completed.deliveryRevision + 1);
+    assert.deepEqual(recovered.changedFiles, []);
+    assert.deepEqual(await fs.readFile(path.join(f.delivery.inboxPath, 'backups', scene)), nextBytes);
+    await assertCopies(f, recovered);
+  });
+  test('project config checks happen after obtaining the lock', async () => {
+    const f = await fixture('lock-local-project-revision');
+    const pending = launch(f, 'install-before-lock');
+    await pending.message('before-lock');
+    await fs.writeFile(path.join(f.game, 'project.godot'), '[application]\nconfig/name="Edited game"\n');
+    pending.release();
+    assert.equal((await pending.message('result')).status, 409);
+    assert.equal((await pending.exited).code, 0);
+    await absent(path.join(f.game, scene));
+    await assertCopies(f, f.delivery);
   });
   try {
     for (const [name, run] of tests) { await run(); console.log(`PASS ${name}`); }

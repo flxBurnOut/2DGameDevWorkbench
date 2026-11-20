@@ -262,6 +262,13 @@ test('managed updates back up old resources and protect manually edited files', 
     await readFile(path.join(game, scene), 'utf8'),
     'custom gameplay scene',
   );
+  // Restore the original package for the later completion fixtures.
+  await writeFile(path.join(game, scene), first.get(scene));
+  installed = await installGameExport(repositoryRoot, manifest, {
+    ...delivery,
+    deliveryRevision: detail.deliveryRevision,
+    projectRevision: detail.inspection.projectRevision,
+  });
 });
 test('project changes, source tampering, invalid target and junction escape are rejected', async () => {
   await assert.rejects(() => inspectGameProject(sandbox), /project.godot/);
@@ -315,7 +322,7 @@ test('Agent completion records actual file evidence and explicit engine-not-run'
     'extends Node2D\n# Isolated acceptance fixture; actual project integration remains Agent-owned.\n',
   );
   const result = await completeGameExport(repositoryRoot, manifest, {
-    ...delivery,
+    ...installed,
     status: 'integrated',
     summary: '隔离夹具已连接入口；未运行引擎。',
     files: ['Main.gd'],
@@ -483,8 +490,9 @@ test('4.7 baseline rejects historical engine evidence and warns on older project
     await writeFile(path.join(projectPath, 'project.godot'), config.replace('"4.7"', '"' + version + '"'));
     const inspected = await inspectGameProject(projectPath);
     assert.equal(inspected.versionWarning === null, expected);
+    const detail = await getGameExport(repositoryRoot, manifest, delivery);
     const result = await completeGameExport(repositoryRoot, manifest, {
-      ...delivery, status: 'integrated', summary: 'Version gate fixture only.', files: ['Main.gd'],
+      ...detail, status: 'integrated', summary: 'Version gate fixture only.', files: ['Main.gd'],
       engine: {status: 'passed', version, evidence: 'Synthetic gate input; no engine execution claimed by this test.'},
     });
     assert.equal(result.integration.engine.baselineValidated, expected);

@@ -37,9 +37,9 @@
 
 1. **发现交付。** 继续获准的游戏接入任务时调用 `workbench_list_game_exports`，分页查完相关范围。`workbench_get_environment.gameExports` 只是前五条待接入摘要，不代替完整列表。按用户明确的交付、名称、项目选择，不能因为“最新”就处理另一个游戏的资产。无相关授权时只告知有待接入事项。
 2. **检查具体项目。** `workbench_get_game_export(deliveryId)` 返回原包校验、所选项目绝对路径、配置指纹、主场景、autoload、有限深度的场景/脚本目录和冲突计划。读取目标自己的 `AGENTS.md`、架构文档及相关文件。目录摘要不是代码审查，可能截断。
-3. **安装资源。** 使用返回的 `packageSha256` 与 `inspection.projectRevision` 调用 `workbench_install_game_export`。新增文件直接安装；相同字节复用；上次由 Forge 管理且未改动的文件先备份再更新。未知同名文件、用户改过的文件或链接会阻止整批安装。先检查并合并冲突，不能删目录、覆盖用户修改或反复尝试来绕过检查。
+3. **安装资源。** 使用返回的 `packageSha256`、`deliveryRevision` 和 `inspection.projectRevision` 调用 `workbench_install_game_export`。新增文件直接安装；相同字节复用；上次由 Forge 管理且未改动的文件先备份再更新。未知同名文件、用户改过的文件或链接会阻止整批安装。先检查并合并冲突，不能删目录、覆盖用户修改或反复尝试来绕过检查。
 4. **完成代码连接。** 使用宿主真实文件工具修改获准的目标工程，不停在“文件已复制”。遵循下面的对象契约，保留项目现有 Builder、控制器、状态机、配置资源、autoload 和关卡生命周期。普通路径命名、资源引用、节点挂载由 Agent 处理，不让用户去 Godot 中手动操作；只有存在无法从代码和已确认策划中决定的玩法或目标选择时才提问。
-5. **验证并记录。** 检查实际资源加载、场景实例化、碰撞、动画与交互。`workbench_complete_game_export` 记录接入场景/脚本的实际路径与当前哈希、简短结果，以及引擎版本和执行证据。未安装不能标完成；不存在的文件不能当证据。引擎未运行填 `not_run`；外部 Agent 提交的运行说明标为 `agent-reported`，服务不会把它冒充自己执行过的检查。
+5. **验证并记录。** 检查实际资源加载、场景实例化、碰撞、动画与交互。`workbench_complete_game_export` 接收安装或最近一次检查返回的 `deliveryRevision` 和 `packageSha256`，记录接入场景或脚本的路径与当前哈希、简短结果，以及引擎版本和执行证据。完成接入时重新核对已安装资源。引擎未运行填 `not_run`。外部 Agent 提交的运行说明标为 `agent-reported`。
 
 ### 按资产完成脚本接入
 
@@ -66,6 +66,10 @@ CLI 对应 `npm run workbench -- agent <共享操作> --input <输入文件> --j
 只读 `GET history` 接受 `pendingOnly`、`offset`、`limit` 和可选 `snapshot`，返回分页交付摘要；`GET record?deliveryId=...` 读取确切的保存记录及交接所需的类型信息。它们沿用同源与回环服务限制，不开放安装或完成接入的网页写接口。`workbench_list_game_exports` 同样可携带返回的 snapshot；不携带时兼容原列表行为。
 
 仓库本机索引目录来自 `workspace.gameExportDirectory`，默认 `work/game-exports/`；游戏中的原始交付、备份、安装索引在 `forge_imports/`。该目录带 `.gdignore`，不会重复注册运行时类。不要删除它来“清理导出”，否则会丢失接入记录和备份。首次替换保留 `backups/` 中的原文件；同一份交付再次替换不同的 Forge 管理版本时，按原文件的 SHA-256 另存备份。ZIP 与新增资源先完整写入临时文件，再用同目录硬链接一次发布。测试目录与正式目录隔离。
+
+导出、安装和完成接入共用工程的 `forge_imports/install.lock`。首次导出在发布 ZIP 后登记交付位置。后续以工程内的 `forge_imports/<delivery-id>/delivery.json` 为准，资源和安装账本写妥后发布工程回执，再更新工作台历史副本。仅工作台写入失败时，工程已提交的变更仍保留。在线历史读取工程回执，重试同一次操作可补齐工作台副本。工程离线时可读最近一份工作台副本。
+
+安装在锁内重读交付、包、项目配置和安装账本。零文件变更的安装重试沿用已有回执、证据哈希和版本号。重新安装实际替换该交付的资源后，需重新记录接入证据。过时版本的写入与正在处理的工程返回冲突。未带 `deliveryRevision` 的旧调用仍可使用，旧交付的初始版本号为 0。
 
 ## 验收
 

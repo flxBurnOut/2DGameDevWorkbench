@@ -1,11 +1,10 @@
 name: CI
 
-# Functional tests run locally (see workbench/guides/development.md).
-# CI only guards the public repository against force-added local files.
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, paper-vbyc]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,11 +14,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  public-repository:
+  workbench:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.13.0
-      - run: npm run check:public
+          node-version: 24
+          cache: npm
+      - run: node --version && git rev-parse HEAD && sha256sum package-lock.json
+      - run: npm ci
+      - run: npm run check:public && npm run lint && npm run typecheck
+      - run: npm run ui-manifest:check && npm run theme:check
+      - run: node tests/frontend-service/web-smoke.mjs dev
+      - run: npm run build
+      - run: node tests/frontend-service/web-smoke.mjs production
+      - run: npm run test:mcp && npm run test:http && npm run test:adapters
+      - run: npm run test:task-isolation && node tests/task-isolation/history.mjs
+      - run: node tests/image-edit/transport.mjs && npm run test:game-export
+
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python --version && git rev-parse HEAD
+      - run: python -m pip install -e ./Tools/PixelProp -e './Tools/SpritePipeline[api,dev]'
+      - run: python -m pytest -q Tools/PixelProp/tests Tools/SpritePipeline/tests/test_paper_experiment.py Tools/SpritePipeline/tests/test_open_motion_checkpoints.py
+
+  platform:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: npm ci
+      - run: python -m pip install -e ./Tools/PixelProp -e "./Tools/SpritePipeline[api,ui,dev]"
+      - run: node tests/game-export/install-lock.mjs
+      - run: python -m pytest -q Tools/SpritePipeline/tests

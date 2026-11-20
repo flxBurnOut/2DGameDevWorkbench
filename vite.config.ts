@@ -2,6 +2,7 @@ import { sites } from '@openai/sites-vite-plugin';
 import tailwindcss from '@tailwindcss/postcss';
 import vinext from 'vinext';
 import { defineConfig, type Plugin } from 'vite';
+import { workspaceIdentity } from './lib/workbench/workspace-identity.mjs';
 import hostingConfig from './.openai/hosting.json';
 import { syncUiManifest } from './scripts/sync-ui-manifest.mjs';
 
@@ -52,7 +53,14 @@ const localBindingConfig = {
     : [],
 };
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ command }) => {
+  const localVars: Record<string, string> = {};
+  if (command === 'serve') {
+    for (const key of ['WORKBENCH_FRONTEND_URL', 'WORKBENCH_RUNTIME_URL', 'WORKBENCH_RUNTIME_PORT', 'WORKBENCH_RUNTIME_WORKSPACE_ID', 'SPRITE_PIPELINE_API_URL']) {
+      const value = process.env[key];
+      if (value) localVars[key] = value;
+    }
+  }
   const testRun = process.env.WORKBENCH_TEST_RUN;
   if (testRun && !/^[a-z0-9][a-z0-9_-]{0,79}$/i.test(testRun))
     throw new Error('WORKBENCH_TEST_RUN must be a simple isolated build identifier.');
@@ -66,7 +74,9 @@ export default defineConfig(async () => {
   const { cloudflare } = await import('@cloudflare/vite-plugin');
 
   return {
-    ...(testRun ? { cacheDir: `work/test-runs/${testRun}/vite-cache` } : {}),
+    // Vinext’s CommonJS transform recognizes prebundled ESM by node_modules/.vite.
+    ...(testRun ? { cacheDir: `work/test-runs/${testRun}/node_modules/.vite` } : {}),
+    define: { __FORGE_WORKSPACE_ID__: JSON.stringify(workspaceIdentity(import.meta.dirname)) },
     css: { postcss: { plugins: [tailwindcss()] } },
     server: {
       strictPort: true,
@@ -90,7 +100,7 @@ export default defineConfig(async () => {
       sites(),
       cloudflare({
         viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] },
-        config: localBindingConfig,
+        config: { ...localBindingConfig, ...(command === 'serve' ? { vars: localVars } : {}) },
       }),
     ],
   };

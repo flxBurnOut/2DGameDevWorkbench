@@ -5,7 +5,7 @@ from ..attack_timeline import is_context_frame
 
 
 def compiled_prompt(plan, character, stage_index, *, policy_version=None):
-    if policy_version in (1,2,3,4,5):
+    if policy_version in (1,2,3,4,5,6):
         from .generation_conditions import compile_conditions
         return compile_conditions(plan, stage_index, policy_version=policy_version)
     stage = plan.stages[stage_index]
@@ -22,7 +22,7 @@ def compiled_prompt(plan, character, stage_index, *, policy_version=None):
                  'Continue the supplied input pose. Transparent background.']
     else:
         parts = [f'Context (not repeated): {q.event_contract}',
-             f'Always: {q.appearance_contract} Side camera, face {character.facing}.',
+             f'Always: {q.appearance_contract}' + (f' Side camera, face {character.facing}.' if character.object_type == 'character' else ''),
              f'ONLY segment {stage_index + 1}/{len(plan.stages)}: {stage.prompt}',
              f'Timing: {stage.checkpoint.rhythm if stage.checkpoint else q.rhythm_contract}',
              'Continue input; no repeated events. Transparent.']

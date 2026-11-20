@@ -9,18 +9,19 @@ import {
   writeFile,
   readFile,
   readdir,
+  rmdir,
   symlink,
+  unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import {
   prepareGodotPackage,
   readGodotZip,
-  unwrapGodotMapZip,
 } from '../../features/godot-export/package.mjs';
 import {
   selectGameProject,
@@ -33,12 +34,6 @@ import {
 } from '../../lib/workbench/game-export.mjs';
 import { buildGodotPackage } from '../../features/interactable-editor/godot-builder.mjs';
 import { createProject } from '../../features/interactable-editor/contract.mjs';
-import {
-  createScene,
-  addMaterial,
-  addInstance,
-} from '../../features/scene-composer/model.mjs';
-import { buildSceneGodotPackage } from '../../features/scene-composer/godot-builder.mjs';
 import { loadManifest, repositoryRoot, agentRequest, runConnector, findCapability } from '../../lib/workbench/runtime.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -69,86 +64,13 @@ const png = await sharp({
 let spritePackage;
 const tests = [],
   test = (name, fn) => tests.push([name, fn]);
-const rawMap = new JSZip();
-rawMap.file('project.godot', 'do not copy');
-rawMap.file('assets/map_overall.png', png);
-rawMap.file(
-  'map_export.json',
-  JSON.stringify({
-    format: 'frame-ronin-engine-package',
-    version: 1,
-    target: 'godot',
-    layers: ['overall'],
-    canvas: { originX: -16, originY: 32, width: 16, height: 16 },
-  }),
-);
-rawMap.file(
-  'regions.json',
-  JSON.stringify({
-    format: 'frame-ronin-regions',
-    version: 1,
-    coordinateSystem: 'pixel-world-y-down',
-    canvas: { originX: -16, originY: 32, width: 16, height: 16 },
-    regions: [
-      {
-        layer: 'collision',
-        points: [
-          { x: -16, y: 32 },
-          { x: 0, y: 32 },
-          { x: 0, y: 48 },
-        ],
-      },
-    ],
-  }),
-);
-rawMap.file(
-  'map_scene.tscn',
-  '[gd_scene load_steps=2 format=3]\n[ext_resource type="Texture2D" path="res://assets/map_overall.png" id="1"]\n[node name="Map" type="Node2D"]\n[node name="Image" type="Sprite2D" parent="."]\nposition = Vector2(-16, 32)\ntexture = ExtResource("1")\n',
-);
-rawMap.file(
-  'frame_ronin_regions.gd',
-  'class_name FrameRoninRegions\nextends RefCounted\nconst MANIFEST = "res://regions.json"\n',
-);
-const mapBytes = await rawMap.generateAsync({ type: 'nodebuffer' });
 const object = await buildGodotPackage(
   { project: createProject() },
   { repositoryRoot, exportId: 'delivery-fixture' },
 );
 let delivery, installed;
-test('map export removes project config, namespaces all references and keeps collisions and pixels', async () => {
-  const p = await prepareGodotPackage(mapBytes),
-    files = await readGodotZip(p.bytes),
-    scene = Buffer.from(
-      files.get(p.manifest.entryScenes[0].slice(6)),
-    ).toString();
-  assert.equal(p.manifest.kind, 'map');
-  assert.equal(
-    [...files.keys()].some((p) => p.endsWith('project.godot')),
-    false,
-  );
-  assert.match(scene, /position = Vector2\(-16, 32\)/);
-  assert.match(scene, /res:\/\/forge_maps\/map-/);
-  assert.equal(
-    hash([...files].find(([n]) => n.endsWith('map_overall.png'))[1]),
-    hash(png),
-  );
-  assert.equal(p.manifest.details.collisionCount, 1);
-  assert.doesNotMatch(
-    Buffer.from([...files].find(([n]) => n.endsWith('.gd'))[1]).toString(),
-    /class_name/,
-  );
-  assert.equal(Object.values((await JSZip.loadAsync(p.bytes)).files).some(f=>f.dir),false,'No nondeterministic auto-created directory entries');
-  const second = await prepareGodotPackage(p.bytes);
-  assert.equal(hash(p.bytes), hash(second.bytes));
-  const restored = unwrapGodotMapZip(await JSZip.loadAsync(p.bytes));
-  assert.equal(
-    await restored.file('regions.json').async('string'),
-    await rawMap.file('regions.json').async('string'),
-  );
-  await writeFile(path.join(sandbox, 'map-standard.zip'), p.bytes);
-});
 test('interactable profiles keep real runtime and scene references', async () => {
-  for (const profile of ['generic', 'copyworms']) {
+  for (const profile of ['generic']) {
     const b = await buildGodotPackage(
       { project: createProject(), targetProfile: profile },
       { repositoryRoot },
@@ -157,57 +79,32 @@ test('interactable profiles keep real runtime and scene references', async () =>
     assert.equal(p.manifest.details.targetProfile, profile);
     assert.equal(p.manifest.entryScenes.length, 1);
     assert.ok(p.manifest.runtime);
+    const before = await readGodotZip(b.bytes);
+    const after = await readGodotZip(p.bytes);
+    for (const [name, bytes] of before) assert.deepEqual(after.get(name), bytes);
+    assert.equal(Object.values((await JSZip.loadAsync(p.bytes)).files).some(f => f.dir), false);
+    assert.equal(hash((await prepareGodotPackage(p.bytes)).bytes), hash(p.bytes));
   }
 });
-test('complete scenes preserve placement, actor slot and one shared runtime', async () => {
-  const scene = createScene('地图交互物接入验收');
-  scene.map = {
-    name: '地图',
-    origin: { x: -16, y: 32 },
-    offset: { x: 3, y: 4 },
-    layers: [
-      {
-        id: 'map_overall',
-        name: '地图',
-        source: 'data:image/png;base64,' + png.toString('base64'),
-        width: 16,
-        height: 16,
-        locked: true,
-        hidden: false,
-        included: true,
-      },
-    ],
-    collisions: [
-      [
-        { x: 0, y: 0 },
-        { x: 8, y: 0 },
-        { x: 8, y: 8 },
-      ],
-    ],
-    source: 'data:application/zip;base64,UEs=',
-    warnings: [],
-  };
-  scene.order.push('map_overall');
-  const material = addMaterial(
-    scene,
-    object.project,
-    object.project.objects[0].definitionId,
-  );
-  addInstance(scene, material.id, 42, 24);
-  const b = await buildSceneGodotPackage(scene, { repositoryRoot }),
-    p = await prepareGodotPackage(b.bytes),
-    before = await readGodotZip(b.bytes),
-    after = await readGodotZip(p.bytes);
-  const entry = p.manifest.entryScenes[0].slice(6);
-  assert.deepEqual(after.get(entry), before.get(entry));
-  assert.equal(p.manifest.details.actorSlot, 'ActorSlot');
-  assert.equal(
-    [...after.keys()].filter((n) =>
-      n.endsWith('/runtime/v1/interaction_runtime_2d.tscn'),
-    ).length,
-    1,
-  );
-  await writeFile(path.join(sandbox, 'scene.zip'), p.bytes);
+test('removed delivery kinds and namespaces cannot enter a retained package', async () => {
+  const prepared = await prepareGodotPackage(object.bytes);
+  const manifestPath = `forge_packages/${prepared.manifest.packageId}/manifest.json`;
+  for (const kind of ['map', 'scene']) {
+    const zip = await JSZip.loadAsync(prepared.bytes);
+    zip.file(manifestPath, JSON.stringify({ ...prepared.manifest, kind }));
+    await assert.rejects(
+      () => zip.generateAsync({ type: 'nodebuffer' }).then(prepareGodotPackage),
+      /包身份无效/,
+    );
+  }
+  for (const name of ['scenes/legacy/scene.tscn', 'forge_maps/legacy/tile.png']) {
+    const zip = await JSZip.loadAsync(object.bytes);
+    zip.file(name, 'unsupported');
+    await assert.rejects(
+      () => zip.generateAsync({ type: 'nodebuffer' }).then(prepareGodotPackage),
+      /未知的根目录/,
+    );
+  }
 });
 test('sprite delivery preserves selected action bytes, FPS, frame order and candidate identity', async () => {
   const zip = new JSZip(),
@@ -263,20 +160,20 @@ test('sprite delivery preserves selected action bytes, FPS, frame order and cand
 test('unsafe packages and unresolved dependencies fail before writing a project', async () => {
   for (const bad of [
     '../escape.gd',
-    'scenes/x/../escape.gd',
-    'scenes/X.gd',
-    'scenes/.git/config',
+    'addons/workbench_interaction/x/../escape.gd',
+    'addons/workbench_interaction/X.gd',
+    'addons/workbench_interaction/.git/config',
   ]) {
     const z = await JSZip.loadAsync(object.bytes);
     z.file(bad, 'bad');
-    if (bad === 'scenes/X.gd') z.file('scenes/x.gd', 'duplicate');
+    if (bad === 'addons/workbench_interaction/X.gd') z.file('addons/workbench_interaction/x.gd', 'duplicate');
     await assert.rejects(async () =>
       prepareGodotPackage(await z.generateAsync({ type: 'nodebuffer' })),
     );
   }
   const z = await JSZip.loadAsync(object.bytes);
   z.file(
-    'scenes/missing.tscn',
+    'addons/workbench_interaction/missing.tscn',
     '[ext_resource path="res://outside/missing.png"]',
   );
   await assert.rejects(
@@ -315,12 +212,14 @@ test('inspection and idempotent install place resources, preserve config and do 
   assert.equal(detail.conflicts.length, 0);
   installed = await installGameExport(repositoryRoot, manifest, {
     ...delivery,
+    installPlanRevision: detail.installPlanRevision,
     projectRevision: detail.inspection.projectRevision,
   });
   assert.equal(installed.installed, true);
   assert.equal(installed.status, 'assets_installed');
   const again = await installGameExport(repositoryRoot, manifest, {
     ...delivery,
+    installPlanRevision: detail.installPlanRevision,
     projectRevision: detail.inspection.projectRevision,
   });
   assert.deepEqual(again.changedFiles, []);
@@ -349,6 +248,7 @@ test('managed updates back up old resources and protect manually edited files', 
   );
   await installGameExport(repositoryRoot, manifest, {
     ...update,
+    installPlanRevision: detail.installPlanRevision,
     projectRevision: detail.inspection.projectRevision,
   });
   assert.equal(
@@ -360,6 +260,7 @@ test('managed updates back up old resources and protect manually edited files', 
   assert.ok(detail.conflicts.includes(scene));
   const blocked = await installGameExport(repositoryRoot, manifest, {
     ...delivery,
+    installPlanRevision: detail.installPlanRevision,
     projectRevision: detail.inspection.projectRevision,
   });
   assert.equal(blocked.installed, false);
@@ -367,6 +268,15 @@ test('managed updates back up old resources and protect manually edited files', 
     await readFile(path.join(game, scene), 'utf8'),
     'custom gameplay scene',
   );
+  // Restore the original package for the later completion fixtures.
+  await writeFile(path.join(game, scene), first.get(scene));
+  detail = await getGameExport(repositoryRoot, manifest, delivery);
+  installed = await installGameExport(repositoryRoot, manifest, {
+    ...delivery,
+    installPlanRevision: detail.installPlanRevision,
+    deliveryRevision: detail.deliveryRevision,
+    projectRevision: detail.inspection.projectRevision,
+  });
 });
 test('project changes, source tampering, invalid target and junction escape are rejected', async () => {
   await assert.rejects(() => inspectGameProject(sandbox), /project.godot/);
@@ -420,7 +330,7 @@ test('Agent completion records actual file evidence and explicit engine-not-run'
     'extends Node2D\n# Isolated acceptance fixture; actual project integration remains Agent-owned.\n',
   );
   const result = await completeGameExport(repositoryRoot, manifest, {
-    ...delivery,
+    ...installed,
     status: 'integrated',
     summary: '隔离夹具已连接入口；未运行引擎。',
     files: ['Main.gd'],
@@ -489,6 +399,14 @@ test('HTTP rejects unauthenticated project writes and exposes remembered setting
       await fetch(url + '/v1/game-export/settings')
     ).json();
     assert.equal(settings.project.path, game);
+    const agent = (operation, input) => fetch(url + '/v1/agent/' + operation, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-forge-game-token': settings.token }, body: JSON.stringify(input),
+    });
+    const inspected = await (await agent('game-export', { deliveryId: delivery.deliveryId })).json();
+    assert.match(inspected.installPlanRevision, /^[a-f0-9]{64}$/);
+    const stale = await agent('install-game-export', { deliveryId: delivery.deliveryId, packageSha256: inspected.packageSha256,
+      projectRevision: inspected.inspection.projectRevision, deliveryRevision: inspected.deliveryRevision, installPlanRevision: '0'.repeat(64) });
+    assert.equal(stale.status, 409);
     const spriteRequest = input=>fetch(url+'/v1/game-export/package',{method:'POST',headers:{'content-type':'application/json','x-forge-game-token':settings.token},body:JSON.stringify(input)});
     const matched = await spriteRequest({jobId:'fixture_export',candidateIndex:2});
     assert.equal(matched.status,200);assert.equal((await prepareGodotPackage(new Uint8Array(await matched.arrayBuffer()))).manifest.details.candidateIndex,2);
@@ -512,17 +430,29 @@ test('HTTP rejects unauthenticated project writes and exposes remembered setting
       ).status,
       200,
     );
-    const response = await fetch(url + '/v1/game-export/deliver', {
+    const deliver = projectPath => fetch(url + '/v1/game-export/deliver', {
       method: 'POST',
       headers: {
         'content-type': 'application/zip',
         'x-forge-game-token': settings.token,
-        'x-forge-project': encodeURIComponent(game),
+        'x-forge-project': encodeURIComponent(projectPath),
       },
-      body: mapBytes,
+      body: object.bytes,
     });
+    const response = await deliver(game);
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).kind, 'map');
+    assert.equal((await response.json()).kind, 'interactable');
+
+    const blockedGame = path.join(sandbox, 'blocked-delivery');
+    const inbox = path.join(blockedGame, 'forge_imports');
+    await mkdir(path.join(inbox, '.gitignore'), { recursive: true });
+    await writeFile(path.join(blockedGame, 'project.godot'), config);
+    const blocked = await deliver(blockedGame);
+    assert.equal(blocked.status, 409);
+    const failure = await blocked.json();
+    assert.equal(failure.code, 'INSTALL_LOCK_IGNORE_UNAVAILABLE');
+    assert.match(failure.error, /forge_imports\/\.gitignore.*普通文件.*权限.*仅下载 ZIP/);
+    assert.equal((await readdir(inbox)).some(name => /^(?:install\.lock|delivery-)/.test(name)), false);
   } finally {
     child.kill();
     await new Promise(r=>pipeline.close(r));
@@ -554,6 +484,36 @@ test('MCP discovers all delivery tools and verifies the same delivery through st
     });
     assert.equal(result.isError, undefined);
     assert.equal(result.structuredContent.project.path, game);
+
+    const { packageSha256, deliveryRevision, inspection, installPlanRevision } = result.structuredContent;
+    assert.match(installPlanRevision, /^[a-f0-9]{64}$/);
+    const args = { deliveryId: delivery.deliveryId, packageSha256, deliveryRevision, projectRevision: inspection.projectRevision, installPlanRevision };
+    const staleInput = { ...args, installPlanRevision: '0'.repeat(64) };
+    const stale = await client.callTool({ name: 'workbench_install_game_export', arguments: staleInput });
+    assert.equal(stale.structuredContent.error.status, 409);
+    const cli = spawnSync(process.execPath, ['scripts/workbench.mjs', 'agent', 'install-game-export', '--input-json', JSON.stringify(staleInput)], {
+      cwd: repositoryRoot, encoding: 'utf8',
+    });
+    assert.equal(cli.status, 1);
+    assert.match(cli.stderr, /版本已变化/);
+    const ignore = path.join(game, 'forge_imports', '.gitignore');
+    const existing = await readFile(ignore);
+    await unlink(ignore);
+    await mkdir(ignore);
+    try {
+      const blocked = await client.callTool({
+        name: 'workbench_install_game_export',
+        arguments: args,
+      });
+      assert.equal(blocked.isError, true);
+      const failure = blocked.structuredContent.error;
+      assert.equal(failure.status, 409);
+      assert.equal(failure.code, 'INSTALL_LOCK_IGNORE_UNAVAILABLE');
+      assert.match(failure.message, /forge_imports\/\.gitignore.*普通文件.*权限.*仅下载 ZIP/);
+    } finally {
+      await rmdir(ignore);
+      await writeFile(ignore, existing);
+    }
   } finally {
     await client.close();
   }
@@ -588,8 +548,9 @@ test('4.7 baseline rejects historical engine evidence and warns on older project
     await writeFile(path.join(projectPath, 'project.godot'), config.replace('"4.7"', '"' + version + '"'));
     const inspected = await inspectGameProject(projectPath);
     assert.equal(inspected.versionWarning === null, expected);
+    const detail = await getGameExport(repositoryRoot, manifest, delivery);
     const result = await completeGameExport(repositoryRoot, manifest, {
-      ...delivery, status: 'integrated', summary: 'Version gate fixture only.', files: ['Main.gd'],
+      ...detail, status: 'integrated', summary: 'Version gate fixture only.', files: ['Main.gd'],
       engine: {status: 'passed', version, evidence: 'Synthetic gate input; no engine execution claimed by this test.'},
     });
     assert.equal(result.integration.engine.baselineValidated, expected);

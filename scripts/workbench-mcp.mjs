@@ -6,8 +6,6 @@ import * as z from 'zod/v4';
 import { assetInputs, assetTools } from '../lib/workbench/asset-contract.mjs';
 import { documentInputs, documentTools } from '../lib/workbench/document-contract.mjs';
 import { imageEditInputs, imageEditTools } from '../lib/workbench/image-edit-contract.mjs';
-import { sceneWorkflowInputs, sceneWorkflowTools } from '../lib/workbench/scene-workflow-contract.mjs';
-import { sceneWorkflowPath } from '../lib/workbench/scene-workflow-presentation.mjs';
 import { mcpContent } from '../lib/workbench/presentation.mjs';
 import { previewInputs, previewTools } from '../lib/workbench/preview-follow-contract.mjs';
 import { WorkBuddyPreview } from '../lib/workbench/workbuddy-preview.mjs';
@@ -15,18 +13,19 @@ import { guidanceTopics } from '../lib/workbench/agent-guidance.mjs';
 import { queuePresentation } from '../lib/workbench/preview-follow.mjs';
 import { KINDS } from '../features/interactable-editor/contract.mjs';
 
+import { repositoryRoot, findAgentCapability, agentCapabilities, loadManifest } from '../lib/workbench/workbench-manifest.mjs';
+import { agentRequest } from '../lib/workbench/agent-api.mjs';
 import {
-  repositoryRoot,
-  agentRequest,
-  findAgentCapability,
-  agentCapabilities,
-  loadManifest,
-  prepareTask,
+  commandIdPattern,
+  commandTaskId,
+  currentTaskPresentation,
+  prepareAgentTask,
+  publicTaskRecord,
   publicCapability,
   refreshTask,
   runConnector,
   summarizeTask,
-} from '../lib/workbench/runtime.mjs';
+} from '../lib/workbench/task-runtime.mjs';
 
 import {gameExportInputs,gameExportTools} from '../lib/workbench/game-export-contract.mjs';
 
@@ -42,12 +41,32 @@ const server = new McpServer(
       'Continue within the user\'s existing scope and budget, including delegated inspection and selection. Ask for unresolved consequential choices or scope changes. Read-only discussion creates no production task; prepare_task optionally saves input validation for authorized work.',
       'Poll the original task/job. Resolve unknown paid submissions using their saved receipts and provider IDs before a new attempt. Shared editing uses current version/hash guards and stable commandId.',
       'On the first WorkBuddy user message, check workbench_get_environment; start offline frontend services once, poll readiness for at most 60 seconds and stop on conflicts. Follow guidance topic presentation for host opening. WorkBuddy requires a visible preview for this session before production: discover the host present_files schema, open preview.hostAction and confirm the session page. preview_required creates no task or provider call; continue with the same parameters after connecting. Use previewPolicy only for an explicit user refusal/dismissal or verified host-tool failure. Use workbench_present at step/selection changes and workbench_get_frontend_context to confirm arrival. Respect paused, closed and unsaved pages. Other clients remain headless unless they present. Page acknowledgement confirms arrival, not artwork quality.',
-      'Direct map-stitcher adapter operations remain outside MCP. Scene-workflow tools support bounded map creation/extension only under their explicit frozen policy and quotas; read scene-collaboration guidance first. Explicit webpage requests can use available host browser tools. Report actual assets, checks and target-engine evidence with appropriate detail.',
+      'Explicit webpage requests can use available host browser tools. Report actual assets, checks and target-engine evidence with appropriate detail.',
     ].join(' '),
   },
 );
 
 function success(value, name) {
+  if (value.plan?.previewPng) {
+    const {previewPng,localPreviewPng,softReferencePreviewPng,...plan}=value.plan;
+    const images=[{role:'writable-area',data:previewPng,mimeType:'image/png'}];
+    if (softReferencePreviewPng) images.push({role:'rgb-control',data:softReferencePreviewPng,mimeType:'image/png'});
+    if (localPreviewPng) images.push({role:'clean-crop',data:localPreviewPng,mimeType:'image/png'});
+    return success({...value,plan,images},name);
+  }
+  if(value.check?.views?.some(view=>view.png)){
+    const views=value.check.views;
+    return success({...value,check:{...value.check,views:views.map(({png:_png,...metadata})=>metadata)},
+      images:views.map(view=>({role:view.role,data:view.png,mimeType:'image/png'}))},name);
+  }
+  if (value.part?.views?.some(view => view.png)) {
+    const { views, suggestion, ...context } = value.part;
+    const images = views.map(view => ({ role: view.role, data: view.png, mimeType: 'image/png' }));
+    const { previewPng, ...fields } = suggestion ?? {};
+    if (previewPng) images.push({ role: 'suggested-scope', data: previewPng, mimeType: 'image/png' });
+    const part = { ...context, views: views.map(({ png: _png, ...view }) => view), ...(suggestion ? { suggestion: fields } : {}) };
+    return success({ ...value, part, images }, name);
+  }
   if (Array.isArray(value.images) && value.images.some(image => image.data)) {
     const metadata = { ...value, images: value.images.map(({ data: _data, ...image }) => image) };
     return { content: [{ type: 'text', text: mcpContent(name, metadata) }, ...value.images.filter(image => image.data).map(image => ({ type: 'image', data: image.data, mimeType: image.mimeType }))], structuredContent: metadata };
@@ -81,6 +100,7 @@ function failure(error) {
         ...(error.code ? { code: error.code } : {}),
         ...(error.status ? { status: error.status } : {}),
         ...(error.currentRevision !== undefined ? { currentRevision: error.currentRevision } : {}),
+        ...(error.taskId ? { taskId: error.taskId } : {}),
         ...(message.match(/^Task ([a-z0-9_-]+) failed:/i)
           ? {
               taskId: message.match(/^Task ([a-z0-9_-]+) failed:/i)[1],
@@ -94,10 +114,6 @@ function failure(error) {
 }
 
 const workbuddyPreview = new WorkBuddyPreview(repositoryRoot, () => server.server.getClientVersion()?.name);
-const sceneOperations = new Map(sceneWorkflowTools.map(([name, operation]) => [name, operation]));
-const sceneProduction = new Set(['scene-workflow-create', 'scene-workflow-execute', 'scene-workflow-revise', 'scene-workflow-resume', 'scene-workflow-adopt']);
-const sceneFollowing = new Set([...sceneProduction, 'scene-workflow-get', 'scene-workflow-pause']);
-const previewPolicySchema = z.enum(['auto', 'user-declined', 'user-dismissed', 'host-unavailable']).optional().describe('WorkBuddy preview exception only for an explicit user choice or verified unavailable host tool. Omit normally. This does not change the production request identity.');
 let following = false;
 async function followResult(value) {
   if (!following || !value.presentation?.viewPath) return value;
@@ -109,19 +125,9 @@ async function followResult(value) {
   }
 }
 function registerTool(name, options, handler) {
-  server.registerTool(name, options, async (input) => {
+  const inputSchema = typeof options.inputSchema.safeParse === 'function' ? options.inputSchema : z.strictObject(options.inputSchema);
+  server.registerTool(name, { ...options, inputSchema }, async (input) => {
     try {
-      const sceneOperation = sceneOperations.get(name);
-      if (sceneProduction.has(sceneOperation) && workbuddyPreview.enabled) {
-        workbuddyPreview.configure(input.previewPolicy);
-        const manifest = await loadManifest();
-        const route = sceneOperation === 'scene-workflow-create'
-          ? sceneWorkflowPath(manifest, input.spec.documentId)
-          : (await agentRequest(manifest, 'scene-workflow-get', { workId: input.workId })).presentation.viewPath;
-        const blocked = await workbuddyPreview.beforeRun(manifest, route);
-        if (blocked) return success({ ...blocked, next: `Complete preview.next, then call ${name} with the same parameters. No task or provider call was created by this blocked request.` }, name);
-        following = !workbuddyPreview.disabledReason;
-      }
       if (name === 'workbench_run_task' && workbuddyPreview.enabled) {
         workbuddyPreview.configure(input.previewPolicy);
         const manifest = await loadManifest();
@@ -130,29 +136,37 @@ function registerTool(name, options, handler) {
         if (blocked) return success(blocked, name);
         following = !workbuddyPreview.disabledReason;
       }
-      if (name === 'workbench_edit_image_region' && input.operation?.type === 'ai-edit' && workbuddyPreview.enabled) {
+      if (workbuddyPreview.enabled && (name === 'workbench_request_candidate_check' || name === 'workbench_request_part_suggestion' || (name === 'workbench_edit_image_region' && input.operation?.type === 'ai-edit'))) {
         workbuddyPreview.configure(input.previewPolicy);
         const manifest = await loadManifest();
-        const target = await agentRequest(manifest, 'image-inspect', input.targetId ? { targetId: input.targetId } : { target: input.target });
+        let targetId = input.targetId;
+        if (name === 'workbench_request_part_suggestion') targetId = (await agentRequest(manifest, 'image-part-get', {partRef:input.partRef})).part.targetId;
+        if (name === 'workbench_request_candidate_check') targetId = (await agentRequest(manifest,'image-critic-get',{reviewRef:input.reviewRef})).check.targetId;
+        const target = await agentRequest(manifest, 'image-inspect', targetId ? { targetId } : { target: input.target });
         const kind = target.target.targetRef.kind;
-        const moduleId = kind === 'interactable' ? 'interactable-editor' : ['scene-layer', 'scene-instance'].includes(kind) ? 'scene-composer' : 'map-stitcher';
+        const moduleId = 'interactable-editor';
         const route = kind === 'image-task' ? manifest.agentAssets.assetCatalog.route : [...manifest.capabilities, ...manifest.editorModules].find(module => module.id === moduleId)?.ui?.route;
         const blocked = await workbuddyPreview.beforeRun(manifest, route || '/');
         if (blocked) return success(blocked, name);
         following = !workbuddyPreview.disabledReason;
       }
       let value = await handler(input);
-      if (sceneFollowing.has(sceneOperation) || ['workbench_run_task', 'workbench_get_task', 'workbench_edit_image_region', 'workbench_get_image_edit'].includes(name)) value = await followResult(value);
-      if (sceneFollowing.has(sceneOperation) || ['workbench_list_capabilities','workbench_describe_capability','workbench_present','workbench_run_task','workbench_get_task','workbench_get_frontend_context','workbench_edit_image_region','workbench_get_image_edit'].includes(name)) {
+      if (['workbench_run_task', 'workbench_get_task', 'workbench_edit_image_region', 'workbench_get_image_edit'].includes(name)) value = await followResult(value);
+      if (['workbench_list_capabilities','workbench_describe_capability','workbench_present','workbench_run_task','workbench_get_task','workbench_get_frontend_context','workbench_edit_image_region','workbench_get_image_edit'].includes(name)) {
         value = await workbuddyPreview.decorate(await loadManifest(), value, value.frontendPresentation?.viewPath || value.presentation?.actions?.[0]?.viewPath || value.presentation?.viewPath || value.viewPath || value.capability?.ui?.route || '/');
       }
-      if (value.imageBase64 || value.edit?.pixels?.imageBase64) {
+      if (value.imageBase64 || value.edit?.pixels?.imageBase64 || value.edit?.comparison) {
         const { imageBase64, ...metadata } = value;
         const images = imageBase64 ? [{ data: imageBase64, mimeType: value.imageMimeType || 'image/png' }] : [];
         if (value.edit?.pixels?.imageBase64) {
           const { imageBase64: candidateImage, ...pixels } = value.edit.pixels;
           metadata.edit = { ...value.edit, pixels };
           images.push({ data: candidateImage, mimeType: value.edit.pixels.imageMimeType || 'image/png' });
+        }
+        if (value.edit?.comparison) {
+          const { beforePng, afterPng, ...comparison } = value.edit.comparison;
+          metadata.edit = { ...metadata.edit, comparison };
+          images.push({ data: beforePng, mimeType: 'image/png' }, { data: afterPng, mimeType: 'image/png' });
         }
         const result = success(metadata, name);
         result.content.push(...images.map(image => ({ type: 'image', ...image })));
@@ -236,6 +250,7 @@ const taskInputSchema = {
   input: z
     .record(z.string(), z.unknown())
     .describe('Input object matching the capability input schema.'),
+  commandId: z.string().regex(commandIdPattern).optional().describe('Stable caller command ID for finding or resuming the same request. Reuse with identical capability and input.'),
 };
 
 registerTool(
@@ -252,15 +267,13 @@ registerTool(
       openWorldHint: false,
     },
   },
-  async ({ capabilityId, input }) => {
+  async ({ capabilityId, input, commandId }) => {
     const manifest = await loadManifest();
     const capability = findAgentCapability(manifest, capabilityId);
-    const execution = await prepareTask(manifest, capability, input);
+    const execution = await prepareAgentTask(manifest, capability, input, { commandId });
     return {
       ...summarizeTask(execution),
-      presentation: (
-        await agentRequest(manifest, 'result', { taskId: execution.task.id })
-      ).presentation,
+      presentation: currentTaskPresentation(manifest, execution.task),
     };
   },
 );
@@ -279,15 +292,13 @@ registerTool(
       openWorldHint: true,
     },
   },
-  async ({ capabilityId, input }) => {
+  async ({ capabilityId, input, commandId }) => {
     const manifest = await loadManifest();
     const capability = findAgentCapability(manifest, capabilityId);
-    const execution = await runConnector(manifest, capability, input);
+    const execution = await runConnector(manifest, capability, input, { commandId });
     return {
       ...summarizeTask(execution),
-      presentation: (
-        await agentRequest(manifest, 'result', { taskId: execution.task.id })
-      ).presentation,
+      presentation: currentTaskPresentation(manifest, execution.task),
     };
   },
 );
@@ -297,9 +308,11 @@ registerTool(
   {
     title: 'Get a 2D workbench task',
     description:
-      'Read a workbench task. If its adapter job is still running, poll that existing job once and persist the refreshed status and artifacts without starting new generation.',
+      'Poll the existing task by taskId or commandId. Default reads return a compact record and saved progress. Use detail:true to include the original input. Follow workbench_get_result for evidence and exact next actions.',
     inputSchema: {
-      taskId: z.string().min(1).describe('Task ID returned by this server.'),
+      taskId: z.string().min(1).optional().describe('Task ID returned by this server.'),
+      commandId: z.string().regex(commandIdPattern).optional().describe('Caller command ID from the original prepare or run.'),
+      detail: z.boolean().optional(),
     },
     annotations: {
       readOnlyHint: false,
@@ -308,13 +321,14 @@ registerTool(
       openWorldHint: true,
     },
   },
-  async ({ taskId }) => {
+  async ({ taskId, commandId, detail }) => {
+    if (Boolean(taskId) === Boolean(commandId)) throw new Error('Provide exactly one of taskId or commandId.');
     const manifest = await loadManifest();
-    const refreshed = await refreshTask(manifest, taskId);
+    const refreshed = await refreshTask(manifest, taskId || commandTaskId(commandId));
     return {
-      task: refreshed.task,
-      presentation: (await agentRequest(manifest, 'result', { taskId }))
-        .presentation,
+      presentation: currentTaskPresentation(manifest, refreshed.task),
+      task: publicTaskRecord(refreshed.task, detail),
+      ...(detail ? { detailIncluded: true } : {}),
       ...(refreshed.refreshError
         ? { refreshError: refreshed.refreshError }
         : {}),
@@ -367,12 +381,13 @@ const discoveryTools = [
       limit: z.number().int().min(1).max(200).optional(),
       offset: z.number().int().min(0).optional(),
       snapshot: z.string().max(2000).optional(),
+      detail: z.boolean().optional().describe('Include full task inputs. Detail pages follow the ordered matches across checkpoints. A row updated during its read has detailChanged:true.'),
     },
   ],
   [
     'workbench_get_result',
     'result',
-    'Read a workbench taskId OR a native sprite jobId (exactly one). Optional candidateIndex selects an existing candidate. Returns a concise presentation and exact viewUrl plus structured results. Does not refresh, generate, create tasks or open a browser.',
+    'Read a saved taskId or a native sprite jobId (exactly one). Sprite results default to a compact summary with next actions, issues and available stage tokens. Request detail:true for bounded technical pages. This read creates no tasks or generation.',
     {
       taskId: z.string().min(1).optional(),
       jobId: z.string().min(1).max(200).optional(),
@@ -381,8 +396,11 @@ const discoveryTools = [
         .boolean()
         .optional()
         .describe(
-          'Return full technical JSON in text content for clients without structuredContent; use for frame review or debugging.',
+          'Fetch one technical page for sprite results. Concatenate detailPage.json across pages before parsing. Other capabilities return their full technical result.',
         ),
+      section: z.string().max(2000).optional().describe('Sprite detail JSON Pointer, e.g. /result/orderedFrames, /result/stage/review, /result/work/plan, or /artifacts. Omit for the complete detail document.'),
+      offset: z.number().int().min(0).optional().describe('Sprite detail starts at 0. For the next page, send detailPage.nextOffset and detailPage.snapshot with the same selection.'),
+      snapshot: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('detailPage.snapshot for a continuation of the same sprite detail selection.'),
     },
   ],
   [
@@ -393,28 +411,17 @@ const discoveryTools = [
   ],
 ];
 for (const [name,operation,description] of gameExportTools) {
-  registerTool(name,{description,inputSchema:gameExportInputs[operation].shape,annotations:{readOnlyHint:['game-exports','game-export'].includes(operation),destructiveHint:false,idempotentHint:true,openWorldHint:false}},async input=>agentRequest(await loadManifest(),operation,input));
+  registerTool(name,{description,inputSchema:gameExportInputs[operation],annotations:{readOnlyHint:['game-exports','game-export'].includes(operation),destructiveHint:false,idempotentHint:true,openWorldHint:false}},async input=>agentRequest(await loadManifest(),operation,input));
 }
-for (const [name, operation, description] of sceneWorkflowTools) {
-  registerTool(name, { description, inputSchema: { ...sceneWorkflowInputs[operation].shape, ...(sceneProduction.has(operation) ? { previewPolicy: previewPolicySchema } : {}) },
-    annotations: { readOnlyHint: ['scene-workflow-list', 'scene-workflow-get', 'scene-workflow-observe'].includes(operation), destructiveHint: false, idempotentHint: true,
-      openWorldHint: ['scene-workflow-create', 'scene-workflow-execute', 'scene-workflow-revise', 'scene-workflow-resume'].includes(operation) } },
-  async input => {
-    const { previewPolicy: _previewPolicy, ...request } = input;
-    return agentRequest(await loadManifest(), operation, request);
-  });
-}
-registerTool('workbench_get_scene_workflow_settings', { description: 'Read scene expert model profiles and credential readiness only; no model call or key values.', inputSchema: {}, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } },
-  async () => agentRequest(await loadManifest(), 'scene-workflow-settings', {}));
 for (const [name, operation, description] of documentTools) {
-  registerTool(name, { description, inputSchema: documentInputs[operation].shape, annotations: { readOnlyHint: ['documents', 'document-get', 'document-observe', 'document-validate', 'document-simulate'].includes(operation), destructiveHint: false, idempotentHint: operation !== 'document-export', openWorldHint: false } }, async input => agentRequest(await loadManifest(), operation, input));
+  registerTool(name, { description, inputSchema: documentInputs[operation], annotations: { readOnlyHint: ['documents', 'document-get', 'document-validate', 'document-simulate', 'document-motion-bindings'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of imageEditTools) {
-  registerTool(name, { description, inputSchema: imageEditInputs[operation].shape, annotations: { readOnlyHint: ['image-inspect', 'image-session-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: operation === 'image-edit' } }, async input => agentRequest(await loadManifest(), operation, input));
+  registerTool(name, { description, inputSchema: imageEditInputs[operation], annotations: { readOnlyHint: ['image-inspect', 'image-session-get', 'image-plan-get', 'image-part-get', 'image-critic-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: ['image-edit', 'image-part-suggest', 'image-critic-run'].includes(operation) } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of previewTools) {
   registerTool(name, {
-    description, inputSchema: previewInputs[operation].shape,
+    description, inputSchema: previewInputs[operation],
     annotations: { readOnlyHint: operation !== 'present', destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => {
     const result = await agentRequest(await loadManifest(), operation, input, { previewSessionId: workbuddyPreview.enabled ? workbuddyPreview.sessionId : undefined });
@@ -427,7 +434,7 @@ for (const [name, operation, description] of assetTools) {
     name,
     {
       description,
-      inputSchema: assetInputs[operation].shape,
+      inputSchema: assetInputs[operation],
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -444,7 +451,7 @@ for (const [name, operation, description, inputSchema] of discoveryTools) {
     name,
     {
       description,
-      inputSchema,
+      inputSchema: z.strictObject(inputSchema),
       annotations: {
         readOnlyHint: !['start', 'frontend'].includes(operation),
         destructiveHint: false,

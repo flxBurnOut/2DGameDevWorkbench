@@ -10,13 +10,15 @@ import {
 const root = await mkdtemp(path.resolve('work/frontend-test-'));
 const server = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
-  res.end(JSON.stringify({ ok: true, service: 'test-web' }));
+  res.end(JSON.stringify({ ok: true, service: 'test-web', version: 1, workspaceId: 'workspace-a' }));
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const port = server.address().port;
 const url = `http://127.0.0.1:${port}/health`;
 const probe = () => probeFrontendService(url, 'test-web');
 assert.equal((await probe()).state, 'ready');
+assert.equal((await probeFrontendService(url, 'test-web', 'workspace-a')).state, 'ready');
+assert.equal((await probeFrontendService(url, 'test-web', 'workspace-b')).state, 'conflict');
 assert.equal((await probeFrontendService(url, 'other-web')).state, 'conflict');
 assert.equal(
   (

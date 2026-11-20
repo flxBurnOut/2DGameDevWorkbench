@@ -16,18 +16,17 @@ assert.match(dir, /test-runs/);
 const present = (input) => agentRequest(manifest, 'present', input);
 const context = (requestId) => frontendContext(repositoryRoot, manifest, { requestId });
 const beat = (input) => frontendHeartbeat(repositoryRoot, manifest, input);
-const page = { pageId: randomUUID(), viewPath: '/tools/map-stitcher', visible: true, focused: true, following: true,
-  items: [{ id: 'map-draft', title: '灯塔地图', capabilityId: 'map-stitcher' }], dirty: true, busy: false };
+const page = { pageId: randomUUID(), viewPath: '/tools/interactable-editor', visible: true, focused: true, following: true,
+  items: [{ id: 'object-draft', title: '灯塔交互物', capabilityId: 'interactable-editor' }], dirty: true, busy: false };
 const before = await context();
 assert.deepEqual(before.pages, []);
 assert.equal(before.presentation, null);
 for (const input of [{}, { taskId: 'x', capabilityId: 'reference-art' }, { capabilityId: 'unknown' },
   { capabilityId: 'reference-art', candidateIndex: 2 }, { capabilityId: 'reference-art', url: 'https://evil.invalid' }]) await assert.rejects(present(input));
-for (const url of ['//evil.invalid', '/api/secret', '/tools/map-stitcher?apiKey=secret', '/tools/map-stitcher#secret', '/\\evil.invalid']) assert.throws(() => previewPath(manifest, url));
-assert.equal(previewPath(manifest, '/tools/map-stitcher?imageTask=image-a'), '/tools/map-stitcher?imageTask=image-a');
-assert.equal(previewPath(manifest, '/tools/map-stitcher?map=map-a&imageEdit=edit-a&imageCandidate=2'), '/tools/map-stitcher?imageCandidate=2&imageEdit=edit-a&map=map-a');
+for (const url of ['//evil.invalid', '/api/secret', '/tools/interactable-editor?apiKey=secret', '/tools/interactable-editor#secret', '/\\evil.invalid']) assert.throws(() => previewPath(manifest, url));
+assert.equal(previewPath(manifest, '/tools/interactable-editor?imageTask=image-a'), '/tools/interactable-editor?imageTask=image-a');
+assert.equal(previewPath(manifest, '/tools/interactable-editor?document=prop-a&imageEdit=edit-a&imageCandidate=2'), '/tools/interactable-editor?document=prop-a&imageCandidate=2&imageEdit=edit-a');
 assert.equal(previewPath(manifest, '/tools/interactable-editor?document=shared-object'), '/tools/interactable-editor?document=shared-object');
-assert.equal(previewPath(manifest, '/tools/scene-composer?document=shared-scene'), '/tools/scene-composer?document=shared-scene');
 await assert.rejects(beat({ ...page, pixels: 'unapproved draft upload' }));
 const queued = await present({ capabilityId: 'reference-art' });
 assert.equal(queued.state, 'waiting_for_frontend');
@@ -35,7 +34,7 @@ assert.equal(queued.displayed, false);
 assert.equal(queued.createsTask, false);
 const first = await beat(page);
 assert.equal(first.request.id, queued.requestId);
-assert.equal((await context()).pages[0].items[0].title, '灯塔地图');
+assert.equal((await context()).pages[0].items[0].title, '灯塔交互物');
 await assert.rejects(beat({ ...page, ack: { requestId: queued.requestId, state: 'displayed' } }), /not reached/);
 const other = { ...page, pageId: randomUUID(), focused: false };
 assert.equal((await beat(other)).request, null);
@@ -48,6 +47,7 @@ assert.equal((await present({ capabilityId: 'reference-art' })).requestId, queue
 await beat({ ...page, following: false });
 const paused = await present({ capabilityId: 'interactable-editor' });
 assert.equal(paused.state, 'paused');
+assert.equal((await beat({ ...page, ack: { requestId: queued.requestId, state: 'displayed' } })).request.id, paused.requestId);
 assert.equal((await context(queued.requestId)).presentation.state, 'displayed');
 await beat({ ...page, following: true, ack: { requestId: paused.requestId, state: 'blocked', reason: 'save-failed' } });
 assert.equal((await context()).presentation.reason, 'save-failed');
@@ -64,10 +64,7 @@ const identityPage = { ...page, pageId: randomUUID(), dirty: false };
 for (const viewPath of [
   '/tools/sprite-generator?work=motion-a&version=2&candidate=1',
   '/tools/interactable-editor?document=prop-a&object=door-a&imageEdit=edit-a&imageCandidate=2',
-  '/tools/map-stitcher?map=map-a&imageEdit=edit-b&imageCandidate=source',
-  '/tools/map-stitcher?imageTask=image-a',
-  '/tools/scene-composer?document=scene-a&imageEdit=edit-c&imageCandidate=3',
-  '/tools/scene-composer?document=scene-a&sceneWorkflow=scene-task-a',
+  '/tools/interactable-editor?imageTask=image-a',
   '/assets?asset=image:source-a&imageEdit=edit-d&imageCandidate=2',
 ]) {
   const request = await queuePresentation(repositoryRoot, identityManifest, { viewPath, title: 'Exact preview identity', summary: 'Identity round trip' });
@@ -109,7 +106,7 @@ try {
   assert.equal(result.frontendPresentation, undefined);
   assert.equal((await context()).presentation.requestId, saved.frontendPresentation.requestId);
   const crossProcess = await call('workbench_get_frontend_context', { requestId: saved.frontendPresentation.requestId });
-  assert.equal(crossProcess.pages[0].items[0].title, '灯塔地图');
+  assert.equal(crossProcess.pages[0].items[0].title, '灯塔交互物');
   const taskNames = await readdir(path.resolve(repositoryRoot, manifest.workspace.taskDirectory));
   await call('workbench_present', { taskId });
   assert.deepEqual(await readdir(path.resolve(repositoryRoot, manifest.workspace.taskDirectory)), taskNames);

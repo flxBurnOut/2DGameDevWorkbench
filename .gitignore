@@ -42,11 +42,17 @@ next-env.d.ts
 /work/
 /tmp/
 
+# Local nested checkout; never stage it as an unconfigured gitlink.
+/2dgamedevworkbench/
+
 # local Python sprite pipeline runtime
 /Tools/SpritePipeline/.venv/
 /Tools/SpritePipeline/**/__pycache__/
 /Tools/SpritePipeline/.pytest_cache/
 /Tools/SpritePipeline/*.egg-info/
+/Tools/PixelProp/*.egg-info/
+/Tools/PixelProp/build/
+/Tools/SpritePipeline/build/
 
 # Bytecode from local engineering Skill helpers
 .agents/skills/**/__pycache__/
@@ -55,7 +61,7 @@ tests/game-engineering/__pycache__/
 # Local development instructions and host state (product Skills are distributed)
 [Aa][Gg][Ee][Nn][Tt].md
 [Aa][Gg][Ee][Nn][Tt][Ss].md
-# Shared root navigation ships with the project; other host instructions stay local.
+# Shared navigation ships at the root and in the issue register.
 !/AGENTS.md
 CLAUDE.md
 /CONTRIBUTING.md
@@ -92,6 +98,8 @@ CLAUDE.md
 !/Tools/SpritePipeline/presets/characters/README.md
 !/Tools/SpritePipeline/presets/characters/_template/
 !/Tools/SpritePipeline/presets/characters/diagnostic_dummy/
+# Portable object presets contain local user reference images.
+/Tools/SpritePipeline/presets/objects/
 
 # Runtime logs and disposable caches
 *.log
@@ -107,7 +115,6 @@ logs/
 
 # Public documentation allowlist: new work notes remain local by default
 /docs/*
-!/docs/MAP_STITCHER_ARCHITECTURE.md
 !/docs/README.md
 !/docs/agent-clients.md
 !/docs/agent-client-tools.md
@@ -115,6 +122,7 @@ logs/
 !/docs/agent-preview-follow.md
 !/docs/architecture.md
 !/docs/asset-catalog.md
+!/docs/asset-packages.md
 !/docs/connector-contract.md
 !/docs/desktop-compatibility.md
 !/docs/game-engineering.md
@@ -122,14 +130,24 @@ logs/
 !/docs/interactable-editor.md
 !/docs/internal-imports.md
 !/docs/image-editing.md
-!/docs/map-stitcher.md
+!/docs/论文方向与方法.md
+!/docs/论文-序列帧长动作生成.md
+!/docs/论文分支执行计划.md
+!/docs/前端优化方案.md
+!/docs/前端界面与交互优化方案.md
+!/docs/交互物动画独立面板方案.md
+!/docs/物品原图导入与像素化转换方案.md
+# Share written issue records. Keep raw runs and attachments in their existing locations.
+!/docs/问题清单/
+/docs/问题清单/**
+!/docs/问题清单/**/
+!/docs/问题清单/**/*.md
 !/docs/operations-manual.md
 !/docs/prop-art.md
 !/docs/reference-art.md
-!/docs/scene-composer.md
-!/docs/scene-collaboration.md
 !/docs/sprite-generator.md
 !/docs/sprite-review-evaluation.md
 !/docs/motion-adjustments.md
+!/docs/motion-experiments.md
 !/docs/visual-structures.md
 !/docs/workbench-interface.md

@@ -1,0 +1,10 @@
+import type { z } from 'zod/v4';
+import type { InteractableProject } from '../interactable-editor/contract.mjs';
+import type { InteractionSimulation, InteractionState, SimEvent } from '../interactable-editor/simulator.mjs';
+export type SimulationInput = ({type:'move-actor'|'click';x:number;y:number}) | {type:'tick';seconds:number} | {type:'request';instanceId:string} | {type:'press'|'advance-text'|'finish-audio'|'cancel'};
+export type SimulationInstanceState = InteractionState & {enabled:boolean;visible:boolean;solidEnabled:boolean};
+export const simulationEventSchema: z.ZodType<SimulationInput>;
+export const simulationEventsSchema: z.ZodType<SimulationInput[]>;
+export function createInteractableSimulation(content:InteractableProject): InteractionSimulation;
+export function simulationInstanceState(simulation:InteractionSimulation, instanceId:string): SimulationInstanceState | null;
+export function replaySimulationEvents<T extends InteractionSimulation>(simulation:T, events:SimulationInput[]): {simulation:T;steps:Array<SimulationInput & {index:number;time:number;accepted?:boolean}>;events:SimEvent[];eventCount:number;truncated:boolean;states:Array<SimulationInstanceState & {instanceId:string;definitionId:string;state:InteractionState;cooldown:number;inRange:boolean}>;linkAttempts:number;linkDiagnostics:Array<{code:string;message:string;linkId?:string}>};

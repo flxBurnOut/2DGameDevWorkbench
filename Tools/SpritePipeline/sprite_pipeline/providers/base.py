@@ -18,11 +18,13 @@ import io
 import time
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable, Mapping, Sequence
 
 from PIL import Image, UnidentifiedImageError
+
+from ..errors import ProviderError
 
 
 DEFAULT_MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -70,6 +72,7 @@ class ProviderRequest:
     transparent_background: bool = True
     last_frame: bytes | None = None
     edit_frames: tuple[bytes, ...] | None = None
+    local_submission_id: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize simple values and reject invalid provider-independent input."""
@@ -159,6 +162,9 @@ class PollResult:
     usage: dict[str, Any] = field(default_factory=dict)
     error: dict[str, Any] | None = None
     diagnostic_only: bool = False
+    # A failed batch may still contain valuable decoded originals. Their slots
+    # remain separate from playable images and preserve the upstream indices.
+    partial_images: list[bytes | None] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Prevent contradictory poll states from escaping a provider."""
@@ -169,6 +175,12 @@ class PollResult:
             raise ValueError("pending or failed provider results cannot contain images")
         if self.status is PollStatus.failed and self.error is None:
             raise ValueError("failed provider results must include a structured error")
+        if self.status is not PollStatus.failed and self.partial_images:
+            raise ValueError("partial image evidence belongs to a failed batch")
+
+    @property
+    def raw_images(self) -> list[bytes] | list[bytes | None]:
+        return self.partial_images or self.images
 
     @property
     def frames(self) -> list[bytes]:
@@ -239,10 +251,21 @@ class SpriteProvider(ABC):
         """
 
         deadline = self._monotonic() + self.max_wait_seconds
-        last_result: PollResult | None = None
+        observed_usage: dict[str, Any] = {}
         while True:
-            last_result = self.poll(provider_job_id)
+            try:
+                last_result = self.poll(provider_job_id)
+            except ProviderError as exc:
+                if observed_usage:
+                    exc.details.setdefault("last_poll_usage", observed_usage)
+                raise
+            if last_result.provider_job_id == provider_job_id:
+                usage = last_result.usage or last_result.raw_response.get("usage")
+                if isinstance(usage, Mapping) and usage:
+                    observed_usage = redact_provider_payload(usage)
             if last_result.done:
+                if not last_result.usage and observed_usage and last_result.provider_job_id == provider_job_id:
+                    return replace(last_result, usage=observed_usage)
                 return last_result
             remaining = deadline - self._monotonic()
             if remaining <= 0:
@@ -252,7 +275,7 @@ class SpriteProvider(ABC):
                     status=PollStatus.failed,
                     provider_status=last_result.provider_status,
                     raw_response=last_result.raw_response,
-                    usage=last_result.usage,
+                    usage=observed_usage,
                     error={
                         "code": "provider_wait_timeout",
                         "message": "provider job did not finish before the harness wait deadline",

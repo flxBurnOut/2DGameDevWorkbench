@@ -4,11 +4,12 @@ import hashlib
 from .contracts import digest
 from .model_config import ModelRegistry
 from .visual_review import Observations, Audit, evidence_panels, grounded_audit
-from ..attack_timeline import is_context_frame
+from .drawing_frames import FRAME_NORMALIZATION, playback_indices
 from ..errors import ConflictError, ValidationHarnessError
 from ..models import CandidateStatus, utc_now
 from ..vision_evidence import image_part, raster
-from .review_inputs import observation_content, audit_content
+from .review_inputs import prop_review_context, review_dimensions, observation_content, audit_content
+from .state_chain import confirmed_state, transition
 
 
 def checked_plan(job):
@@ -31,19 +32,24 @@ class Checkpoints:
             raise ValidationHarnessError('此任务没有对应的分段检查点')
         return self.s._candidate(job, index).plan_execution.stages[stage]
 
+    def snapshot_bytes(self, job_id, source):
+        try:
+            data = self.s.store.resolve_job_path(job_id, source['path']).read_bytes()
+        except FileNotFoundError as exc:
+            raise ConflictError('已确认的姿势快照缺失，停止后续生成') from exc
+        if hashlib.sha256(data).hexdigest() != source['sha256']:
+            raise ConflictError('已确认的姿势快照发生变化，停止后续生成')
+        return data
+
     def accepted_frames(self, job, index, stage):
         run = self.run_record(job, index, stage)
         if run.state != 'accepted' or not run.accepted:
             raise ConflictError('前一片段尚未确认，不能将未经检查的姿势传入下一段')
-        data = []
-        for item in run.accepted['frames']:
-            path = self.s.store.resolve_job_path(job.job_id, item['path'])
-            payload = path.read_bytes()
-            if hashlib.sha256(payload).hexdigest() != item['sha256']:
-                raise ConflictError('已确认的姿势快照发生变化，停止后续生成')
-            data.append(payload)
+        data = [self.snapshot_bytes(job.job_id, item) for item in run.accepted['frames']]
         if not data or hashlib.sha256(data[-1]).hexdigest() != run.accepted['anchor_sha256']:
             raise ConflictError('实际姿势锚点与已确认片段不一致')
+        if run.state_checkpoint and self.snapshot_bytes(job.job_id, run.state_checkpoint) != data[-1]:
+            raise ConflictError('已确认的状态帧与过渡末帧不一致')
         return data
 
     def input_frame(self, job, index, stage):
@@ -54,23 +60,29 @@ class Checkpoints:
             raise ConflictError('原始参考图已改变')
         return data
 
+    def state_image(self, job, index, stage):
+        if not checked_plan(job) or not job.request.open_plan.plan.quality.interactable:
+            raise ValidationHarnessError('仅交互物作业登记状态图')
+        run = self.run_record(job, index, stage)
+        if run.accepted:
+            return self.accepted_frames(job, index, stage)[-1]
+        if run.state_checkpoint:
+            return self.snapshot_bytes(job.job_id, run.state_checkpoint)
+        raise ConflictError('本段尚无已确认状态图')
+
     def evidence(self, job, index, stage):
         from .execution import PlanGeneration
         run = self.run_record(job, index, stage)
         if run.state in {'created', 'submitting', 'pending', 'unknown', 'failed'}:
             raise ConflictError('片段尚未完整保存，暂时不能检查')
         engine = PlanGeneration(self.s)
-        raw = engine.saved_frames(job.job_id, index, stage)
+        raw = engine.saved_frames(job.job_id, index, stage, expected_manifest_sha256=run.frames_manifest_sha256)
         first = self.input_frame(job, index, stage)
         definition = job.request.open_plan.plan.stages[stage]
-        if not definition.frame_count <= len(raw) <= definition.frame_count + 1:
-            raise ValidationHarnessError('片段帧数不符合方案；不补帧、不丢弃实际姿势')
-        offset = int(len(raw) == definition.frame_count + 1 and is_context_frame(raw[0], first))
-        if len(raw) - offset != definition.frame_count:
-            raise ValidationHarnessError('多出的帧不是可确认的输入参考帧，停止衔接')
+        indices = playback_indices(raw, definition.frame_count, first)
         frames = [{'raw_index': i, 'sha256': hashlib.sha256(raw[i]).hexdigest(),
                    'path': (engine.directory(job.job_id,index,stage) / f'frame_{i:03d}.png').relative_to(self.s.store.job_dir(job.job_id)).as_posix()}
-                  for i in range(offset, len(raw))]
+                  for i in indices]
         if run.active_frames is not None:
             from .repairs import LocalRepairs
             if len(run.active_frames)!=len(frames):raise ConflictError('修复版本帧数与原片段不同')
@@ -84,19 +96,23 @@ class Checkpoints:
                         **target_identity,
                         'input_sha256': hashlib.sha256(first).hexdigest()})
         return {'token': token, 'frames': frames, **target_identity, 'input_sha256': hashlib.sha256(first).hexdigest(),
-                'context_removed': bool(offset), 'raw_count': len(raw)}
+                'context_removed': indices[0] != 0, 'raw_count': len(raw),
+                'frame_normalization': FRAME_NORMALIZATION}
 
-    def view(self, job_id, index, stage):
-        job = self.s.store.load(job_id)
+    def view(self, job_id, index, stage, *, job=None, preview=None):
+        job = job if job is not None else self.s.store.load(job_id)
         run = self.run_record(job, index, stage)
-        evidence = self.evidence(job, index, stage)
+        evidence = self.evidence(job, index, stage) if preview is None else preview
         if run.accepted:
-            self.accepted_frames(job, index, stage)
+            if preview is None:
+                self.accepted_frames(job, index, stage)
             if run.accepted['token'] != evidence['token']:
                 raise ConflictError('片段原始内容已改变，已采用记录不能用于新内容')
-        return {**evidence, 'stage_index': stage, 'candidate_index': index, 'state': run.state,
+        edge = transition(job.request.open_plan.plan, stage)
+        return {**evidence, **({'transition': edge, 'state_image': confirmed_state(job.request.open_plan.plan, stage, run)} if edge else {}),
+                'stage_index': stage, 'candidate_index': index, 'state': run.state,
                 'definition': job.request.open_plan.plan.stages[stage].model_dump(mode='json'),
-                'fps': job.action.fps, 'review': run.review, 'accepted': run.accepted, 'repairs':run.repairs}
+                'fps': job.action.fps, 'review': run.review, 'accepted': run.accepted, 'state_checkpoint': run.state_checkpoint, 'repairs':run.repairs}
 
     def inspect(self, job_id, index, stage):
         job = self.s.store.load(job_id)
@@ -112,7 +128,13 @@ class Checkpoints:
         if run.state != 'complete': return
         evidence = self.evidence(job,index,stage)
         from .motion_evidence import measurements
-        metrics = measurements([self.s.store.resolve_job_path(job_id,f['path']).read_bytes() for f in evidence['frames']],job.action.fps)
+        prop_context = prop_review_context(job.request.open_plan, stage)
+        metrics = measurements([self.s.store.resolve_job_path(job_id,f['path']).read_bytes() for f in evidence['frames']],job.action.fps, prop_context.get('interactable'),
+            (self.s.store.job_dir(job_id) / 'input/reference.png'))
+        from .prop_measurements import tracked_measurements, guard_measurements
+        cues = tracked_measurements(self.s, job, index, stage, evidence['token'])
+        if cues:
+            metrics['tracked_parts'] = cues
         with self.s.store.locked_job(job_id) as current:
             r = self.run_record(current,index,stage)
             r.state = 'reviewing'
@@ -136,13 +158,13 @@ class Checkpoints:
                 target = next((t for t in job.request.open_plan.end_targets if t.stage == stage),None)
                 if target:
                     pictures += [{'type':'input_text','text':'TARGET POSE GUIDE, NOT a generated frame. Verify whether actual frames approach it; do not claim exact pixel equality. Human target note: '+target.note},image_part(raster(self.s.store.job_dir(job_id)/'targets'/target.filename,256))]
-                observations = self.call(job_id,index,stage,'observe',observation_content(pictures,segment=True),Observations,len(paths))
+                observations = self.call(job_id,index,stage,'observe',observation_content(pictures, interactable=bool(prop_context), segment=True),Observations,len(paths))
                 if [f.frame for f in observations.frames] != list(range(1,len(paths)+1)):
                     raise ValidationHarnessError('分段逐帧观察不完整或顺序错误')
                 with self.s.store.locked_job(job_id) as current:
                     self.run_record(current,index,stage).review['observations'] = observations.model_dump(mode='json')
                 definition = job.request.open_plan.plan.stages[stage]
-                contract = {'segment':definition.model_dump(mode='json'),
+                contract = {**prop_context, 'segment':definition.model_dump(mode='json'),
                     'appearance':job.request.open_plan.plan.quality.appearance_contract,
                     'user_request':job.request.open_plan.spec.description,
                     'pixel_cues_not_verdict':metrics,
@@ -150,7 +172,7 @@ class Checkpoints:
                 from .adjustment_review import add_accepted_goals
                 contract=add_accepted_goals(contract,self.s._candidate(job,index),stage)
                 audit = self.call(job_id,index,stage,'audit',audit_content(pictures,contract,job.action.fps,segment=True),Audit,len(paths))
-                if {c.dimension for c in audit.checks} != {'completeness','equipment','rhythm'} or any(f > len(paths) for c in audit.checks for f in c.frames):
+                if {c.dimension for c in audit.checks} != set(review_dimensions(prop_context)) or any(f < 1 or f > len(paths) for c in audit.checks for f in c.frames):
                     raise ValidationHarnessError('分段验收证据无效')
                 verdict,checks,summary = grounded_audit(audit,len(paths))
                 report = {'state':'complete','verdict':verdict,'checks':checks,'summary':summary,'model_audit':audit.model_dump(mode='json')}
@@ -159,6 +181,8 @@ class Checkpoints:
                     report = ProductionReview(self.s, job_id, index, stage=stage).finish(report,
                         lambda phase, content, schema, count: self.call(job_id,index,stage,phase,content,schema,count),
                         expected_token=evidence['token'], expected_fps=job.action.fps)
+                else:
+                    report = guard_measurements(report, cues)
         except Exception as exc:
             report = {'state':'failed','verdict':'uncertain','summary':str(exc) if isinstance(exc,ValidationHarnessError) else '分段视觉检查未完成，未自动重试；请人工检查。'}
         with self.s.store.locked_job(job_id) as current:
@@ -180,7 +204,8 @@ class Checkpoints:
         receipt = {}
         try:
             result, metadata = self.registry.send('reviewer',content,schema,count,snapshot=job.request.open_plan.model_snapshot,
-                schema_name='open_motion_checkpoint',on_response=receipt.update)
+                schema_name='open_motion_checkpoint',on_response=receipt.update,
+                **({'interactable': True} if job.request.open_plan.plan.quality.interactable else {}))
             request.update(state='complete',**metadata)
             if job.request.open_plan.spec.review_protocol == 'experts_v1':
                 request['response'] = result.model_dump(mode='json')
@@ -190,24 +215,35 @@ class Checkpoints:
             with self.s.store.locked_job(job_id) as current:
                 self.run_record(current,index,stage).review['requests'][-1] = request
 
-    def decide(self, job_id, index, stage, *, token, note, decision, acknowledge=False, reviewer='user', anchor_frame=None, acknowledge_trim=False):
-        if decision not in {'accept','reject'} or len(note.strip()) < 4:
+    def decide(self, job_id, index, stage, *, token, note, decision, acknowledge=False, reviewer='user', anchor_frame=None, acknowledge_trim=False,human_seconds=None):
+        if decision not in {'accept','reject','accept_state'} or len(note.strip()) < 4:
             raise ValidationHarnessError('请填写实际检查结论并选择确认或不合格')
         with self.s.store.operation_lock(job_id,'open_plan',timeout_seconds=0.2):
             job = self.s.store.load(job_id); run = self.run_record(job,index,stage)
+            from .experiment_policy import experiment_for
+            from .experiment import MODEL_ONLY_REVIEWER
+            if job.request.open_plan and experiment_for(self.s, job.request.open_plan.work_id).get('arm') == 'model_only' and reviewer != MODEL_ONLY_REVIEWER:
+                raise ConflictError('model_only 实验副本由自动策略裁决，禁止人工介入解锁分段')
             evidence = self.evidence(job,index,stage)
             end = len(evidence['frames']) - 1 if anchor_frame is None else anchor_frame
             if type(end) is not int or not 0 <= end < len(evidence['frames']):
                 raise ValidationHarnessError('请选择当前片段中真实存在的锚点帧')
+            pinned = run.state_checkpoint
+            if pinned and decision != 'reject':
+                if end != pinned['frame'] or evidence['frames'][end]['sha256'] != pinned['sha256']:
+                    raise ConflictError('已确认的状态帧与所选锚点不一致')
+                self.snapshot_bytes(job_id, pinned)
             if decision == 'accept' and end < len(evidence['frames'])-1 and not acknowledge_trim:
                 raise ValidationHarnessError('选择提前到达的姿势时，须明确确认截取范围；原始尾帧会完整保留')
             if evidence['token'] != token:
                 raise ConflictError('片段或输入姿势已改变，请重新查看；旧结论不可沿用')
+            if pinned and decision == 'accept_state':
+                return job  # Same selected frame, verified against the current version.
             if run.state == 'accepted' and decision == 'accept' and run.accepted['token'] == token:
                 if run.accepted.get('selected_anchor_frame',len(evidence['frames'])-1) != end:
                     raise ConflictError('该片段已锁定为其他锚点，不能重复确认改写')
                 self.accepted_frames(job,index,stage)
-                return  # Idempotent response recovery, never re-enable a paused task.
+                return job  # Idempotent response recovery, never re-enable a paused task.
             if run.state != 'awaiting_review':
                 raise ConflictError('当前片段不能重复裁决或绕过未完成的检查')
             from .adjustments import pending_adjustment
@@ -218,6 +254,28 @@ class Checkpoints:
                 raise ConflictError('视觉报告与实际帧不一致，请保留原记录并重新制定方案')
             if decision == 'accept' and run.review.get('verdict') != 'pass' and not acknowledge:
                 raise ValidationHarnessError('模型意见未通过；需实际检查后明确接受提醒并写明依据')
+            if decision == 'accept_state':
+                if not job.request.open_plan.plan.quality.interactable:
+                    raise ValidationHarnessError('独立确认状态帧仅用于交互物合同')
+                state_check = next((c for c in run.review.get('checks', []) if c['dimension'] == 'state_frame'), {})
+                if (state_check.get('status') != 'pass' or state_check.get('confidence', 0) < .85
+                        or end + 1 not in state_check.get('frames', [])) and not acknowledge:
+                    raise ValidationHarnessError('所选状态帧缺少通过的帧级意见，请实际检查并确认提醒')
+                frame = evidence['frames'][end]
+                data = self.s.store.resolve_job_path(job_id, frame['path']).read_bytes()
+                if hashlib.sha256(data).hexdigest() != frame['sha256']:
+                    raise ConflictError('所选状态帧发生变化')
+                path = self.s.store.job_dir(job_id) / 'checkpoints' / f'c{index}' / f's{stage}-{token[:20]}-state-{end}.png'
+                self.s._atomic_write_bytes(path, data)
+                with self.s.store.locked_job(job_id) as current:
+                    self.run_record(current,index,stage).state_checkpoint = {
+                        **frame, 'frame': end, 'token': token,
+                        'path': path.relative_to(self.s.store.job_dir(job_id)).as_posix(), 'note': note.strip(),
+                        'human_seconds':human_seconds,'reviewer': reviewer, 'accepted_at': utc_now(), 'acknowledge_warnings': acknowledge}
+                    current.plan_control.enabled = False
+                    current.plan_control.message = '状态帧已锁定，过渡仍待修复或确认'
+                    current.touch('open_motion_state_frame_accepted', candidate_index=index, stage=stage, frame=end)
+                return current
             snapshot = None
             if decision == 'accept':
                 # Keep Windows paths short; full identity and integrity hashes stay in the record.
@@ -238,9 +296,10 @@ class Checkpoints:
             with self.s.store.locked_job(job_id) as current:
                 r = self.run_record(current,index,stage)
                 r.state = 'accepted' if snapshot else 'rejected'; r.accepted = snapshot
-                r.review['human_decision'] = {'decision':decision,'note':note.strip(),'reviewer':reviewer,'token':token,'anchor_frame':end if snapshot else None}
+                r.review['human_decision'] = {'decision':decision,'human_seconds':human_seconds,'note':note.strip(),'reviewer':reviewer,'token':token,'anchor_frame':end if snapshot else None}
                 current.plan_control.enabled = bool(snapshot)
                 current.plan_control.message = '实际姿势已锁定，继续已授权制作' if snapshot else '当前片段不合格，已停止后续制作；原始结果保留'
                 if not snapshot:self.s._candidate(current,index).status = CandidateStatus.rejected
                 self.s._refresh_job_status(current)
                 current.touch('open_motion_checkpoint_decided',candidate_index=index,stage=stage,decision=decision)
+            return current

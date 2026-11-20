@@ -71,9 +71,57 @@ try {
   const fromCli = await cli('image-session-get', { editId: edited.edit.editId }); check(fromCli.code, 0); check(JSON.parse(fromCli.stdout).edit.candidates[0].taskId, edited.taskId);
   await client.connect(new StdioClientTransport({ command: process.execPath, args: ['scripts/workbench-mcp.mjs'], env, stderr: 'pipe' }));
   const tools = await client.listTools();
+  for (const name of ['workbench_prepare_part_context','workbench_request_part_suggestion','workbench_get_part_suggestion'])
+    check(tools.tools.some(tool=>tool.name===name),true);
+  const misspelled = { kind: 'interactable', nmae: 'typo', commandId: 'never-created' };
+  check((await post('document-create', misspelled)).status, 400);
+  check((await cli('document-create', misspelled)).code, 1);
+  check((await client.callTool({ name: 'workbench_create_document', arguments: misspelled })).isError, true);
+  const mediaParams = new URLSearchParams({ editId: edited.edit.editId, version: 'source', sha256: target.sha256 });
+  for (const [representation, bytes] of [['preview', png], ['rgba', rgba]]) {
+    const media = await fetch(base + '/v1/image-edit/media?' + mediaParams + '&representation=' + representation);
+    check(media.status, 200);
+    check(Buffer.from(await media.arrayBuffer()), bytes);
+  }
+  mediaParams.set('sha256', '0'.repeat(64));
+  check((await fetch(base + '/v1/image-edit/media?' + mediaParams + '&representation=rgba')).status, 409);
+  const context = await client.callTool({name:'workbench_prepare_part_context',arguments:{...guard,editId:edited.edit.editId,
+    expectedEditRevision:edited.edit.revision,baseCandidateVersion:'source',regionRef:region.body.regionRef,commandId:'transport-part-context',instruction:'Inspect this part',preserveAlpha:true}});
+  check(context.isError,undefined);check(context.content.filter(block=>block.type==='image').length,3);
+  check(context.structuredContent.part.views.every(view=>!view.png && view.sha256),true);
+  const planInput={
+    ...guard,editId:edited.edit.editId,expectedEditRevision:edited.edit.revision,baseCandidateVersion:'source',
+    regionRef:region.body.regionRef,commandId:'transport-rgb-control',part:'selected detail',successCriteria:['match the original scale'],
+    policy:{shape:'preserve',texture:'edit',albedo:'preserve',lighting:'preserve',reflection:'preserve'},
+    operation:{type:'ai-edit',prompt:'Add a fine surface detail.'},constraints:{preserveAlpha:true}};
+  const plainPlan=await client.callTool({name:'workbench_prepare_image_plan',arguments:{...planInput,commandId:'plain-plan'}});
+  check(plainPlan.structuredContent.images.map(v=>v.role),['writable-area','clean-crop']);
+  check(plainPlan.content.filter(v=>v.type==='image').length,2);
+  check(plainPlan.structuredContent.plan.previewPng,undefined);
+  const softPlan=await client.callTool({name:'workbench_prepare_image_plan',arguments:{...planInput,softReference:{kind:'rgb'}}});
+  check(softPlan.isError,undefined);
+  check(softPlan.content.filter(v=>v.type==='image').length,3);
+  check(softPlan.structuredContent.plan.referenceManifest.map(v=>v.role),['rgb-control','clean-crop']);
+  const softRead=await client.callTool({name:'workbench_get_image_plan',arguments:{planRef:softPlan.structuredContent.plan.planRef}});
+  check(softRead.structuredContent.plan.referenceManifest,softPlan.structuredContent.plan.referenceManifest);
+  for (const name of ['workbench_prepare_candidate_check','workbench_request_candidate_check','workbench_get_candidate_check'])
+    check(tools.tools.some(tool=>tool.name===name),true);
+  const candidateCheck = await client.callTool({name:'workbench_prepare_candidate_check',arguments:{
+    editId:edited.edit.editId,candidateVersion:edited.candidateVersion,expectedCandidateSha256:edited.edit.candidates[0].sha256,
+    commandId:'transport-candidate-check',instruction:'Clean the selected low-alpha pixel.',previewWidth:48}});
+  check(candidateCheck.isError,undefined);
+  check(candidateCheck.content.filter(block=>block.type==='image').length,6);
+  check(candidateCheck.structuredContent.check.views.every(view=>!view.png && view.sha256),true);
+  const recoveredCheck=await client.callTool({name:'workbench_get_candidate_check',arguments:{reviewRef:candidateCheck.structuredContent.check.reviewRef}});
+  check(recoveredCheck.structuredContent.check.status,'prepared');
   for (const name of ['workbench_inspect_image_target', 'workbench_resolve_image_region', 'workbench_edit_image_region', 'workbench_apply_image_candidate', 'workbench_get_image_edit']) check(tools.tools.some(tool => tool.name === name), true);
   const mcp = await client.callTool({ name: 'workbench_inspect_image_target', arguments: { targetId: target.targetId, view: 'source' } });
   check(mcp.isError, undefined); check(mcp.content.filter(block => block.type === 'image').length, 1); check(mcp.structuredContent.imageBase64, undefined);
+  const comparison = await client.callTool({ name: 'workbench_get_image_edit', arguments: { editId: edited.edit.editId, candidateVersion: edited.candidateVersion, comparison: { previewWidth: 48 } } });
+  check(comparison.isError, undefined);
+  check(comparison.content.filter(block => block.type === 'image').length, 2);
+  check(comparison.structuredContent.edit.comparison.candidateVersion, edited.candidateVersion);
+  check(comparison.structuredContent.edit.comparison.beforePng, undefined);
   const selectedPath = `/tools/interactable-editor?${new URLSearchParams({ imageEdit: edited.edit.editId, imageCandidate: edited.candidateVersion, document: project.projectId, object: object.definitionId })}`;
   const previewParams = new URLSearchParams(selectedPath.split('?')[1]); previewParams.sort();
   const previewPath = `/tools/interactable-editor?${previewParams}`;

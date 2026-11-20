@@ -1,15 +1,12 @@
 import '../helpers/runtime-workspace.mjs';
-import { testMapOrigin } from './map-origin.mjs';
-import { testHunyuanMap } from './hunyuan-map.mjs';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
 
-import JSZip from 'jszip';
 import sharp from 'sharp';
-import { preserveMapTemplatePixels } from '../../lib/workbench/adapters/map-generation-image.mjs';
-import { planMapGenerationSize, mapOutputPrompt } from '../../lib/workbench/adapters/map-generation-size.mjs';
+import { getTaskResult } from '../../lib/workbench/agent-api.mjs';
+import { planImageGenerationSize, imageAspectMatches } from '../../lib/workbench/adapters/image-generation-size.mjs';
 
 import {
   findCapability,
@@ -17,12 +14,11 @@ import {
   refreshTask,
   repositoryRoot,
   runConnector,
-  summarizeTask,
   validateInput,
 } from '../../lib/workbench/runtime.mjs';
 
 const requests = [];
-const generatedTile = await sharp({
+const generatedFrame = await sharp({
   create: {
     width: 2,
     height: 2,
@@ -33,9 +29,6 @@ const generatedTile = await sharp({
   .png()
   .toBuffer();
 let baseUrl = '';
-let mapResponseMode = 'success';
-const combinedPrompt = 'Preserve the template pixels.\n\nAdditional requirements for this tile:\n森林木桥\n保持侧视';
-
 const server = http.createServer(async (request, response) => {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
@@ -68,7 +61,10 @@ const server = http.createServer(async (request, response) => {
     response.end(
       JSON.stringify({
         ok: true,
-        data: { job: spriteJob('provider_pending') },
+        data: { job: spriteJob('provider_pending'), generation_receipt: {
+          request_key: body.request_key, candidate_index: body.candidate_index ?? null, wait: body.wait,
+          job_id: 'mock-job', revision: 2, state: 'returned',
+        } },
       }),
     );
     return;
@@ -79,12 +75,18 @@ const server = http.createServer(async (request, response) => {
     );
     return;
   }
+  if (request.method === 'GET' && ['/v1/jobs/queued', '/v1/jobs/not_submitted'].includes(request.url)) {
+    const status = request.url.split('/').at(-1);
+    const job = { job_id: status, status, motion_control: { state: 'waiting' }, candidates: [] };
+    response.end(JSON.stringify({ ok: true, data: { job } }));
+    return;
+  }
   if (
     request.method === 'GET' &&
-    request.url === '/v1/jobs/mock-job/candidates/1/frames/0/image'
+    new URL(request.url, baseUrl).pathname === '/v1/jobs/mock-job/candidates/1/frames/0/image'
   ) {
     response.setHeader('content-type', 'image/png');
-    response.end(generatedTile);
+    response.end(generatedFrame);
     return;
   }
   if (
@@ -99,48 +101,6 @@ const server = http.createServer(async (request, response) => {
     );
     return;
   }
-  if (request.method === 'POST' && ['/gemini', '/openai'].includes(request.url) && ['http-error', 'no-image'].includes(mapResponseMode)) {
-    if (mapResponseMode === 'http-error') {
-      response.statusCode = 401;
-      response.end(JSON.stringify({ error: { message: 'test invalid key' } }));
-    } else {
-      response.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'No image' }] } }], data: [] }));
-    }
-    return;
-  }
-  if (request.method === 'POST' && request.url === '/gemini') {
-    response.end(
-      JSON.stringify({
-        candidates: [
-          {
-            content: {
-              parts: [
-                { thought: true, inlineData: { mimeType: 'image/png', data: 'not-a-final-image' } },
-                {
-                  inlineData: {
-                    mimeType: 'image/png',
-                    data: generatedTile.toString('base64'),
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      }),
-    );
-    return;
-  }
-  if (request.method === 'POST' && request.url === '/openai') {
-    const size = /name="size"\r\n\r\n(\d+)x(\d+)/.exec(rawBody.toString('utf8'));
-    assert.ok(size, 'OpenAI edit requests must set an explicit size');
-    const returned = mapResponseMode === 'wrong-size' ? generatedTile : await sharp(generatedTile).resize(Number(size[1]), Number(size[2]), { kernel: 'nearest' }).png().toBuffer();
-    response.end(
-      JSON.stringify({
-        data: [{ b64_json: returned.toString('base64') }],
-      }),
-    );
-    return;
-  }
   response.statusCode = 404;
   response.end(JSON.stringify({ ok: false, error: { message: 'not found' } }));
 });
@@ -150,20 +110,11 @@ const address = server.address();
 assert(address && typeof address === 'object');
 baseUrl = `http://127.0.0.1:${address.port}`;
 const previousSpriteUrl = process.env.SPRITE_PIPELINE_API_URL;
-const previousGeminiUrl = process.env.MAP_STITCHER_GEMINI_API_URL;
-const previousOpenAIUrl = process.env.MAP_STITCHER_OPENAI_API_URL;
-const previousGeminiKey = process.env.GEMINI_API_KEY;
-const previousOpenAIKey = process.env.OPENAI_API_KEY;
 process.env.SPRITE_PIPELINE_API_URL = baseUrl;
-process.env.MAP_STITCHER_GEMINI_API_URL = `${baseUrl}/gemini`;
-process.env.MAP_STITCHER_OPENAI_API_URL = `${baseUrl}/openai`;
-process.env.GEMINI_API_KEY = 'test-gemini-key';
-process.env.OPENAI_API_KEY = 'test-openai-key';
 
 try {
   const manifest = await loadManifest();
   const sprite = findCapability(manifest, 'sprite-generator');
-  const map = findCapability(manifest, 'map-stitcher');
 
   assert.deepEqual(
     validateInput(sprite, {
@@ -208,6 +159,16 @@ try {
   ).metadata();
   assert.equal(frameMetadata.width, 2);
   assert.equal(frameMetadata.height, 2);
+  for (const [jobId, state, nextActions] of [
+    ['queued', 'running', ['workbench_get_task']],
+    ['not_submitted', 'not_submitted', []],
+  ]) {
+    const current = await runConnector(manifest, sprite, { operation: 'get', jobId });
+    assert.equal(current.task.status, state);
+    const summary = await getTaskResult(manifest, { taskId: current.task.id });
+    assert.equal(summary.presentation.state, state);
+    assert.deepEqual(summary.result.nextActions, nextActions);
+  }
 
   const submissionCount = requests.filter(
     (r) => r.url === '/v1/jobs' || r.url.endsWith('/generate'),
@@ -249,307 +210,27 @@ try {
       issueType: 'made_up',
     }).length > 0,
   );
-  const blue = await solidPng(0, 80, 220);
-  const green = await solidPng(0, 190, 90);
-  assert(
-    validateInput(map, {
-      operation: 'compose',
-      images: [dataUrl(blue)],
-      engineTargets: ['unity'],
-    }).length > 0,
-  );
-  assert.equal(map.outputs.includes('unityPackage'), false);
-  const composeResult = await runConnector(manifest, map, {
-    operation: 'compose',
-    images: [dataUrl(blue), dataUrl(green)],
-    columns: 2,
-    tileSize: 4,
-    checkSeams: true,
-    regions: [
-      {
-        id: 'collision_test',
-        tileKey: '0,0',
-        mapLayer: 'overall',
-        layer: 'collision',
-        mode: 'rectangle',
-        points: [
-          { x: 0, y: 0 },
-          { x: 2, y: 2 },
-        ],
-      },
-    ],
-    engineTargets: ['godot'],
-  });
-  assert.equal(composeResult.task.status, 'completed');
-  for (const suffix of [
-    'stitched-map.png',
-    'seam-report.json',
-    'pixelwork-state.zip',
-    'godot-package.zip',
-  ]) {
-    assert(
-      composeResult.task.outputs.some((output) => output.endsWith(suffix)),
-      `missing ${suffix}`,
-    );
-  }
-  assert.equal(
-    composeResult.task.outputs.some((output) => /unity/i.test(output)),
-    false,
-  );
-  const stitchedPath = outputPath(
-    composeResult.task.outputs,
-    'stitched-map.png',
-  );
-  const metadata = await sharp(stitchedPath).metadata();
-  assert.equal(metadata.width, 8);
-  assert.equal(metadata.height, 4);
-  const statePath = outputPath(
-    composeResult.task.outputs,
-    'pixelwork-state.zip',
-  );
-  const stateZip = await JSZip.loadAsync(await readFile(statePath));
-  const state = JSON.parse(
-    await stateZip.file('map_stitch_state.json').async('string'),
-  );
-  assert.equal(state.version, 2);
-  assert.equal(state.format, 'pixelwork-map-stitch-state');
-  assert.equal(state.drawShapes.length, 1);
-  const godotZip = await JSZip.loadAsync(
-    await readFile(outputPath(composeResult.task.outputs, 'godot-package.zip')),
-  );
-  const godotSource = await JSZip.loadAsync(
-    await godotZip.file('source_state.zip').async('nodebuffer'),
-  );
-  assert.deepEqual(
-    JSON.parse(await godotSource.file('map_stitch_state.json').async('string')),
-    state,
-  );
-
-  const templatePixels = Buffer.from([
-    0, 0, 0, 255, 255, 255, 255, 255, 50, 60, 70, 128, 0, 0, 0, 0,
-  ]);
-  const generationTemplate = await sharp(templatePixels, {
-    raw: { width: 2, height: 2, channels: 4 },
-  })
-    .png()
-    .toBuffer();
-  const expectedGenerated = Buffer.from([
-    0, 0, 0, 255, 255, 255, 255, 255, 50, 60, 70, 128, 10, 20, 30, 255,
-  ]);
-  const larger = await sharp(generatedTile).resize(4, 4).png().toBuffer();
-  const restored = await preserveMapTemplatePixels(generationTemplate, larger);
-  assert.deepEqual(
-    await sharp(restored).ensureAlpha().raw().toBuffer(),
-    expectedGenerated,
-  );
-  await assert.rejects(
-    preserveMapTemplatePixels(
-      generationTemplate,
-      await sharp(generatedTile).resize(4, 2).png().toBuffer(),
-    ),
-    /宽高比/,
-  );
-
-  const generationResult = await runConnector(manifest, map, {
-    operation: 'generate-layer',
-    provider: 'nano-banana',
-    image: dataUrl(generationTemplate),
-    prompt: combinedPrompt,
-    tile: { key: '1,0', x: 1, y: 0, w: 1, h: 1 },
-    layer: 'overall',
-    mask_mode: 'white',
-  });
-  assert.equal(generationResult.task.status, 'completed');
-  assert.equal(generationResult.task.adapter.model, 'gemini-3.1-flash-image');
-  assert(
-    generationResult.task.outputs.some((output) =>
-      output.endsWith('generated-layer.png'),
-    ),
-  );
-  assert.deepEqual(
-    await sharp(
-      outputPath(generationResult.task.outputs, 'generated-layer.png'),
-    )
-      .ensureAlpha()
-      .raw()
-      .toBuffer(),
-    expectedGenerated,
-  );
-  const generationMetadata = JSON.parse(
-    await readFile(
-      outputPath(generationResult.task.outputs, 'result.json'),
-      'utf8',
-    ),
-  );
-  assert.equal(generationMetadata.provider, 'nano-banana');
-  assert.equal(generationMetadata.model, 'gemini-3.1-flash-image');
-  assert.equal(
-    (
-      await readFile(
-        path.resolve(repositoryRoot, generationResult.taskPath),
-        'utf8',
-      )
-    ).includes('test-gemini-key'),
-    false,
-  );
-  const geminiRequest = requests.find((item) => item.url === '/gemini');
-  assert.equal(geminiRequest.headers['x-goog-api-key'], 'test-gemini-key');
-  assert.equal(
-    geminiRequest.body.contents[0].parts[0].text,
-    combinedPrompt,
-  );
-  assert.equal(
-    geminiRequest.body.contents[0].parts[1].inline_data.mime_type,
-    'image/png',
-  );
-  assert.deepEqual(geminiRequest.body.generationConfig.responseModalities, [
-    'IMAGE',
-  ]);
-
-  const openAIResult = await runConnector(manifest, map, {
-    operation: 'generate-layer',
-    provider: 'gpt-image-2',
-    image: dataUrl(generationTemplate),
-    prompt: combinedPrompt,
-    tile: { key: '1,0', x: 1, y: 0, w: 1, h: 1 },
-    layer: 'overall',
-    mask_mode: 'white',
-  });
-  assert.equal(openAIResult.task.status, 'completed');
-  assert.deepEqual(
-    await sharp(outputPath(openAIResult.task.outputs, 'generated-layer.png'))
-      .ensureAlpha()
-      .raw()
-      .toBuffer(),
-    expectedGenerated,
-  );
-  assert.equal(
-    (
-      await readFile(
-        path.resolve(repositoryRoot, openAIResult.taskPath),
-        'utf8',
-      )
-    ).includes('test-openai-key'),
-    false,
-  );
-  const openAIRequest = requests.find((item) => item.url === '/openai');
-  assert.equal(openAIRequest.headers.authorization, 'Bearer test-openai-key');
-  assert.match(
-    openAIRequest.headers['content-type'],
-    /^multipart\/form-data; boundary=/,
-  );
-  const multipart = openAIRequest.rawBody.toString('utf8');
-  assert.match(multipart, /name="model"[\s\S]*gpt-image-2/);
-  assert.ok(multipart.includes(combinedPrompt.replaceAll('\n', '\r\n')));
-  assert.match(multipart, /name="image\[\]"; filename="map-input.png"/);
-  assert.match(multipart, /name="size"\r\n\r\n1024x1024/);
-  assert.match(multipart, /Return exactly 1024 x 1024 pixels/);
-  assert.match(multipart, /name="output_format"\r\n\r\npng/);
-
-  for (const mode of ['http-error', 'no-image']) {
-    mapResponseMode = mode;
-    for (const provider of ['nano-banana', 'gpt-image-2']) {
-      const failed = await runConnector(manifest, map, {
-        operation: 'generate-layer', provider, image: dataUrl(generationTemplate),
-        prompt: combinedPrompt, tile: { key: '1,0', x: 1, y: 0, w: 1, h: 1 },
-        layer: 'overall', mask_mode: 'white',
-      });
-      assert.equal(failed.task.status, 'failed');
-      assert.equal(summarizeTask(failed).error, failed.task.error);
-      assert.match(failed.task.error, mode === 'http-error' ? /401/ : /did not return/);
-      assert.ok(failed.task.outputs.some((name) => name.endsWith('generation-diagnostics.json')));
-      assert.ok(!failed.task.outputs.some((name) => name.endsWith('generated-layer.png')));
-    }
-  }
-  mapResponseMode = 'success';
-  // Regression for the reported 5504 x 3072 template: real PNG decoding, wire size and pixel recovery.
-  assert.deepEqual(planMapGenerationSize(5504, 3072), { width: 2064, height: 1152, size: '2064x1152' });
-  assert.deepEqual(planMapGenerationSize(3072, 5504), { width: 1152, height: 2064, size: '1152x2064' });
+  assert.deepEqual(planImageGenerationSize(5504, 3072), { width: 2064, height: 1152, size: '2064x1152' });
+  assert.deepEqual(planImageGenerationSize(3072, 5504), { width: 1152, height: 2064, size: '1152x2064' });
   for (const [width, height] of [[128, 128], [1920, 1080], [7225, 4118], [1001, 563], [2400, 800]]) {
-    const output = planMapGenerationSize(width, height);
-    assert.equal(output.width % 16, 0); assert.equal(output.height % 16, 0);
+    const output = planImageGenerationSize(width, height);
+    assert.equal(output.width % 16, 0);
+    assert.equal(output.height % 16, 0);
     assert.ok(output.width * output.height >= 655360 && output.width * output.height <= 3686400);
-    assert.ok(Math.abs(output.width * height - output.height * width) <= Math.max(width, height));
+    assert.ok(imageAspectMatches(width, height, output.width, output.height));
   }
-  assert.throws(() => planMapGenerationSize(0, 100), /无效/);
-  const largePixels = Buffer.alloc(5504 * 3072 * 4);
-  largePixels.set([70, 80, 90, 128], 0);
-  largePixels.set([22, 33, 44, 255], 4);
-  const largeTemplate = await sharp(largePixels, { raw: { width: 5504, height: 3072, channels: 4 } }).png().toBuffer();
-  const originalPrompt = 'Continue the forest. Return the same canvas dimensions and aspect ratio, with no crop, border or reframing.\n森林木桥';
-  const largeInput = { operation: 'generate-layer', provider: 'gpt-image-2', image: dataUrl(largeTemplate),
-    prompt: originalPrompt, tile: { key: '0.85,0', x: 0.85, y: 0, w: 1, h: 1 }, layer: 'overall', mask_mode: 'white' };
-  const largeResult = await runConnector(manifest, map, largeInput);
-  assert.equal(largeResult.task.status, 'completed');
-  const largeOutput = await sharp(outputPath(largeResult.task.outputs, 'generated-layer.png')).raw().toBuffer({ resolveWithObject: true });
-  assert.equal(largeOutput.info.width, 5504); assert.equal(largeOutput.info.height, 3072);
-  assert.deepEqual([...largeOutput.data.subarray(0, 8)], [70, 80, 90, 128, 22, 33, 44, 255]);
-  assert.deepEqual([...largeOutput.data.subarray(8, 12)], [10, 20, 30, 255]);
-  const sizeRecord = JSON.parse(await readFile(outputPath(largeResult.task.outputs, 'generation-diagnostics.json'), 'utf8'));
-  assert.deepEqual(sizeRecord.template, { width: 5504, height: 3072 });
-  assert.equal(sizeRecord.requested.size, '2064x1152');
-  assert.equal(sizeRecord.returned.width, 2064); assert.equal(sizeRecord.returned.height, 1152);
-  assert.equal(sizeRecord.effectivePrompt, mapOutputPrompt(originalPrompt, sizeRecord.requested));
-  assert.doesNotMatch(sizeRecord.effectivePrompt, /Return the same canvas dimensions/);
-  assert.ok(sizeRecord.effectivePrompt.includes('森林木桥'));
-  assert.ok(!JSON.stringify(sizeRecord).includes('test-openai-key'));
-  assert.equal(largeInput.prompt, originalPrompt, 'saved user prompt must remain unchanged');
-  const largeWire = requests.filter((r) => r.url === '/openai').at(-1).rawBody.toString('utf8');
-  assert.match(largeWire, /name="size"\r\n\r\n2064x1152/);
-  assert.ok(largeWire.includes(sizeRecord.effectivePrompt.replaceAll('\n', '\r\n')));
-  mapResponseMode = 'wrong-size';
-  const wrongSize = await runConnector(manifest, map, largeInput);
-  assert.equal(wrongSize.task.status, 'failed');
-  assert.match(wrongSize.task.error, /5504×3072.*2064×1152.*2×2/);
-  assert.ok(!wrongSize.task.outputs.some((name) => name.endsWith('generated-layer.png')));
-  assert.deepEqual(await readFile(outputPath(wrongSize.task.outputs, 'provider-response.png')), generatedTile);
-  const failureRecord = JSON.parse(await readFile(outputPath(wrongSize.task.outputs, 'generation-diagnostics.json'), 'utf8'));
-  assert.equal(failureRecord.stage, 'failed'); assert.equal(failureRecord.returned.width, 2);
-  mapResponseMode = 'success';
-  const callsBeforeBadRatio = requests.length;
-  const badRatio = await runConnector(manifest, map, { ...largeInput, image: dataUrl(await sharp(generatedTile).resize(400, 100).png().toBuffer()) });
-  assert.equal(badRatio.task.status, 'failed'); assert.match(badRatio.task.error, /3:1/);
-  assert.equal(requests.length, callsBeforeBadRatio);
-  const callsBeforeMissingKey = requests.length;
-  delete process.env.OPENAI_API_KEY;
-  const awaitingKey = await runConnector(manifest, map, {
-    operation: 'generate-layer',
-    provider: 'gpt-image-2',
-    image: dataUrl(blue),
-    prompt: 'do not call without a key',
-    tile: { key: '1,0', x: 1, y: 0, w: 1, h: 1 },
-    layer: 'overall',
-    mask_mode: 'white',
-  });
-  assert.equal(awaitingKey.task.status, 'awaiting_configuration');
-  assert.equal(awaitingKey.requiredEnvironment, 'OPENAI_API_KEY');
-  assert.equal(requests.length, callsBeforeMissingKey);
-
-  await testMapOrigin(manifest, map);
-  await testHunyuanMap(manifest, map);
-
-  process.stdout.write(
-    `${JSON.stringify(
-      {
-        spriteAdapter: 'ok',
-        mapComposeAdapter: 'ok',
-        mapGenerationContract: 'ok',
-        spriteTaskId: refreshedSprite.task.id,
-        mapTaskId: composeResult.task.id,
-        outputs: composeResult.task.outputs,
-      },
-      null,
-      2,
-    )}\n`,
-  );
+  assert.throws(() => planImageGenerationSize(0, 100), /无效/);
+  assert.throws(() => planImageGenerationSize(400, 100), /3:1/);
+  assert.equal(imageAspectMatches(1024, 1024, 2048, 1024), false);
+  console.log(JSON.stringify({
+    spriteAdapter: 'ok', imageGenerationSizing: 'ok',
+    spriteTaskId: refreshedSprite.task.id, outputs: refreshedSprite.task.outputs,
+    realProviderRequests: 0,
+  }, null, 2));
 } finally {
   if (previousSpriteUrl === undefined)
     delete process.env.SPRITE_PIPELINE_API_URL;
   else process.env.SPRITE_PIPELINE_API_URL = previousSpriteUrl;
-  restoreEnvironment('MAP_STITCHER_GEMINI_API_URL', previousGeminiUrl);
-  restoreEnvironment('MAP_STITCHER_OPENAI_API_URL', previousOpenAIUrl);
-  restoreEnvironment('GEMINI_API_KEY', previousGeminiKey);
-  restoreEnvironment('OPENAI_API_KEY', previousOpenAIKey);
   await new Promise((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve())),
   );
@@ -567,38 +248,11 @@ function spriteJob(status) {
           {
             index: 0,
             active_path: 'candidates/candidate_01/frames/frame_000.png',
+            sha256: createHash('sha256').update(generatedFrame).digest('hex'),
           },
         ],
       },
     ],
     export: null,
   };
-}
-
-async function solidPng(r, g, b) {
-  return sharp({
-    create: {
-      width: 2,
-      height: 2,
-      channels: 4,
-      background: { r, g, b, alpha: 1 },
-    },
-  })
-    .png()
-    .toBuffer();
-}
-
-function dataUrl(buffer) {
-  return `data:image/png;base64,${buffer.toString('base64')}`;
-}
-
-function outputPath(outputs, suffix) {
-  const relative = outputs.find((output) => output.endsWith(suffix));
-  assert(relative, `missing ${suffix}`);
-  return path.resolve(repositoryRoot, relative);
-}
-
-function restoreEnvironment(name, value) {
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
 }

@@ -1,18 +1,21 @@
-import JSZip from 'jszip';
-import manifest from '@/workbench/manifest.json';
+import manifest from './ui-manifest.json';
 import { readWorkspaceDraft, saveWorkspaceDraft } from './browser-store';
+import { importPurposes, importPurposeIssue } from './asset-import-contract.mjs';
 
 export type ImportPurpose =
-  | 'map'
   | 'interactable'
-  | 'scene'
   | 'image'
   | 'animation';
 export type LibraryAsset = {
   id: string;
   kind: string;
+  checkpointToken?: string | null; stateSha256?: string; planSha256?: string;
+  motionSource?: 'state' | 'transition';
+  objectId?: string;
+  objectType?: 'character' | 'interactable';
   origin?: string;
-  mapType?: 'project' | 'image';
+  attachmentOnly?: boolean;
+  primaryMime?: string | null;
   title: string;
   revision?: string;
   statusLabel?: string;
@@ -30,24 +33,35 @@ export type ImportBundle = {
     candidateIndex?: number;
     fps?: number;
     loop?: boolean;
+    frameDurations?: number[];
+    anchor?: [number, number];
+    sourceFacing?: 'left' | 'right';
+    facing?: 'left' | 'right';
+    definitionIds?: string[];
     width?: number;
     height?: number;
   };
   files: { file: File; sha256: string }[];
 };
-export function purposesFor(asset: LibraryAsset, purposes: ImportPurpose[]) {
-  return manifest.assetImports.filter(
-    (rule) =>
-      purposes.includes(rule.id as ImportPurpose) &&
-      rule.kinds.includes(asset.kind) && (asset.origin !== 'map-project' || rule.id === 'map'),
-  );
+/** Durations are frame weights: the actual time is duration / fps seconds. */
+export function libraryAnimationTiming(asset: ImportBundle['asset'], frameCount: number) {
+  const { fps, loop } = asset;
+  if (typeof fps !== 'number' || !Number.isFinite(fps) || fps < 0.1 || fps > 120 || typeof loop !== 'boolean')
+    throw new Error('此动画的播放设置超出交互物支持范围（0.1–120 FPS）；原素材仍保留在资产库。');
+  const durations = asset.frameDurations ?? Array<number>(frameCount).fill(1);
+  if (durations.length !== frameCount || durations.some((duration) => !Number.isFinite(duration) || duration < 0.01 || duration > 100))
+    throw new Error('动画帧时长缺失或超出交互物支持范围（每帧 0.01–100）；原素材仍保留在资产库。');
+  return { fps, loop, durations };
+}
+export function purposesFor(asset: LibraryAsset, purposes: ImportPurpose[]): typeof manifest.assetImports {
+  return importPurposes(manifest, asset).filter((rule: (typeof manifest.assetImports)[number]) => purposes.includes(rule.id as ImportPurpose));
 }
 export function importLink(
   target: string,
   purpose: ImportPurpose,
   assetId: string,
 ) {
-  const route = [...manifest.capabilities, ...manifest.editorModules].find(
+  const route = manifest.modules.find(
     (m) => m.id === target,
   )?.ui.route;
   if (
@@ -57,10 +71,18 @@ export function importLink(
     )
   )
     throw new Error('不支持的导入目标。');
+  const params = new URLSearchParams({ importAsset: assetId, importPurpose: purpose });
+  if (typeof location !== 'undefined') {
+    const source = new URL(location.href);
+    if (source.pathname === '/assets') {
+      source.searchParams.set('asset', assetId); source.searchParams.delete('import');
+      params.set('returnTo', source.pathname + source.search);
+    }
+  }
   return (
     route +
     '?' +
-    new URLSearchParams({ importAsset: assetId, importPurpose: purpose })
+    params
   );
 }
 export async function loadLibraryAsset(
@@ -78,7 +100,7 @@ export async function loadLibraryAsset(
   if (!detail.ok || !value.asset?.revision)
     throw new Error(value.error || '资产详情读取失败。');
   if (!purposesFor(value.asset, [purpose]).length)
-    throw new Error('这件素材不适合当前导入用途。');
+    throw new Error(importPurposeIssue(value.asset, purpose) || '这件素材不适合当前导入用途。');
   const response = await fetch('/api/workbench/assets/import', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -92,6 +114,7 @@ export async function loadLibraryAsset(
   const bytes = await response.arrayBuffer();
   if (bytes.byteLength > 257 * 1024 * 1024)
     throw new Error('素材包超过导入上限。');
+  const { default: JSZip } = await import('jszip');
   const zip = await JSZip.loadAsync(bytes);
   let size = 0;
   for (const entry of Object.values(zip.files)) {
@@ -115,6 +138,7 @@ export async function loadLibraryAsset(
     metadata.purpose !== purpose ||
     metadata.asset?.id !== value.asset.id ||
     metadata.asset.revision !== value.asset.revision ||
+    (purpose === 'image' && metadata.asset.primaryMime !== value.asset.primaryMime) ||
     !Array.isArray(metadata.files) ||
     !metadata.files.length ||
     metadata.files.length > 1000
@@ -133,7 +157,7 @@ export async function loadLibraryAsset(
     if (digest !== record.sha256)
       throw new Error('素材内容已变化，导入未应用。');
     const ext = String(record.name).split('.').pop()?.toLowerCase();
-    const type =
+    const type = record.mime ||
       (
         {
           png: 'image/png',
@@ -145,33 +169,14 @@ export async function loadLibraryAsset(
           json: 'application/json',
         } as Record<string, string>
       )[ext || ''] || 'application/octet-stream';
+    if (purpose === 'image' && type !== value.asset.primaryMime)
+      throw new Error('原图格式与资产详情不一致，请刷新后重新选择。');
     files.push({
       file: new File([data], record.name, { type }),
       sha256: digest,
     });
   }
   return { purpose, asset: metadata.asset, files };
-}
-export async function mapImportFile(bundle: ImportBundle): Promise<File> {
-  const file = bundle.files[0].file;
-  if (!file.type.startsWith('image/')) return file;
-  // An image-only map becomes a center tile; it has no invented collision polygons.
-  const zip = new JSZip();
-  zip.file('map.png', await file.arrayBuffer());
-  zip.file(
-    'map_stitch_state.json',
-    JSON.stringify({
-      format: 'pixelwork-map-stitch-state',
-      version: 2,
-      source: { path: 'map.png', fileName: file.name, type: file.type },
-      tiles: {},
-    }),
-  );
-  return new File(
-    [await zip.generateAsync({ type: 'blob' })],
-    'pixelwork-state.zip',
-    { type: 'application/zip' },
-  );
 }
 export function clearImportQuery() {
   const url = new URL(location.href);
@@ -180,13 +185,13 @@ export function clearImportQuery() {
   history.replaceState(history.state, '', url);
 }
 export async function storeEditorHandoff(
-  target: 'scene-composer' | 'interactable-editor' | 'map-stitcher',
-  purpose: 'map' | 'interactable',
+  target: 'interactable-editor',
+  purpose: 'interactable',
   payload: unknown,
 ) {
   const key = 'import-' + crypto.randomUUID();
   await saveWorkspaceDraft(key, { target, purpose, payload }, []);
-  const route = [...manifest.capabilities, ...manifest.editorModules].find(
+  const route = manifest.modules.find(
     (m) => m.id === target,
   )!.ui.route;
   return route + '?' + new URLSearchParams({ handoff: key });
@@ -198,7 +203,7 @@ export async function readEditorHandoff(target: string) {
     throw new Error('内部移送身份无效。');
   const record = await readWorkspaceDraft<{
     target: string;
-    purpose: 'map' | 'interactable';
+    purpose: 'interactable';
     payload: unknown;
   }>(key);
   if (!record || record.target !== target)

@@ -2,16 +2,23 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import shutil
-
-from PIL import Image
 
 from ..errors import ConflictError, HarnessError, ProviderError, ValidationHarnessError
 from ..jsonio import atomic_write_json, read_json
 from ..models import CandidateStatus, utc_now
 from ..providers.base import PollStatus, ProviderRequest
+from ..providers.account import AccountSlotBusy, animation_intent_id
 from .checkpoints import Checkpoints, checked_plan
+from .contracts import digest
+from .drawing_frames import validate_drawing_frame
+from .drawing_receipts import poll_drawing, read_poll_receipt, response_usage
+from .state_chain import transition
+
+
+def stage_seed(seed, stage):
+    """Per-segment drawing seed. Experiment arms reuse this exact rule."""
+    return (seed + stage * 104729) % (2**31 - 1) if seed is not None else None
 
 
 class PlanGeneration:
@@ -37,9 +44,11 @@ class PlanGeneration:
             raise ConflictError("调用记录超过预算，停止执行")
         return candidate.plan_execution.stages
 
-    def saved_frames(self, job_id, index, stage):
+    def saved_frames(self, job_id, index, stage, *, expected_manifest_sha256=None):
         folder = self.directory(job_id, index, stage)
         manifest = read_json(folder / "frames.json")
+        if expected_manifest_sha256 is not None and digest(manifest) != expected_manifest_sha256:
+            raise ConflictError('片段原始帧清单已改变')
         frames = []
         for i, item in enumerate(manifest["frames"]):
             if item["filename"] != f"frame_{i:03d}.png":
@@ -83,53 +92,75 @@ class PlanGeneration:
             if last is None: last = reference if definition.last_frame == "original" else None
             request = ProviderRequest(reference_image=first, last_frame=last, prompt=prompt,
                                       frame_count=definition.frame_count,
-                                      seed=(candidate.seed + stage * 104729) % (2**31 - 1) if candidate.seed is not None else None,
-                                      transparent_background=True)
+                                      seed=stage_seed(candidate.seed, stage),
+                                      transparent_background=True,
+                                      local_submission_id=animation_intent_id(job_id, index, stage))
             from .generation_conditions import submission_conditions
             conditions = submission_conditions(job.request.open_plan,stage,prompt,hashlib.sha256(first).hexdigest(),
                                                hashlib.sha256(last).hexdigest() if last else None)
             self.s._check_submission_quota(job_id, index, provider, phase_frame_count=definition.frame_count)
-            folder = self.directory(job_id, index, stage); folder.mkdir(parents=True, exist_ok=True)
-            atomic_write_json(folder / "submit.intent.json", {"maximum_submission_attempts": 1,
-                              "plan_sha256": job.request.open_plan.plan_sha256, "stage": stage,
-                              "first_sha256": hashlib.sha256(first).hexdigest(),
-                              "last_sha256": hashlib.sha256(last).hexdigest() if last else None,
-                              "prompt": request.prompt, "frame_count": request.frame_count, "seed": request.seed,
-                               **({'drawing_conditions':conditions} if conditions else {}),
-                              **({'visual_structure_sha256':job.request.open_plan.visual_structure['sha256'],
-                                  'structure_usage':definition.structure_usage.model_dump(mode='json'),
-                                  'structure_drawing_hint':definition.motion.generation_hint}
-                                 if job.request.open_plan.visual_structure else {})})
+            folder = self.directory(job_id, index, stage)
+            intent_path = folder / 'submit.intent.json'
             with self.store.locked_job(job_id) as current:
                 c = self.candidate(current, index); r = self.validate(current, c)[stage]
                 if not current.plan_control.enabled:
                     return False
+                # The workspace revision is published before deactivating the old
+                # job. Fence new submissions even if that second write failed.
+                from .workspace import OpenMotionWorkspace
+                binding = current.request.open_plan
+                work = OpenMotionWorkspace(self.s).load(binding.work_id)
+                if work.revision != binding.revision or work.job_id != job_id:
+                    current.plan_control.enabled = False
+                    current.touch('open_plan_superseded')
+                    return False
+                if current.generation_requested_at is None or (work.execution_intent and work.execution_intent.phase == 'paused'):
+                    return False
                 if r.state != "created" or r.submission_attempts:
                     raise ConflictError("其他进程已提交此片段")
+                atomic_write_json(intent_path, {"maximum_submission_attempts": 1,
+                                  "plan_sha256": binding.plan_sha256, "stage": stage,
+                                  "first_sha256": hashlib.sha256(first).hexdigest(),
+                                  "last_sha256": hashlib.sha256(last).hexdigest() if last else None,
+                                  "prompt": request.prompt, "frame_count": request.frame_count, "seed": request.seed,
+                                  **({'drawing_conditions':conditions} if conditions else {}),
+                                  **({'visual_structure_sha256':binding.visual_structure['sha256'],
+                                      'structure_usage':definition.structure_usage.model_dump(mode='json'),
+                                      'structure_drawing_hint':definition.motion.generation_hint}
+                                     if binding.visual_structure else {})})
                 r.state = "submitting"; r.submission_attempts = 1
+                current.generation_account = current.generation_account or getattr(provider, 'account_fingerprint', None)
                 c.status = CandidateStatus.submitting; c.provider_job_id = None
                 c.submission_attempts = sum(v.submission_attempts+len(v.repairs) for v in c.plan_execution.stages)
                 c.submission_started_at = utc_now(); c.provider_name = provider.name
-                c.raw_request_path = (folder / "submit.intent.json").relative_to(self.store.job_dir(job_id)).as_posix()
+                c.raw_request_path = intent_path.relative_to(self.store.job_dir(job_id)).as_posix()
                 current.plan_control.message = f"正在提交：{definition.name}"
                 self.s._refresh_job_status(current); current.touch("plan_stage_submitting", candidate_index=index, stage=stage)
             try:
                 submission = provider.submit(request)
+            except AccountSlotBusy:
+                raise
             except Exception as exc:
                 unknown = not isinstance(exc, ProviderError) or bool(exc.details.get("submission_unknown"))
                 with self.store.locked_job(job_id) as current:
                     c = self.candidate(current, index); r = self.validate(current, c)[stage]
                     r.state = "unknown" if unknown else "failed"
                     c.status = CandidateStatus.submission_unknown if unknown else CandidateStatus.failed
+                    if isinstance(exc, ProviderError):
+                        c.provider_job_id = r.provider_job_id = exc.details.get("provider_job_id")
+                        c.usage = r.usage = response_usage(exc.details.get("response"))
                     c.error = exc.as_dict() if isinstance(exc, ProviderError) else {"code": "submission_unknown", "message": "提交结果未知，不能自动重发"}
                     r.error = c.error; current.plan_control.enabled = False
                     current.plan_control.message = "请核对原请求" if unknown else "生成请求失败，原记录已保留"
                     self.s._refresh_job_status(current); current.touch("plan_submission_stopped", stage=stage)
+                if isinstance(exc, ProviderError) and exc.details.get("submission_rejected"):
+                    return False
                 raise
             # This receipt is durable before optional diagnostic files are saved.
             with self.store.locked_job(job_id) as current:
                 c = self.candidate(current, index); r = self.validate(current, c)[stage]
                 r.provider_job_id = submission.provider_job_id; r.state = "pending"
+                c.usage = r.usage = response_usage(submission.raw_response)
                 c.provider_job_id = submission.provider_job_id; c.provider_status = submission.status
                 c.status = CandidateStatus.provider_pending; c.submitted_at = utc_now()
                 c.diagnostic_only = submission.diagnostic_only; c.error = None
@@ -145,43 +176,57 @@ class PlanGeneration:
         if not run.provider_job_id:
             raise ConflictError("缺少原请求编号，不能自动生成替代结果")
         if not (folder / "frames.json").exists():
-            result = provider.wait(run.provider_job_id) if wait else provider.poll(run.provider_job_id)
-            if result.status == PollStatus.pending:
+            size = (job.character.cell_width, job.character.cell_height)
+            try:
+                result = poll_drawing(folder, provider, run.provider_job_id, size,
+                                      lambda i: f'frame_{i:03d}.png', self.s._atomic_write_bytes,
+                                      wait=wait, usage=run.usage, validate_frame=validate_drawing_frame)
+            except ProviderError:
+                receipt = read_poll_receipt(folder / 'poll-receipt.json', run.provider_job_id)
+                self._remember_usage(job_id, index, stage, run, response_usage(receipt))
+                raise
+            usage = result['usage']
+            self._remember_usage(job_id, index, stage, run, usage)
+            if result['status'] == PollStatus.pending:
                 return False
-            if result.status == PollStatus.failed:
+            if result['status'] == PollStatus.failed:
                 with self.store.locked_job(job_id) as current:
                     c = self.candidate(current, index); r = self.validate(current, c)[stage]
-                    r.state = "failed"; r.error = result.error; c.error = result.error
+                    r.state = "failed"; r.error = result['error']; c.error = result['error']
+                    c.usage = r.usage = usage
                     c.status = CandidateStatus.failed; current.plan_control.enabled = False
                     current.plan_control.message = "此片段生成失败，已保留原请求"
                     self.s._refresh_job_status(current)
                 return False
-            if not 1 <= len(result.images) <= 64:
-                raise ValidationHarnessError("片段返回的帧数无效")
-            manifest = []
-            for i, data in enumerate(result.images):
-                with Image.open(io.BytesIO(data)) as image:
-                    image.load()
-                    if image.format != "PNG" or image.size != (job.character.cell_width, job.character.cell_height) or "A" not in image.getbands():
-                        raise ValidationHarnessError("片段格式、尺寸或透明通道无效，不会用它继续生成")
-                path = folder / f"frame_{i:03d}.png"
-                if path.exists() and path.read_bytes() != data:
-                    raise ConflictError("远端返回的片段发生变化，已有原始帧保留")
-                self.s._atomic_write_bytes(path, data)
-                manifest.append({"filename": path.name, "sha256": hashlib.sha256(data).hexdigest()})
-            atomic_write_json(folder / "frames.json", {"provider_job_id": run.provider_job_id, "frames": manifest, "usage": result.usage})
+            if result['invalid_frames']:
+                raise ValidationHarnessError("片段格式、尺寸或透明通道无效，已保存其余原始帧",
+                                             details={'reason': 'invalid_drawing_frame',
+                                                      'raw_indices': result['invalid_frames']})
+            if not 1 <= result['raw_count'] <= 64:
+                raise ValidationHarnessError("片段返回的帧数无效", details={'reason': 'unexpected_frame_count'})
+            if [f['raw_index'] for f in result['frames']] != list(range(result['raw_count'])):
+                raise ConflictError("归档的原始帧与绘图回执不符")
+            manifest = [{'filename': f['file'], 'sha256': f['sha256']} for f in result['frames']]
+            atomic_write_json(folder / "frames.json", {"provider_job_id": run.provider_job_id, "frames": manifest, "usage": usage})
         frames = self.saved_frames(job_id, index, stage)
         saved = read_json(folder / "frames.json")
         if saved["provider_job_id"] != run.provider_job_id:
             raise ConflictError("片段文件与远端请求不匹配")
         with self.store.locked_job(job_id) as current:
             c = self.candidate(current, index); r = self.validate(current, c)[stage]
-            r.state = "complete"; r.actual_frame_count = len(frames); r.usage = saved.get("usage", {})
+            r.state = "complete"; r.actual_frame_count = len(frames); c.usage = r.usage = saved.get("usage") or r.usage
+            r.frames_manifest_sha256 = digest(saved)
             c.status = CandidateStatus.saving if stage == len(c.plan_execution.stages) - 1 else CandidateStatus.created
             c.provider_completed_at = utc_now(); c.error = None
             current.plan_control.message = "片段已保存，准备检查实际姿势" if checked_plan(job) else "片段已保存，完整动作需人工确认"
             self.s._refresh_job_status(current); current.touch("plan_stage_saved", stage=stage, candidate_index=index)
         return True
+
+    def _remember_usage(self, job_id, index, stage, run, usage):
+        if usage and usage != run.usage:
+            with self.store.locked_job(job_id) as current:
+                c = self.candidate(current, index)
+                c.usage = self.validate(current, c)[stage].usage = usage
 
     def assemble(self, job_id, index):
         job = self.store.load(job_id); c = self.candidate(job, index)
@@ -202,10 +247,21 @@ class PlanGeneration:
                                  'selected_anchor_frame':accepted.get('selected_anchor_frame'),
                                  'excluded_tail_count':len(accepted.get('excluded_tail',[])),
                                  'context_removed':accepted['context_removed'],'technical_only':False})
+                edge = transition(job.request.open_plan.plan, stage)
+                if edge:
+                    timeline[-1].update(edge, input_sha256=accepted['input_sha256'])
                 for item, data in zip(accepted['frames'],frames):
                     mapping.append({'frame':len(combined),'stage':stage,'raw_frame':item['raw_index'],
                                     **{k:item[k] for k in ('repair_attempt','repair_index') if k in item}})
                     combined.append(data)
+                prop = job.request.open_plan.plan.quality.interactable
+                if prop and stage == len(runs) - 1 and prop.hold_frames:
+                    # Playback entries point to the already confirmed real endpoint.
+                    timeline[-1].update(count=len(frames) + prop.hold_frames, hold_frames=prop.hold_frames)
+                    source = mapping[-1].copy()
+                    for _ in range(prop.hold_frames):
+                        mapping.append({**source, 'frame': len(combined), 'playback_hold': True})
+                        combined.append(frames[-1])
         elif job.request.open_plan.plan.quality:
             from .quality import assemble_quality_frames
             raw = [self.saved_frames(job_id,index,i) for i in range(len(runs))]
@@ -266,7 +322,10 @@ class PlanGeneration:
     def advance(self, job_id, provider, *, wait=False, candidate_index=None, allow_submit=True):
         with self.store.operation_lock(job_id, "open_plan", timeout_seconds=0.2):
             job = self.store.load(job_id)
-            targets = [candidate_index] if candidate_index is not None else [c.candidate_index for c in job.candidates]
+            if not self.s._same_generation_account(job, provider):
+                return job
+            selected_index = candidate_index if candidate_index is not None else job.queued_candidate_index
+            targets = [selected_index] if selected_index is not None else [c.candidate_index for c in job.candidates]
             for index in targets:
                 existing = self.candidate(self.store.load(job_id), index)
                 if existing.frames and job.request.open_plan.plan.quality:
@@ -295,10 +354,18 @@ class PlanGeneration:
                         if run.state == "submitting":
                             with self.store.locked_job(job_id) as current:
                                 current_candidate = self.candidate(current, index)
-                                current_candidate.plan_execution.stages[stage].state = "unknown"
-                                current_candidate.status = CandidateStatus.submission_unknown
-                                current.plan_control.enabled = False
-                                current.plan_control.message = "提交曾被中断，请核对原请求；不会重发"
+                                current_run = current_candidate.plan_execution.stages[stage]
+                                receipt = self.s._recover_submission_receipt(current, current_candidate, stage=stage)
+                                if receipt:
+                                    current_run.provider_job_id = receipt['jobId']
+                                    current_run.usage = receipt['usage']
+                                    current_run.state = 'pending'
+                                    current.plan_control.message = "已恢复上游任务回执，继续读取原片段"
+                                else:
+                                    current_run.state = "unknown"
+                                    current_candidate.status = CandidateStatus.submission_unknown
+                                    current.plan_control.enabled = False
+                                    current.plan_control.message = "提交曾被中断，请核对原请求；不会重发"
                                 self.s._refresh_job_status(current)
                         break
                     if run.state == "created":
@@ -306,6 +373,9 @@ class PlanGeneration:
                             break
                         try:
                             if not self.submit(job_id, index, stage, provider): break
+                        except AccountSlotBusy as exc:
+                            self.s._queue_candidate(job_id, index, exc, provider, stage=stage, selected_index=selected_index)
+                            return self.store.load(job_id)
                         except (ValidationHarnessError,ConflictError) as exc:
                             self.stop_stage(job_id,index,stage,exc)
                             raise
@@ -319,8 +389,10 @@ class PlanGeneration:
                             candidate.status = CandidateStatus.failed
                             candidate.provider_status = "completed"
                             candidate.plan_execution.stages[stage].error = exc.as_dict()
+                            if exc.details.get('reason') == 'invalid_drawing_frame':
+                                candidate.plan_execution.stages[stage].state = "failed"
                             current.plan_control.enabled = False
-                            current.plan_control.message = "片段校验未通过，已停止衔接；可查询原请求取回结果"
+                            current.plan_control.message = "片段校验未通过，已停止衔接，原请求与已归档结果均保留"
                             self.s._refresh_job_status(current)
                             current.touch("plan_stage_validation_failed", stage=stage)
                         raise

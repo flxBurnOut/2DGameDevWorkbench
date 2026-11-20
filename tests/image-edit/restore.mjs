@@ -3,18 +3,14 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import JSZip from 'jszip';
 import sharp from 'sharp';
 import { createObject, createProject } from '../../features/interactable-editor/contract.mjs';
 import { createDocument, getDocument, applyDocumentCommands, saveDocument } from '../../lib/workbench/editor-documents.mjs';
-import { saveMapProject, readMapProject } from '../../lib/workbench/map-projects.mjs';
-import { createMapProjectPackage, readMapProjectPackage } from '../../features/map-stitcher/project-package.mjs';
-import { mapProjectFixture } from '../helpers/map-project.mjs';
 import { imageEditRequest } from '../../lib/workbench/image-edits.mjs';
 import { loadManifest, readTask, repositoryRoot } from '../../lib/workbench/runtime.mjs';
 
 const manifest = await loadManifest();
-for (const name of ['taskDirectory', 'documentDirectory', 'imageEditDirectory', 'mapProjectDirectory', 'outputDirectory']) assert.ok(manifest.workspace[name].split('/').includes(process.env.WORKBENCH_TEST_RUN));
+for (const name of ['taskDirectory', 'documentDirectory', 'imageEditDirectory', 'outputDirectory']) assert.ok(manifest.workspace[name].split('/').includes(process.env.WORKBENCH_TEST_RUN));
 const request = (operation, input = {}) => imageEditRequest(repositoryRoot, manifest, operation, input);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const directory = path.resolve(repositoryRoot, manifest.workspace.imageEditDirectory);
@@ -45,20 +41,6 @@ async function documentFixture(name = 'restore-default') {
   return { document, target: { kind: 'interactable', documentId: document.id, definitionId: 'primary', slot: 'visual' } };
 }
 async function inspect(target) { return request('image-inspect', { ...(typeof target === 'string' ? { targetId: target } : { target }), view: 'source', includePixels: true, limit: 100 }); }
-async function makeEdit(target) {
-  const source = await inspect(target);
-  const region = await request('image-resolve', { targetId: source.target.targetId, ...guard(source.target), region: { type: 'all' } });
-  const edit = await request('image-edit', { targetId: source.target.targetId, ...guard(source.target), regionRef: region.regionRef, operation: { type: 'replace-color', from: '#506478', to: '#cc6600' }, commandId: 'edit-' + hash(source.target.targetId).slice(0, 20) });
-  check(edit.status, 'completed'); return { source, edit, region };
-}
-async function mapChange(projectId, change) {
-  const current = await readMapProject(repositoryRoot, manifest, projectId);
-  const zip = await JSZip.loadAsync(current.bytes);
-  const draft = JSON.parse(await zip.file('map-project.json').async('string'));
-  await change(draft, zip);
-  zip.file('map-project.json', JSON.stringify(draft));
-  await saveMapProject(repositoryRoot, manifest, projectId, current.record.revision, await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }));
-}
 try {
   const { document, target } = await documentFixture();
   const original = await inspect(target);
@@ -147,31 +129,6 @@ try {
   check(reordered.target.sha256, stateSource.target.sha256);
   await reject(request('image-apply', { editId: stateSession.edit.editId, candidateVersion: 'source', ...guard(reordered.target), commandId: 'reject-reordered-slot' }), 'IMAGE_TARGET_CONFLICT'); check(await tasks(), blockedTasks);
 
-  const map = await mapProjectFixture(png, 'map:restore-' + process.env.WORKBENCH_TEST_RUN);
-  map.draft.pending = []; map.draft.snapshot.imageLocks.overall = false;
-  await saveMapProject(repositoryRoot, manifest, map.draft.id, 0, await createMapProjectPackage(map.draft));
-  const mapRef = { kind: 'map-layer', projectId: map.draft.id, tileKey: '0,0', layer: 'overall' };
-  const mapEdit = await makeEdit(mapRef), mapId = mapEdit.source.target.targetId;
-  const mapApplied = await request('image-apply', { editId: mapEdit.edit.edit.editId, candidateVersion: mapEdit.edit.candidateVersion, ...guard(mapEdit.source.target), commandId: 'map-adopt-edit' });
-  await mapChange(map.draft.id, draft => { draft.snapshot.tiles[0].x += 5; draft.snapshot.pan.x += 7; draft.snapshot.imageLocks.overall = true; });
-  let mapCurrent = await inspect(mapId);
-  await reject(request('image-apply', { editId: mapEdit.edit.edit.editId, candidateVersion: 'source', ...guard(mapCurrent.target), commandId: 'reject-locked-restore' }), 'IMAGE_TARGET_LOCKED');
-  await mapChange(map.draft.id, draft => { draft.snapshot.imageLocks.overall = false; });
-  const mapBefore = await readMapProject(repositoryRoot, manifest, map.draft.id), mapBeforeSource = await readMapProjectPackage(mapBefore.bytes);
-  mapCurrent = await inspect(mapId);
-  const mapRestored = await request('image-apply', { editId: mapEdit.edit.edit.editId, candidateVersion: 'source', ...guard(mapCurrent.target), commandId: 'map-restore-source' });
-  check(mapRestored.revision, mapCurrent.target.revision + 1);
-  check((await inspect(mapId)).rgbaSha256, hash(rgba));
-  const mapAfter = await readMapProjectPackage((await readMapProject(repositoryRoot, manifest, map.draft.id)).bytes);
-  check(mapAfter.draft.snapshot.tiles[0].x, mapBeforeSource.draft.snapshot.tiles[0].x); check(mapAfter.draft.snapshot.pan, mapBeforeSource.draft.snapshot.pan); check(mapAfter.draft.snapshot.shapes, mapBeforeSource.draft.snapshot.shapes);
-  for (const [layer, image] of Object.entries(mapBeforeSource.draft.snapshot.tiles[0].images)) if (layer !== 'overall') {
-    const other = mapAfter.draft.snapshot.tiles[0].images[layer]; check(other, image); check(Buffer.from(mapAfter.images.get(other.path)), Buffer.from(mapBeforeSource.images.get(image.path)));
-  }
-  const green = await sharp({ create: { width: 16, height: 16, channels: 4, background: '#00ff00' } }).png().toBuffer();
-  await mapChange(map.draft.id, (draft, zip) => { const image = draft.snapshot.tiles[0].images.overall; image.size = green.length; delete image.generation; zip.file(image.path, green); });
-  mapCurrent = await inspect(mapId);
-  const externalTasks = await tasks();
-  await reject(request('image-apply', { editId: mapEdit.edit.edit.editId, candidateVersion: 'source', ...guard(mapCurrent.target), commandId: 'reject-external-map-source' }), 'IMAGE_TARGET_CONFLICT'); check(await tasks(), externalTasks);
   check(networkRequests, 0);
-  console.log(JSON.stringify({ restoreIntegration: 'passed', checks, tasks: await tasks(), networkRequests, namespace: process.env.WORKBENCH_TEST_RUN, mapAdoptionRevision: mapApplied.revision }, null, 2));
+  console.log(JSON.stringify({ restoreIntegration: 'passed', checks, tasks: await tasks(), networkRequests, namespace: process.env.WORKBENCH_TEST_RUN }, null, 2));
 } finally { globalThis.fetch = originalFetch; }

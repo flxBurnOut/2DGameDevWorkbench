@@ -1,13 +1,17 @@
 # 导出到游戏项目与 WorkBuddy 接入
 
-此流程交付已制作的资产，不创建地图、不生成新美术，也不把一个资源包冒充完整游戏。用户选择自己的 Godot 项目，Forge 写入交付包，外部 Agent 按该项目现有代码完成接入。打包和安装都不调用模型 API。
+此流程交付已制作的资产，不生成新美术，也不把一个资源包冒充完整游戏。用户选择自己的 Godot 项目，Forge 写入交付包，外部 Agent 按该项目现有代码完成接入。打包和安装都不调用模型 API。
 
 ## 用户操作
 
-1. 地图、交互物、场景组装中点击“导出 Godot”，在统一窗口选择项目。第一次可点“选择项目…”在页面内浏览文件夹，找到游戏后点“使用这个项目”；也可粘贴项目根目录的绝对路径。导出后记住该项目，可随时更换。
+1. 在交互物编辑器点击“导出 Godot”，在统一窗口选择项目。第一次可点“选择项目…”在页面内浏览文件夹，找到游戏后点“使用这个项目”；也可粘贴项目根目录的绝对路径。导出后记住该项目，可随时更换。
 2. 点击“导出到此项目”。包和记录保存在所选项目的 `forge_imports/<delivery-id>/`，状态为“等待 WorkBuddy 接入”。不需要用户解压、复制资源、删除示例项目或修改 `res://`。
 3. 在正在使用的 WorkBuddy 会话说“接入刚导出的资源”，或点击“复制给 WorkBuddy”。如果当前会话已经获准执行这项游戏接入工作，Agent 可直接继续，不应再次要求同样的授权。
 4. WorkBuddy 读取交付、检查项目、安装资源并接好场景与脚本。窗口中的“刷新接入进度”显示接入结果；代码接入和引擎验收分别报告。
+
+关闭导出窗口后，可从「工作台管理 → 游戏交付」重新查看全部交付，或在导出成功后点击「查看交付记录」。列表支持待处理筛选和加载更早记录；具体记录链接带 `?tab=deliveries&delivery=<id>`，刷新后仍能直接读取该交付，不受最近十条限制。列表变化时要求刷新，避免翻页遗漏。
+
+详情显示目标项目、原交付时间、最后状态更新、接入结果与已记录的引擎证据。这里读取保存的交付记录，即使目标项目暂不可用也保留历史；不会把查看历史当作重新校验文件或运行引擎。尚未接入的记录可再次复制精确接入请求，不重新导出、安装或启动 Agent。
 
 资产库的具体作品详情也提供“导出到游戏项目”。这只读取该作品已有的 Godot ZIP；只有原图、没有导出包的资产会提示回原工具完成导出，不会自动生成、审批或替换候选。角色动画在内嵌序列帧的“4 · 导出”中点击“导出 PNG + Godot 包”，成功后自动进入相同的项目选择窗口。已导出的结果可点“选择游戏项目并交付给 WorkBuddy”重新打开。交付绑定该导出页的准确作业与候选；所选候选与已有包不一致时拒绝交付，不自动换包或重新审批。独立运行 SpritePipeline 仍保留原来的 ZIP 下载。
 
@@ -21,12 +25,9 @@
 
 | 类型 | 导入项目的资源目录 | 接入契约 |
 | --- | --- | --- |
-| 地图 | `forge_maps/map-<内容标识>/` | 地图场景、图像、世界坐标碰撞、区域清单；自动修正全部 `res://`，区域辅助脚本不重复注册全局类 |
 | 角色动画 | `forge_sprites/<角色>/<作业与候选>/` | 原样保留 SpriteFrames、PNG、显式帧顺序、FPS、loop、锚点和候选；每包一个动作 |
-| 交互物 | `addons/workbench_interaction/`，或显式 CopyWorms 配置目录 | 选中的物件场景、素材、定义、源项目和共享运行时；保留对象 ID |
-| 完整场景 | `scenes/<scene-id>/` 与共享交互运行时 | 保留地图原点、偏移、碰撞、实例变换与遮挡；已有一个运行时和 `ActorSlot` |
+| 交互物 | `addons/workbench_interaction/` | 选中的物件场景、素材、定义、源项目和共享运行时；保留对象 ID |
 
-旧 Frame Ronin 地图包仍可交付：转换器去掉示例 `project.godot`，移入独立目录并修正资源引用，不改图片或碰撞坐标。标准地图包可继续通过地图编辑器和场景组装器导入，嵌入的 `source_state.zip` 用于完整恢复。工程 `stage_assets.py map` 同时接受旧格式与新格式。
 
 上限为 256 MB 压缩或解压内容、6000 个文件。路径越界、链接、大小写重名、缺失引用、未知根目录和项目配置文件都会拒绝。标准化只转换导出包，不改生产源文件。交付的包与版本不可变；相同项目的同一份标准包复用交付，不新增重复记录。
 
@@ -35,17 +36,15 @@
 清单入口是 `manifest.gameExport` 和 `agentAssets.engineering.deliveryGuide`，工程规则仍以[工程 Skill](../.agents/skills/forge-game-engineering/SKILL.md) 和目标游戏自身规则为准。
 
 1. **发现交付。** 继续获准的游戏接入任务时调用 `workbench_list_game_exports`，分页查完相关范围。`workbench_get_environment.gameExports` 只是前五条待接入摘要，不代替完整列表。按用户明确的交付、名称、项目选择，不能因为“最新”就处理另一个游戏的资产。无相关授权时只告知有待接入事项。
-2. **检查具体项目。** `workbench_get_game_export(deliveryId)` 返回原包校验、所选项目绝对路径、配置指纹、主场景、autoload、有限深度的场景/脚本目录和冲突计划。读取目标自己的 `AGENTS.md`、架构文档及相关文件。目录摘要不是代码审查，可能截断。不要把 CopyWorms 参考工程当作写入目标。
-3. **安装资源。** 使用返回的 `packageSha256` 与 `inspection.projectRevision` 调用 `workbench_install_game_export`。新增文件直接安装；相同字节复用；上次由 Forge 管理且未改动的文件先备份再更新。未知同名文件、用户改过的文件或链接会阻止整批安装。先检查并合并冲突，不能删目录、覆盖用户修改或反复尝试来绕过检查。
+2. **检查具体项目。** `workbench_get_game_export(deliveryId)` 返回原包校验、所选项目绝对路径、配置指纹、主场景、autoload、有限深度的场景/脚本目录和冲突计划。读取目标自己的 `AGENTS.md`、架构文档及相关文件。目录摘要不是代码审查，可能截断。
+3. **安装资源。** 将同一次检查返回的 `packageSha256`、`deliveryRevision`、`installPlanRevision` 和 `inspection.projectRevision` 传给 `workbench_install_game_export`。新增文件直接安装，相同字节复用，上次由 Forge 管理且未改动的文件先备份再更新。若另一份交付在预检后更新了共享资源，安装会返回 409。重新检查当前计划及将被替换的文件，再决定是否接入。未知同名文件、用户改过的文件或链接会阻止整批安装。
 4. **完成代码连接。** 使用宿主真实文件工具修改获准的目标工程，不停在“文件已复制”。遵循下面的对象契约，保留项目现有 Builder、控制器、状态机、配置资源、autoload 和关卡生命周期。普通路径命名、资源引用、节点挂载由 Agent 处理，不让用户去 Godot 中手动操作；只有存在无法从代码和已确认策划中决定的玩法或目标选择时才提问。
-5. **验证并记录。** 检查实际资源加载、场景实例化、碰撞、动画与交互。`workbench_complete_game_export` 记录接入场景/脚本的实际路径与当前哈希、简短结果，以及引擎版本和执行证据。未安装不能标完成；不存在的文件不能当证据。引擎未运行填 `not_run`；外部 Agent 提交的运行说明标为 `agent-reported`，服务不会把它冒充自己执行过的检查。
+5. **验证并记录。** 检查实际资源加载、场景实例化、碰撞、动画与交互。`workbench_complete_game_export` 接收安装或最近一次检查返回的 `deliveryRevision` 和 `packageSha256`，记录接入场景或脚本的路径与当前哈希、简短结果，以及引擎版本和执行证据。完成接入时重新核对已安装资源。引擎未运行填 `not_run`。外部 Agent 提交的运行说明标为 `agent-reported`。
 
 ### 按资产完成脚本接入
 
-- **地图：** 找到目标关卡的真实 SceneBuilder 或场景挂载点，通过已存在的 Builder 生命周期实例化 `entryScenes`；可复用工程 Skill 的 `map_mount.gd`。移动完整地图根节点，保留局部碰撞坐标与世界原点；不拆散图片与碰撞。重新进入关卡不重复挂载、不残留旧节点。地图替换时保留原有玩家、镜头、关卡逻辑与生成物之外的脚本。
 - **角色动作：** 查找当前角色的 `Sprite`/AnimatedSprite2D 及控制器映射，使用 `sprite_frames_merge.gd` 的 `merge_clips(existing, incoming)` 生成新的合并资源，只更新此次动作。保留其他动作、控制器、朝向、脚底偏移、碰撞和攻击时序。QA 的关键帧索引不是伤害触发点，不从索引推导玩法。
-- **交互物：** 普通包每关一个 InteractionRuntime；完整场景已自带，不再重复添加。沿用用户已经选择的 generic/copyworms 配置。generic 的靠近检测将实际人物物理节点加入 `interaction_actor`，匹配 detection mask；不能重建人物控制器。读取物件定义以及现有库存/任务/供电系统，通过 `picked_up`、`toggled`、`interaction_finished` 等实际信号接入。信号携带 context Dictionary，不能猜参数。使用已有信号或 EventBus，连接前检查是否已经连接，避免重复触发。
-- **完整场景：** 按目标工程现有的场景入口（如 Builder）实例化场景。若项目契约允许，将原玩家接到 `ActorSlot` 并保留全局位置；若移动会破坏现有 NodePath/生命周期，则保留原玩家挂载，依据包内 actorZIndex 调整排序并连好检测。不要为满足一个固定挂载位置而破坏角色控制。场景实例 ID 保留，地图图片不能替代可交互节点。
+- **交互物：** 每关使用一个 InteractionRuntime，不重复添加。靠近检测将实际人物物理节点加入 `interaction_actor`，匹配 detection mask；不能重建人物控制器。读取物件定义以及现有库存/任务/供电系统，通过 `picked_up`、`toggled`、`interaction_finished` 等实际信号接入。信号携带 context Dictionary，不能猜参数。使用已有信号或 EventBus，连接前检查是否已经连接，避免重复触发。
 - **业务逻辑：** 静态图片不能凭空变成背包/任务系统。已有策划明确“电池拾取增加库存、开关接通点亮灯塔”时，在实际项目的对应管理器/关卡脚本中补最小连接，并验收重复拾取、重入和存档行为。没有对应玩法授权时不发明新系统。
 
 自定义集成代码放在目标游戏既有脚本目录或其外层关卡中，不放入会被更新的生成目录。原始包和旧版本保留在 `forge_imports`；不删除用户从其他渠道导入的旧资源。一次任务跨多个包时，每份交付各自校验，整体联调后分别记录实际接入结果。
@@ -60,15 +59,35 @@
 | `workbench_install_game_export` | `install-game-export` | 校验后安装资源，备份可更新文件，不改项目配置或编写玩法 |
 | `workbench_complete_game_export` | `complete-game-export` | 保存 Agent 的接入结果及证据，不运行引擎 |
 
-CLI 对应 `npm run workbench -- agent <共享操作> --input <输入文件> --json`。MCP/CLI 与网页共用 `lib/workbench/game-export.mjs`，它们不新增生产 capability 或生产任务。地图、场景制作边界保持手动；此流程仅消费已导出的文件。
+CLI 对应 `npm run workbench -- agent <共享操作> --input <输入文件> --json`。MCP/CLI 与网页共用 `lib/workbench/game-export.mjs`，它们不新增生产 capability 或生产任务。此流程仅消费已导出的文件。
 
 网页接口位于 `/api/workbench/game-export/`，代理至本机 `/v1/game-export/`。`settings` 返回已选择项目和本次服务会话令牌；`browse` 只读列出一层文件夹并识别 project.godot，不启动系统弹窗；旧 `pick` 立即提示重开窗口；`select` 校验手输路径；`package` 读取已有包；`deliver` 写入包。写操作要求同源页面和令牌；链接/目录冲突在本机再次检查。用户在网页选择项目，不需要把私人目录提交到仓库。
 
-仓库本机索引目录来自 `workspace.gameExportDirectory`，默认 `work/game-exports/`；游戏中的原始交付、备份、安装索引在 `forge_imports/`。该目录带 `.gdignore`，不会重复注册运行时类。不要删除它来“清理导出”，否则会丢失接入记录和备份。测试目录与正式目录隔离。
+只读 `GET history` 接受 `pendingOnly`、`offset`、`limit` 和可选 `snapshot`，返回分页交付摘要；`GET record?deliveryId=...` 读取确切的保存记录及交接所需的类型信息。它们沿用同源与回环服务限制，不开放安装或完成接入的网页写接口。`workbench_list_game_exports` 同样可携带返回的 snapshot；不携带时兼容原列表行为。
+
+仓库本机索引目录来自 `workspace.gameExportDirectory`，默认 `work/game-exports/`；游戏中的原始交付、备份、安装索引在 `forge_imports/`。该目录带 `.gdignore`，不会重复注册运行时类。不要删除它来“清理导出”，否则会丢失接入记录和备份。首次替换保留 `backups/` 中的原文件；同一份交付再次替换不同的 Forge 管理版本时，按原文件的 SHA-256 另存备份。ZIP 与新增资源先完整写入临时文件，再用同目录硬链接一次发布。测试目录与正式目录隔离。
+
+在 Windows 上，如果磁盘上已有深层备份，普通 `git status` 却没有列出，可以在游戏仓库运行 `git -c core.longpaths=true status --untracked-files=all` 核对。这个开关只对本次 Git 命令生效。
+
+导出、安装和完成接入共用工程内的操作系统锁。运行时持有 `forge_imports/.install-gate.sqlite` 的写锁，并在 `forge_imports/install.lock` 原子发布完整的持有者记录，与使用该路径安装资源的旧版互斥。对于 v2 记录，新进程取得同一 SQLite 库的写锁并核对 `gateId` 后可恢复遗留记录，工程所在主机改名也能重试。v1 目录锁仍须核对本机主机名及原 PID 已退出。旧版留下的空目录、坏记录或来源不明的锁需要人工核验。先停止涉及该工程的旧版和新版写入进程，确认锁没有持有者后再处理该锁路径，保留包、安装账本和备份。
+
+工程写入时，如果 `forge_imports/.gitignore` 中没有独立一行 `# Forge delivery locks`，Forge 会在文件末尾追加锁文件、SQLite 日志与锁恢复临时文件的忽略规则。保留这行标记即可自行修改或移除其下的规则。交付包、回执、安装账本和备份仍按工程自身的 Git 规则管理。已经被 Git 跟踪的锁文件需按工程的版本管理流程移出索引。
+
+首次创建 `.install-gate.sqlite` 前，Forge 会检查工程的 `forge_imports/.gitignore`。缺少该文件时，Forge 原子发布完整规则，已有标记时直接沿用。仅当已有文件需要追加规则、工程锁库尚未创建时，才通过 `forge_imports/.install-bootstrap/` 内的 SQLite 写锁串行追加。这个内部目录的 `.gitignore` 忽略自身内容。如果工程的忽略文件不是普通文件或无法读取、写入，Forge 返回 `INSTALL_LOCK_IGNORE_UNAVAILABLE`（HTTP 409）。首次配置失败时，Git 工作区不会出现锁库或日志。已存在的锁库保留原位。检查该路径及权限后可以重试，也可以从导出窗口选择“仅下载 ZIP”。
+
+目标工程所在的文件系统须支持 SQLite 文件锁及同目录硬链接。exFAT 等环境会在原子发布锁或包之前返回错误。可选择位于支持文件系统的工程后重试，也可使用“仅下载 ZIP”。
+
+首次导出在发布 ZIP 后登记交付位置。后续以工程内的 `forge_imports/<delivery-id>/delivery.json` 为准，资源和安装账本写妥后发布工程回执，再更新工作台历史副本。仅工作台写入失败时，工程已提交的变更仍保留。在线历史读取工程回执，重试同一次操作可补齐工作台副本。工程离线时可读最近一份工作台副本。
+
+如果安装账本已写入新版本、进程在更新工程回执前退出，在线列表、历史详情和预检均显示 `install_recovery_required`。记录会出现在待处理列表，`installRecovery` 给出账本及原回执的安装版本。查询保留磁盘中的旧证据，展示时以待恢复状态为准。重新预检并安装即可补齐回执，随后再提交本次接入的证据。
+
+在线工程的账本损坏、无法读取，或已安装交付所需的账本记录缺失时，历史与预检显示 `install_verification_required`，`installVerification` 给出核验提示。回执中的已安装文件清单格式无效时，同一字段会指出需要核验回执。修正损坏的账本后可重新预检。账本缺失时，可从备份恢复，或按新预检重新安装对应包并记录接入证据。其他工程的待处理列表和历史仍可查询。
+
+安装在锁内重读交付、包、项目配置和安装账本。`installPlanRevision` 绑定本包涉及的文件内容、对应的账本条目及本交付的安装版本。其他资源的独立更新不影响此次计划。已经写妥的同一安装允许幂等重试。旧客户端省略计划指纹时仍可安装全新资源或复用相同内容，替换或接管已有管理版本需要重新预检并传入指纹。旧交付缺少 `deliveryRevision` 时初始版本为 0。
 
 ## 验收
 
-运行 `npm run test:game-export` 检查四类格式、路径修正、文件完整性、同名冲突、备份、幂等、交付篡改、目录链接、HTTP 和 MCP。结合 `test:map-stitcher`、`test:scene-composer`、`test:interactable`、`test:interactable-http`、`test:asset-import`、`test:assets`、`test:engineering` 及清单/壳层回归。浏览器应实际完成选择项目、导出、关闭重开记住路径、仅下载 ZIP、查看接入进度及新地图包回导。
+运行 `npm run test:game-export` 检查角色动画与交互物格式、路径修正、文件完整性、同名冲突、备份、幂等、交付篡改、目录链接、目标工程的 Git 忽略规则、HTTP 和 MCP。结合 `test:interactable`、`test:interactable-http`、`test:asset-import`、`test:assets`、`test:engineering` 及清单/壳层回归。浏览器应实际完成选择项目、导出、关闭重开记住路径、仅下载 ZIP、查看接入进度及动画/交互物资源加载。
 
 包导出、资源安装、代码接入、引擎执行、视觉验收和完整游戏验收是不同证据。Godot 4.7.x 行为需要实际 4.7.x 执行；只有另一版本时明确记录，不升级目标项目或把该结果当成 4.7.x 验收。
 

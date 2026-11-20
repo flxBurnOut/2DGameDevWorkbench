@@ -3,11 +3,16 @@ import { useEffect, useRef, useState } from 'react';
 import { Pause, Play, Radio } from 'lucide-react';
 import { getEditorSessions, saveBeforeNavigation } from '@/lib/workbench/editor-session';
 import { followDecision, previewSnapshotPath } from '@/lib/workbench/preview-follow-client.mjs';
-import manifest from '@/workbench/manifest.json';
+import manifest from '@/lib/workbench/ui-manifest.json';
 
 type Step = { id: string; viewPath: string; title: string; summary: string; expiresAt: number };
 type Ack = { requestId: string; state: 'displayed' | 'navigating' | 'paused' | 'blocked'; reason?: 'editing' | 'busy' | 'save-failed' | 'user-paused' | 'page-arrived' };
 const KEY = 'forge.agent-follow.v1';
+// Hidden pages never navigate; they only keep their connection (server TTL 20 s).
+// Visible pages answer a pending Agent step quickly and otherwise check less often.
+const ACTIVE_POLL_MS = 1500;
+const VISIBLE_POLL_MS = 3000;
+const HIDDEN_POLL_MS = 8000;
 function read(key: string) { try { return sessionStorage.getItem(key); } catch { return null; } }
 function store(key: string, value: string) { try { sessionStorage.setItem(key, value); } catch { /* This page still works without persistent preferences. */ } }
 
@@ -24,6 +29,7 @@ export function AgentFollow() {
     let navigating = false;
     let editedAt = 0;
     let held = '';
+    let pending = false;
     let active = read(KEY + '.active') === 'true';
     let acknowledged = read(KEY + '.handled') || '';
     const incomingSession = new URL(location.href).searchParams.get('previewSession');
@@ -62,10 +68,12 @@ export function AgentFollow() {
       inFlight = true;
       try {
         const { request } = await send(ack);
+        ack = undefined;
+        pending = Boolean(request && request.expiresAt >= Date.now());
         if (!request || stopped || document.visibilityState !== 'visible' || request.expiresAt < Date.now()) return;
         const target = new URL(request.viewPath, location.origin);
-        const routes = ['/', '/advanced', manifest.agentAssets.assetCatalog.route, ...manifest.productionLines.map((p) => p.href),
-          ...manifest.capabilities.map((c) => c.ui.route), ...manifest.editorModules.map((m) => m.ui.route)];
+        const routes = ['/', '/advanced', manifest.assetCatalogRoute, ...manifest.productionLines.map((p) => p.href),
+          ...manifest.modules.map((c) => c.ui.route)];
         if (target.origin !== location.origin || !routes.includes(target.pathname)) throw new Error('Invalid page target');
         active = true; store(KEY + '.active', 'true');
         setStep(request);
@@ -101,20 +109,25 @@ export function AgentFollow() {
           }
         }
         await send(ack);
+        ack = undefined;
       } catch {
         if (!stopped) setMessage('页面跟随暂未连接，正在重连');
       } finally {
         inFlight = false;
-        if (!stopped && !navigating) timer = setTimeout(() => void tick(), 1500);
+        if (!stopped && !navigating)
+          timer = setTimeout(() => void tick(), document.visibilityState !== 'visible' ? HIDDEN_POLL_MS : pending ? ACTIVE_POLL_MS : VISIBLE_POLL_MS);
       }
     };
     retry.current = () => { held = ''; clearTimeout(timer); void tick(); };
+    const onVisibility = () => { if (document.visibilityState === 'visible' && !inFlight) { clearTimeout(timer); void tick(); } };
+    document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('workbench:manual-navigation', pause);
     window.addEventListener('popstate', pause);
     document.addEventListener('input', onInput, true);
     void tick();
     return () => { stopped = true; clearTimeout(timer); window.removeEventListener('workbench:manual-navigation', pause);
-      window.removeEventListener('popstate', pause); document.removeEventListener('input', onInput, true); };
+      window.removeEventListener('popstate', pause); document.removeEventListener('input', onInput, true);
+      document.removeEventListener('visibilitychange', onVisibility); };
   }, []);
   if (!step) return null;
   return <aside className="wb-agent-follow" aria-label="Agent 工作进度">

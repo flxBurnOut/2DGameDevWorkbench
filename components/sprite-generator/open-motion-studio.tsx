@@ -1,10 +1,17 @@
 'use client';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import { ImageEditWorkspace } from '../image-edit/lazy-image-edit-workspace';
+import type { ImageTargetRef } from '@/features/image-edit/client';
 import { MotionTargets } from './motion-targets';
+import { CharacterIdentityField } from './character-identity-field';
+import { uploadedIdentityLimit, uploadedReferenceIdentity } from './character-identity';
 /* oxlint-disable next/no-img-element -- Inspection uses unmodified pixel frames, not optimized display images. */
 
 import Link from 'next/link';
 
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -25,8 +32,8 @@ import {
   Upload,
   Sparkles,
 } from 'lucide-react';
-import { EditorWorkbenchMenu } from '@/components/workbench/editor-chrome';
-import { useWorkbench } from '@/components/workbench/workbench-provider';
+import { useWorkbenchActions } from '@/components/workbench/workbench-provider';
+import { SourceAssetLink } from '@/components/workbench/shared-navigation';
 import {
   publishEditorSession,
   removeEditorSession,
@@ -34,18 +41,31 @@ import {
 } from '@/lib/workbench/editor-session';
 import { offerGodotExport } from '@/lib/workbench/godot-export';
 import type { WorkbenchModule } from '@/lib/workbench/modules';
-import { SpritePipelineWorkspace } from './sprite-pipeline-workspace';
-import {
-  MotionModelSettings,
-  type MotionConfiguration as Configuration,
-} from './motion-model-settings';
+import { interactableMotionRoute } from '@/lib/workbench/motion-routes';
+import type { MotionConfiguration as Configuration } from './motion-model-settings';
+
+// Secondary surfaces load when opened: model settings and the legacy workspace.
+const MotionModelSettings = lazy(() =>
+  import('./motion-model-settings').then((module) => ({ default: module.MotionModelSettings })),
+);
+const SpritePipelineWorkspace = lazy(() =>
+  import('./sprite-pipeline-workspace').then((module) => ({ default: module.SpritePipelineWorkspace })),
+);
 import {
   blankSpec,
   motionSteps,
   motionStep,
   motionSpecsEqual,
+  motionObjectId,
+  motionObjectType,
+  motionReferenceObjects,
+  motionSpecWithDefaults,
+  selectMotionObject,
+  type MotionReferenceObject,
   motionPlanningProgress,
   motionPlanningRequestKey,
+  motionWorkspace,
+  submitMotionPlan,
   motionRequest,
   motionUrl,
   type MotionSpec,
@@ -60,27 +80,14 @@ import { MotionPanel } from './motion-panel';
 import { MotionTemporalStructure } from './motion-temporal-structure';
 import { MotionVisualReview } from './motion-visual-review';
 import { MotionStructure } from './motion-structure';
+import { ExpertRecord, motionPlanningRoles as roles } from './motion-expert-record';
 
-type Character = {
-  id: string;
-  name: string;
-  width: number;
-  facing: string;
-  valid: boolean;
-};
 type Recent = {
   id: string;
   title: string;
   updated_at: string;
   diagnostic_only: boolean;
   revision: number;
-};
-const roles: Record<string, string> = {
-  appearance: '外观专家',
-  motion: '动作专家',
-  strategy: '生成策略专家',
-  coordinator: '协调专家',
-  validator: '本机方案校验',
 };
 const stageLabels: Record<string, string> = {
   created: '等待制作',
@@ -142,6 +149,7 @@ export function SpriteStudioEntry({ module }: { module: WorkbenchModule }) {
     (job && resolved?.job === job && !resolved.work)
   )
     return (
+      <Suspense fallback={null}>
       <SpritePipelineWorkspace
         module={module}
         returnToMotion={
@@ -154,6 +162,7 @@ export function SpriteStudioEntry({ module }: { module: WorkbenchModule }) {
             : undefined
         }
       />
+      </Suspense>
     );
   if (job && resolved?.job !== job)
     return (
@@ -167,8 +176,11 @@ export function SpriteStudioEntry({ module }: { module: WorkbenchModule }) {
       key={`${work || resolved?.work || 'new'}:${params.get('version') || resolved?.revision || ''}`}
       workId={work || resolved?.work || ''}
       version={Number(params.get('version')) || resolved?.revision}
-      characterId={params.get('character') || ''}
+      objectId={params.get('object') || params.get('character') || ''}
       initialCandidate={Number(params.get('candidate')) || 1}
+      initialImage={params.has('imageFrame')&&/^(?:[0-9]|[1-5][0-9]|6[0-3])$/.test(params.get('imageFrame')||'')&&(!params.has('imageStage')||/^[0-3]$/.test(params.get('imageStage')||''))?{
+        frameIndex:Number(params.get('imageFrame')),...(params.has('imageStage')?{stageIndex:Number(params.get('imageStage'))}:{}),
+        editId:params.get('imageEdit')||undefined,candidateVersion:params.get('imageCandidate')||undefined}:undefined}
     />
   );
 }
@@ -176,21 +188,29 @@ export function SpriteStudioEntry({ module }: { module: WorkbenchModule }) {
 function OpenMotionStudio({
   workId,
   version,
-  characterId,
+  objectId,
   initialCandidate,
+  initialImage,
 }: {
   workId: string;
   version?: number;
-  characterId: string;
+  objectId: string;
   initialCandidate: number;
+  initialImage?:{frameIndex:number;stageIndex?:number;editId?:string;candidateVersion?:string};
 }) {
-  const wb = useWorkbench();
+  const wb = useWorkbenchActions();
   const [work, setWork] = useState<MotionWork | null>(null);
+  const { setPageTitle } = wb;
+  const pageTitle = work?.plan?.title || '新动作';
+  useEffect(() => {
+    setPageTitle(pageTitle);
+    return () => setPageTitle('');
+  }, [pageTitle, setPageTitle]);
   const [spec, setSpec] = useState<MotionSpec>({
     ...blankSpec,
-    character_id: characterId,
+    object_id: objectId,
   });
-  const [characters, setCharacters] = useState<Character[]>([]);
+  const [objects, setObjects] = useState<MotionReferenceObject[]>([]);
   const [configuration, setConfiguration] = useState<Configuration | null>(
     null,
   );
@@ -203,15 +223,22 @@ function OpenMotionStudio({
   const [note, setNote] = useState(''),
     [acknowledge, setAcknowledge] = useState(false),
     [watched, setWatched] = useState(false);
+  const [reviewSeconds,setReviewSeconds]=useState('');
   const [inspectionToken, setInspectionToken] = useState('');
   const [uploadName, setUploadName] = useState(''),
     [uploadFacing, setUploadFacing] = useState('right');
+  const [uploadIdentity, setUploadIdentity] = useState('');
   const [remoteId, setRemoteId] = useState('');
+  const [pixelTarget,setPixelTarget]=useState<ImageTargetRef|null>(initialImage&&workId&&version?{kind:'motion-frame',workId,workRevision:version,candidateIndex:initialCandidate,frameIndex:initialImage.frameIndex,...(initialImage.stageIndex!==undefined?{stageIndex:initialImage.stageIndex}:{})}:null);
+  const [pixelInitial,setPixelInitial]=useState(initialImage);
+  const [localVersion,setLocalVersion]=useState(0);
   const [adjustmentOpen,setAdjustmentOpen]=useState(false);
   const structureDraftSaver = useRef<(() => void) | null>(null);
   const registerStructureDraftSaver = useCallback((save: (() => void) | null) => { structureDraftSaver.current = save; }, []);
   const settingsRef = useRef<HTMLDetailsElement>(null);
+  const [settingsShown, setSettingsShown] = useState(false);
   const requestKey = useRef(''),
+    requestWorkspace = useRef<string | undefined>(undefined),
     lastStatus = useRef(-1),
     pollRevision = useRef(0);
   const submittedDraft = useRef(false);
@@ -269,7 +296,13 @@ function OpenMotionStudio({
   const recoverable=work?.job?.candidates.some(c=>c.plan_execution.stages.some(s=>
     s.state==='unknown'||(!work.job?.plan_control.enabled&&['submitting','pending'].includes(s.state))));
 
+  // Polls return the same work most of the time; an identical snapshot keeps
+  // the studio from re-rendering every 2.5 seconds.
+  const workSnapshot = useRef('');
   const applyWork = useCallback((value: MotionWork) => {
+    const snapshot = JSON.stringify(value);
+    if (snapshot === workSnapshot.current) return;
+    workSnapshot.current = snapshot;
     setWork(value);
     const next = motionStep(value);
     if (lastStatus.current !== next) {
@@ -282,20 +315,22 @@ function OpenMotionStudio({
   }, []);
   const refreshLists = useCallback(async () => {
     const [refs, config, history] = await Promise.all([
-      motionRequest<{ characters: Character[] }>('open-motion/references'),
+      motionRequest<{ objects?: MotionReferenceObject[]; characters?: MotionReferenceObject[] }>('open-motion/references'),
       motionRequest<Configuration>('open-motion/settings'),
       motionRequest<{ works: Recent[] }>('open-motion'),
     ]);
-    setCharacters(
-      refs.characters.filter((c) => c.valid && c.id !== 'diagnostic_dummy'),
-    );
+    // Interactables are made in their own panel; this page lists characters only.
+    const available = motionReferenceObjects(refs).filter(item => item.valid && item.id !== 'diagnostic_dummy');
+    setObjects(available);
     setConfiguration(config);
     setRecent(history.works.filter((w) => !w.diagnostic_only));
+    return available;
   }, []);
 
   useEffect(() => {
     let live = true;
     const initialize = async () => {
+      let draftBlocked = Boolean(workId);
       try {
         let loaded: MotionWork | null = null;
         if (workId) {
@@ -305,11 +340,17 @@ function OpenMotionStudio({
             version ? { revision: String(version) } : {},
           );
           if (!live) return;
+          if (motionObjectType(value.spec) === 'interactable' && new URLSearchParams(location.search).get('layout') !== 'studio') {
+            // Interactable works open in their state-graph panel by default.
+            location.replace(`${interactableMotionRoute}${location.search}`);
+            return;
+          }
           applyWork(value);
           setSpec(value.spec);
           loaded = value;
-        } else if (characterId) {
-          setSpec({ ...blankSpec, character_id: characterId });
+          draftBlocked = false;
+        } else if (objectId) {
+          setSpec(selectMotionObject(blankSpec, objectId));
         }
         try {
           const draft = localStorage.getItem(draftKey);
@@ -317,50 +358,61 @@ function OpenMotionStudio({
             const saved = JSON.parse(draft) as {
               spec: MotionSpec;
               requestKey?: string;
+              workspaceId?: string;
               revision?: number;
             };
+            if (saved.requestKey && saved.workspaceId && !version) {
+              draftBlocked = true;
+              if (await motionWorkspace() !== saved.workspaceId)
+                throw new Error('这份规划草稿属于另一动画工作区。请切回原工作区后刷新。');
+              draftBlocked = false;
+            }
             if (
               !workId ||
               (loaded &&
                 saved.revision === loaded.revision &&
                 loaded.revision === loaded.latest_revision)
             ) {
-              setSpec({
-                ...blankSpec,
-                ...saved.spec,
-                review_protocol: saved.spec.review_protocol,
-                ...(characterId ? { character_id: characterId,
-                  ...(characterId !== saved.spec.character_id ? { visual_structure: null } : {}),
-                } : {}),
-              });
+              const restored = motionSpecWithDefaults(saved.spec);
+              setSpec(objectId ? selectMotionObject(restored, objectId) : restored);
               requestKey.current = saved.requestKey || '';
+              requestWorkspace.current = saved.workspaceId;
               if (loaded && !motionSpecsEqual(saved.spec, loaded.spec))
                 setStep(0);
             }
           }
-        } catch {
+        } catch (error) {
+          if (draftBlocked) throw error;
           if (live)
             setError('草稿未能读取。服务器中的作品仍可从制作记录打开。');
         }
-        await refreshLists();
+        const available = await refreshLists();
+        if (live && objectId) {
+          const reference = available.find(item => item.id === objectId);
+          if (reference?.object_type === 'interactable') {
+            location.replace(`${interactableMotionRoute}${location.search}`);
+            return;
+          }
+          if (reference) setSpec(current => selectMotionObject(current, reference.id, reference.object_type));
+        }
       } catch (e) {
         if (live) setError((e as Error).message);
       } finally {
-        if (live) setReady(true);
+        if (live) setReady(!draftBlocked);
       }
     };
     void initialize();
     return () => {
       live = false;
     };
-  }, [workId, version, characterId, draftKey, applyWork, refreshLists]);
+  }, [workId, version, objectId, draftKey, applyWork, refreshLists]);
 
   useEffect(() => {
     if (!workId || !ready) return;
     let running = false;
     const abort = new AbortController();
     const poll = async () => {
-      if (running || busy) return;
+      if (running || busy || document.visibilityState === 'hidden') return;
       running = true;
       const revision = pollRevision.current;
       try {
@@ -395,6 +447,7 @@ function OpenMotionStudio({
       JSON.stringify({
         spec,
         requestKey: requestKey.current,
+        workspaceId: requestWorkspace.current,
         revision: work?.revision,
       }),
     );
@@ -416,7 +469,8 @@ function OpenMotionStudio({
               title: work.plan?.title || work.spec.description.slice(0, 60),
               detail: work.job?.plan_control.message || work.message,
               state:
-                active || work.status === 'planning'
+                work.job?.status === 'not_submitted' ? 'not_submitted'
+                  : active || work.status === 'planning' || work.job?.status === 'queued'
                   ? 'running'
                   : approved
                     ? 'completed'
@@ -463,8 +517,21 @@ function OpenMotionStudio({
   };
   const edit = (value: Partial<MotionSpec>) => {
     requestKey.current = '';
-    setSpec((previous) => ({ ...previous, ...('character_id' in value && value.character_id!==previous.character_id ? {visual_structure:null}:{}), ...value }));
+    requestWorkspace.current = undefined;
+    setSpec(previous => {
+      if ('object_id' in value || 'character_id' in value) {
+        const changes = { ...value };
+        delete changes.object_id; delete changes.object_type; delete changes.character_id;
+        return selectMotionObject({ ...previous, ...changes }, motionObjectId(value), motionObjectType(value));
+      }
+      return { ...previous, ...value };
+    });
   };
+  // What still blocks "制定方案", said in the footer instead of a silent grey button.
+  const planMissing = [
+    !motionObjectId(spec) ? '选择对象' : '',
+    spec.description.trim().length < 4 ? '描述动作（至少 4 个字）' : '',
+  ].filter(Boolean);
   const plan = () =>
     run(async () => {
       if (readOnly || work?.status === 'planning') return;
@@ -476,23 +543,19 @@ function OpenMotionStudio({
         setStep(1);
         return;
       }
-      if (!configuration?.planning_configured) {
+      if (!work && !configuration?.planning_configured) {
         settingsRef.current?.setAttribute('open', '');
         throw new Error(
           '先配置规划模型，再制定方案。PixelLab 用于后续动画制作。',
         );
       }
-      requestKey.current = motionPlanningRequestKey(work, requestKey.current);
+      const key = motionPlanningRequestKey(work, requestKey.current);
+      if (key !== requestKey.current) requestWorkspace.current = await motionWorkspace();
+      requestKey.current = key;
       await saveDraft();
-      const value = await motionRequest<MotionWork>(
-        work ? `open-motion/${work.id}/revise` : 'open-motion',
-        {
-          spec,
-          request_key: requestKey.current,
-          planning_authorized: true,
-          ...(work ? { expected_revision: work.revision } : {}),
-        },
-      );
+      const value = await submitMotionPlan(work?.id, {
+        spec, requestKey: key, workspaceId: requestWorkspace.current, expectedRevision: work?.revision,
+      });
       if (work) {
         applyWork(value);
         lastStatus.current = 1;
@@ -516,19 +579,33 @@ function OpenMotionStudio({
   return (
     <div className="motion-studio" data-sprite-editor>
       <header className="motion-header">
-        <EditorWorkbenchMenu />
-        <strong>角色动作</strong>
-        <span className="motion-divider" />
-        <span className="motion-title">
-          {work?.plan?.title || '让角色完成你描述的动作'}
+        <span className="motion-work">
+          <strong title={pageTitle}>{pageTitle}</strong>
+          <SourceAssetLink />
         </span>
+        <nav className="motion-steps" aria-label="角色动画制作阶段">
+          {motionSteps.map((name, i) => (
+            <button
+              key={name}
+              aria-current={step === i ? 'step' : undefined}
+              disabled={i > maxStep || busy}
+              onClick={() => setStep(i)}
+            >
+              <span>{i < maxStep ? <Check size={14} /> : i + 1}</span>
+              {name}
+              {i < 4 && (
+                <ChevronRight size={14} className="motion-step-chevron" />
+              )}
+            </button>
+          ))}
+        </nav>
         <span className="motion-save">
           {work ? `版本 ${work.revision} · 已保存本机` : '准备阶段不创建任务'}
         </span>
         <details className="motion-popover">
           <summary>
             <History size={16} />
-            制作记录
+            最近动作
           </summary>
           <div className="motion-popover-body">
             <button onClick={() => void wb.navigate('/tools/sprite-generator')}>
@@ -552,39 +629,34 @@ function OpenMotionStudio({
             <Link href="/tools/sprite-generator?legacy=1">旧版工作区</Link>
           </div>
         </details>
-        <details className="motion-popover" ref={settingsRef}>
+        <details
+          className="motion-popover"
+          ref={settingsRef}
+          onToggle={(event) => {
+            if (event.currentTarget.open) setSettingsShown(true);
+          }}
+        >
           <summary>
             <Settings2 size={16} />
             模型设置
           </summary>
-          <MotionModelSettings
-            configuration={configuration}
-            onSaved={(value) => setConfiguration(value)}
-          />
+          {settingsShown && (
+            <Suspense fallback={<div className="motion-popover-body">正在读取模型设置…</div>}>
+              <MotionModelSettings
+                configuration={configuration}
+                onSaved={(value) => setConfiguration(value)}
+              />
+            </Suspense>
+          )}
         </details>
       </header>
-      <nav className="motion-steps" aria-label="角色动作制作阶段">
-        {motionSteps.map((name, i) => (
-          <button
-            key={name}
-            aria-current={step === i ? 'step' : undefined}
-            disabled={i > maxStep || busy}
-            onClick={() => setStep(i)}
-          >
-            <span>{i < maxStep ? <Check size={14} /> : i + 1}</span>
-            {name}
-            {i < 4 && (
-              <ChevronRight size={14} className="motion-step-chevron" />
-            )}
-          </button>
-        ))}
-      </nav>
       {error && (
         <div role="alert" className="motion-error">
           <span>{error}</span>
           <button
             onClick={() =>
               void run(async () => {
+                if (!ready) { location.reload(); return; }
                 await refreshLists();
                 if (workId)
                   applyWork(
@@ -611,20 +683,17 @@ function OpenMotionStudio({
       <main className="motion-content">
         {!ready ? (
           <div className="motion-loading">
-            <LoaderCircle className="animate-spin" />
-            正在连接角色工作区…
+            {error ? '请核对服务连接后重新连接。' : <><LoaderCircle className="animate-spin" />正在连接角色工作区…</>}
           </div>
         ) : (
           <>
             <div className="motion-heading">
-              <small>
-                CHARACTER / MOTION · {String(step + 1).padStart(2, '0')}
-              </small>
+              <small>第 {step + 1} 步，共 {motionSteps.length} 步</small>
               <h1>{motionSteps[step]}</h1>
               <p>
                 {
                   [
-                    '选好角色，用自己的话描述它要做什么。',
+                    '选好对象，用自己的话描述它要做什么。',
                     '核对动作顺序、结束姿势和调用范围。',
                     '生成在本机服务持续运行，可以离开页面后回来。',
                     '完整播放并检查动作；技术检查不能替代你的视觉判断。',
@@ -636,26 +705,26 @@ function OpenMotionStudio({
             {step === 0 && (
               <div className="motion-grid">
                 <section className="motion-card motion-reference">
-                  <h2>使用哪个角色</h2>
-                  <MotionStructure key={spec.character_id} characterId={spec.character_id} disabled={readOnly || busy} registerDraftSaver={registerStructureDraftSaver} modelConfiguration={JSON.stringify(configuration?.configuration || null)} generationStructure={spec.visual_structure} onGenerationStructure={(value)=>edit({visual_structure:value})} />
+                  <h2>使用哪个对象</h2>
+                  <MotionStructure key={motionObjectId(spec)} characterId={motionObjectId(spec)} disabled={readOnly || busy} registerDraftSaver={registerStructureDraftSaver} modelConfiguration={JSON.stringify(configuration?.configuration || null)} generationStructure={spec.visual_structure} onGenerationStructure={(value)=>edit({visual_structure:value})} />
                   <label>
-                    已有角色
-                    <select
-                      value={spec.character_id}
+                    已有对象
+                    <NativeSelect
+                      value={motionObjectId(spec)}
                       disabled={readOnly}
-                      onChange={(e) => edit({ character_id: e.target.value })}
+                      onChange={(e) => { const selected = objects.find(item => item.id === e.target.value); edit({ object_id: e.target.value, object_type: selected?.object_type ?? 'character' }); setUploadIdentity(''); }}
                     >
-                      <option value="">请选择角色</option>
-                      {characters.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} · {c.width}px · 朝
-                          {c.facing === 'left' ? '左' : '右'}
-                        </option>
+                      <NativeSelectOption value="">请选择对象</NativeSelectOption>
+                      {objects.filter((c) => c.object_type !== 'interactable').map((c) => (
+                        <NativeSelectOption key={c.id} value={c.id}>
+                          {c.name} · 角色 · {c.width}px
+                          {c.facing ? ` · 朝${c.facing === 'left' ? '左' : '右'}` : ''}
+                        </NativeSelectOption>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </label>
                   <details>
-                    <summary>上传自己的原图</summary>
+                    <summary>上传角色原图</summary>
                     <div className="motion-stack">
                       <p>
                         64 × 64 或 128 × 128 透明
@@ -671,14 +740,15 @@ function OpenMotionStudio({
                       </label>
                       <label>
                         原图朝向
-                        <select
+                        <NativeSelect
                           value={uploadFacing}
                           onChange={(e) => setUploadFacing(e.target.value)}
                         >
-                          <option value="right">向右</option>
-                          <option value="left">向左</option>
-                        </select>
+                          <NativeSelectOption value="right">向右</NativeSelectOption>
+                          <NativeSelectOption value="left">向左</NativeSelectOption>
+                        </NativeSelect>
                       </label>
+                      <CharacterIdentityField value={uploadIdentity} onChange={setUploadIdentity} maxLength={uploadedIdentityLimit} disabled={busy || readOnly} />
                       <label className="motion-upload">
                         <Upload size={16} />
                         选择 PNG
@@ -713,12 +783,15 @@ function OpenMotionStudio({
                               }>('open-motion/references', {
                                 display_name: uploadName,
                                 facing: uploadFacing,
+                                identity_description: uploadedReferenceIdentity(uploadIdentity),
                                 png_base64: data,
                               });
                               await refreshLists();
                               edit({
-                                character_id: value.character.character_id,
+                                object_id: value.character.character_id,
+                                object_type: 'character',
                               });
+                              setUploadIdentity('');
                             });
                             e.target.value = '';
                           }}
@@ -727,15 +800,15 @@ function OpenMotionStudio({
                     </div>
                   </details>
                   <Link href="/tools/reference-art">
-                    还没有角色？先制作原图 <ArrowRight size={14} />
+                    制作角色原图 <ArrowRight size={14} />
                   </Link>
                 </section>
                 <section className="motion-card motion-brief">
                   <h2>描述这段动作</h2>
                   <label>
-                    角色要做什么
+                    对象要做什么
                     <textarea
-                      aria-label="角色要做什么"
+                      aria-label="对象要做什么"
                       value={spec.description}
                       onChange={(e) => edit({ description: e.target.value })}
                       disabled={readOnly}
@@ -757,6 +830,7 @@ function OpenMotionStudio({
                   <label className="motion-check">
                     <input
                       type="checkbox"
+                      className="ui-switch"
                       checked={spec.loop}
                       onChange={(e) => edit({ loop: e.target.checked })}
                       disabled={readOnly}
@@ -766,6 +840,7 @@ function OpenMotionStudio({
                   <label className="motion-check">
                     <input
                       type="checkbox"
+                      className="ui-switch"
                       checked={spec.return_to_reference || false}
                       onChange={(e) =>
                         edit({ return_to_reference: e.target.checked })
@@ -859,15 +934,22 @@ function OpenMotionStudio({
                           }
                         />
                       </label>
+                      {(['max_frames_per_request', 'max_total_frames'] as const).map((key) => (
+                        <label key={key}>{key === 'max_total_frames' ? '所有候选绘图总帧数上限' : '单次绘图帧数上限'}
+                          <input type="number" min={4} max={key === 'max_total_frames' ? 512 : 16}
+                            placeholder="自动" value={spec.budget[key] ?? ''}
+                            onChange={e => edit({budget: {...spec.budget, [key]: e.target.value ? Number(e.target.value) : undefined}})} />
+                        </label>
+                      ))}
                       <label>
                         视觉复核方式
-                        <select aria-label="视觉复核方式" value={spec.review_protocol || 'baseline'} onChange={e=>edit({
+                        <NativeSelect aria-label="视觉复核方式" value={spec.review_protocol || 'baseline'} onChange={e=>edit({
                           review_protocol:e.target.value as 'baseline'|'experts_v1',
                           budget:{...spec.budget,max_review_calls:Math.max(spec.budget.max_review_calls||2,(e.target.value==='experts_v1'?25:10)*spec.candidate_count)},
                         })}>
-                          <option value="experts_v1">独立专家与争议复核</option>
-                          <option value="baseline">基础视觉检查</option>
-                        </select>
+                          <NativeSelectOption value="experts_v1">独立专家与争议复核</NativeSelectOption>
+                          <NativeSelectOption value="baseline">基础视觉检查</NativeSelectOption>
+                        </NativeSelect>
                       </label>
                       <label>
                         视觉验收调用上限
@@ -891,7 +973,7 @@ function OpenMotionStudio({
                         : '每个候选包含逐段检查和整段复核，需要 2 × 分段数 + 2 次视觉请求。'}</p>
                     </div>
                   </details>
-                  <div className="motion-notice">
+                  <div className="motion-notice motion-cost-note">
                     复核方式：{spec.review_protocol==='experts_v1'?'独立专家与争议复核':'基础视觉检查'}。{' '}
                     制定方案最多调用规划模型 {spec.budget.max_planning_calls}{' '}
                     次；此按钮不会生成动画。PixelLab 最多{' '}
@@ -907,7 +989,26 @@ function OpenMotionStudio({
                 <section className="motion-card">
                   <h2>{work.plan?.title || (work.status === 'planning' ? '正在形成制作方案' : '制作方案未完成')}</h2>
                   <p>{work.plan?.summary || work.message}</p>
-                  {work.visual_structure && <p className="motion-muted">已使用核对后的角色结构 · 版本 {work.visual_structure.revision}。各段采用的结构依据可在描述中展开查看。</p>}
+                  {work.frame_budget && <p>绘图预算 · 每次最多 {work.frame_budget.max_frames_per_request} 帧，合计最多 {work.frame_budget.max_total_frames} 帧
+                    {work.spec.provider === 'pixellab' && <> · {work.frame_budget.remaining_units === null ? '额度未知' : `规划时余额 ${work.frame_budget.remaining_units} 单位`}
+                      {work.frame_budget.estimated_units !== null && ` · 预计消耗 ${work.frame_budget.estimated_units} 单位`}</>}</p>}
+                  {work.plan && work.status === 'needs_input' && <p>{work.message}</p>}
+                  {work.plan?.quality?.interactable && <section>
+                    <h3>交互物状态与起始图核对</h3>
+                    <p>{work.plan.quality.interactable.initial_state} → {work.plan.quality.interactable.target_state}</p>
+                    <p>运动部件：{work.plan.quality.interactable.moving_parts.join('、')} · 固定部件：{work.plan.quality.interactable.fixed_parts.join('、')}</p>
+                    <p>运动类型：{({appearance_change:'外观变化', hinge_rotation:'铰接转动', deformation:'形变', occluded_rigid_translation:'带遮挡的刚体平移（当前生成器不适合）'} as Record<string,string>)[work.plan.quality.interactable.motion_type]}</p>
+                    <p>终点：{work.plan.quality.interactable.endpoint} · 停留：{work.plan.quality.interactable.hold}</p>
+                    {work.plan.quality.interactable.differences?.map((d, i) => <p key={i}>
+                      原描述「{d.description}」，参考图「{d.observed}」 ·
+                      {{appearance_only:'仅外观差异', impedes_motion:'影响运动', changes_fixed_parts:'影响固定部件集合'}[d.impact]} ·
+                      {d.handling === 'needs_decision' || d.impact !== 'appearance_only' ? '需要裁决' : '采用参考图'}
+                    </p>)}
+                    {Object.entries(work.plan.quality.interactable.reference_check).map(([key, check]) => <p key={key}>
+                      {({viewpoint:'视角', initial_state:'初态', part_ownership:'部件归属'} as Record<string,string>)[key]} · {({satisfied:'符合', mismatch:'不符', ambiguous:'待澄清'} as Record<string,string>)[check.status]} · {check.evidence}
+                    </p>)}
+                  </section>}
+                  {work.visual_structure && <p className="motion-muted">已使用核对后的对象结构 · 版本 {work.visual_structure.revision}。各段采用的结构依据可在描述中展开查看。</p>}
                   {work.plan?.quality&&<p className="motion-muted">复核方式：{work.spec.review_protocol==='experts_v1'?'独立专家与争议复核':'基础视觉检查'}；
                     本方案最多预留 {(work.spec.review_protocol==='experts_v1'?5:2)*(work.plan.quality.version>=3?work.plan.stages.length+1:1)*work.spec.candidate_count} 次视觉请求，
                     已设总上限 {work.spec.budget.max_review_calls ?? 10} 次。按实际调用计费；确认片段和最终采用仍由你决定。</p>}
@@ -949,7 +1050,7 @@ function OpenMotionStudio({
                           <p>{s.goal}</p>
                           {s.checkpoint&&<p>确认姿势：{s.checkpoint.endpoint}</p>}
                           <p className="motion-muted">
-                            {i === 0 ? '从角色原图开始' : '接上一段末帧'} ·{' '}
+                            {i === 0 ? '从对象原图开始' : '接上一段已确认末帧'} ·{' '}
                             {s.last_frame === 'original'
                               ? '以原图作为终点参考'
                               : '保留本段要求的结束姿势'}
@@ -981,6 +1082,7 @@ function OpenMotionStudio({
                   <h2>制作范围</h2>
                   <div className="motion-small-reference">
                     <img
+                      decoding="async"
                       src={motionUrl(`open-motion/${work.id}/reference`, {
                         revision: String(work.revision),
                       })}
@@ -989,8 +1091,7 @@ function OpenMotionStudio({
                     <span>
                       {work.character.display_name}
                       <small>
-                        原图朝{work.character.facing === 'left' ? '左' : '右'} ·{' '}
-                        {work.character.cell_width}px
+                        {motionObjectType(work.spec) === 'interactable' ? '交互物' : `原图朝${work.character.facing === 'left' ? '左' : '右'}`} · {work.character.cell_width}px
                       </small>
                     </span>
                   </div>
@@ -1049,7 +1150,9 @@ function OpenMotionStudio({
             )}
             {step === 2 && work && (
               <div className={`motion-grid${checkpoint?' motion-review-grid':''}`}>
-                {checkpoint ? <MotionStageReview key={`${work.id}:${work.revision}:${checkpoint.candidate}:${checkpoint.stage}`} work={work} candidate={checkpoint.candidate} stage={checkpoint.stage} readOnly={readOnly} onSaved={applyWork} expertRecord={<ExpertRecord work={work}/>} /> : <section className="motion-card">
+                {checkpoint&&pixelTarget&&<ImageEditWorkspace target={pixelTarget} initialEditId={pixelInitial?.editId} initialCandidateVersion={pixelInitial?.candidateVersion}
+                  readOnly={readOnly} onClose={()=>setPixelTarget(null)} onAdopt={async()=>{setPixelTarget(null);setLocalVersion(v=>v+1);applyWork(await motionRequest<MotionWork>('open-motion/'+work.id));}}/>}
+                {checkpoint ? <MotionStageReview key={`${work.id}:${work.revision}:${checkpoint.candidate}:${checkpoint.stage}:${localVersion}`} work={work} candidate={checkpoint.candidate} stage={checkpoint.stage} readOnly={readOnly} onSaved={applyWork} expertRecord={<ExpertRecord work={work}/>} /> : <section className="motion-card">
                   <h2>{work.job?.plan_control.message || work.message}</h2>
                   <div className="motion-canvas motion-large">
                     {work.job && (
@@ -1058,7 +1161,8 @@ function OpenMotionStudio({
                           `open-motion/${work.id}/progress-image`,
                           {
                             candidate: String(candidateIndex),
-                            v: String(work.job.revision),
+                            revision: String(work.revision),
+                            job_revision: String(work.job.revision),
                           },
                         )}
                         alt="原图或已保存片段的最后一帧"
@@ -1066,7 +1170,7 @@ function OpenMotionStudio({
                     )}
                   </div>
                   <p className="motion-muted">
-                    显示原图或已保存片段的末帧。完整动画完成后进入播放检查。
+                    {work.spec.object_type === 'interactable' ? '已确认状态时显示状态图，待审片段显示原始末帧。' : '显示原图或已保存片段的末帧。'}完整动画完成后进入播放检查。
                   </p>
                 </section>}
                 <aside className="motion-card">
@@ -1074,6 +1178,7 @@ function OpenMotionStudio({
                   {work.job?.candidates.map((c) => (
                     <div key={c.candidate_index} className="motion-progress">
                       <h3>候选 {c.candidate_index}</h3>
+                      <StateImages work={work} candidate={c} />
                       {c.plan_execution.stages.map((s, i) => (
                         <p key={i}>
                           <span
@@ -1106,21 +1211,21 @@ function OpenMotionStudio({
                     </p>
                     <label>
                       候选
-                      <select
+                      <NativeSelect
                         value={candidateIndex}
                         onChange={(e) =>
                           setCandidateIndex(Number(e.target.value))
                         }
                       >
                         {work.job?.candidates.map((c) => (
-                          <option
+                          <NativeSelectOption
                             key={c.candidate_index}
                             value={c.candidate_index}
                           >
                             {c.candidate_index}
-                          </option>
+                          </NativeSelectOption>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </label>
                     <label>
                       已核对的原请求编号（可选）
@@ -1154,7 +1259,7 @@ function OpenMotionStudio({
                     <h2>{work.plan?.title}</h2>
                     <label>
                       候选
-                      <select
+                      <NativeSelect
                         value={candidateIndex}
                         onChange={(e) => {
                           setCandidateIndex(Number(e.target.value));
@@ -1164,7 +1269,7 @@ function OpenMotionStudio({
                         }}
                       >
                         {work.job.candidates.map((c) => (
-                          <option
+                          <NativeSelectOption
                             key={c.candidate_index}
                             value={c.candidate_index}
                           >
@@ -1174,9 +1279,9 @@ function OpenMotionStudio({
                               : c.frames.length
                                 ? '待检查'
                                 : '未完成'}
-                          </option>
+                          </NativeSelectOption>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </label>
                   </div>
                   {candidate && (
@@ -1186,8 +1291,12 @@ function OpenMotionStudio({
                       candidate={candidate}
                       work={work}
                       readOnly={readOnly}
+                      onEditFrame={frameIndex=>{setPixelInitial(undefined);setPixelTarget({kind:'motion-frame',workId:work.id,workRevision:work.revision,candidateIndex,frameIndex});}}
                     />
                   )}
+                  {pixelTarget&&<ImageEditWorkspace target={pixelTarget} initialEditId={pixelInitial?.editId} initialCandidateVersion={pixelInitial?.candidateVersion}
+                    readOnly={readOnly} onClose={()=>setPixelTarget(null)} onAdopt={async()=>{setPixelTarget(null);setLocalVersion(v=>v+1);applyWork(await motionRequest<MotionWork>('open-motion/'+work.id));}}/>}
+                  {candidate && <StateImages work={work} candidate={candidate} />}
                   {work.diagnostic_only && (
                     <div className="motion-notice">
                       诊断素材，仅用于验证工具链，不能作为模型生成效果。
@@ -1252,6 +1361,7 @@ function OpenMotionStudio({
                             />
                             我已播放完整动作并检查衔接、外观与结束姿势
                           </label>
+<label>人工检查用时（秒，可留空）<input aria-label="人工检查用时" type="number" min={0} max={86400} step={1} value={reviewSeconds} onChange={e=>setReviewSeconds(e.target.value)}/></label>
                           <label>
                             检查结论（至少 4 个字）
                             <textarea
@@ -1286,7 +1396,7 @@ function OpenMotionStudio({
                         </>
                       )}
                       </>}
-                      <MotionAdjustment key={`${work.id}:${work.revision}:${candidateIndex}`} work={work} candidate={candidateIndex} readOnly={readOnly} onOpenChange={setAdjustmentOpen} onSaved={value=>{
+                      <MotionAdjustment key={`${work.id}:${work.revision}:${candidateIndex}:${localVersion}`} work={work} candidate={candidateIndex} readOnly={readOnly} onOpenChange={setAdjustmentOpen} onSaved={value=>{
                         applyWork(value);
                         if(value.revision!==work.revision){
                           setCandidateIndex(1);
@@ -1383,6 +1493,8 @@ function OpenMotionStudio({
               <LoaderCircle size={16} className="animate-spin" />
               正在保存操作…
             </>
+          ) : step === 0 && planMissing.length ? (
+            <span className="motion-missing">还需：{planMissing.join('、')}</span>
           ) : step === 0 ? (
             work ? (
               '修改保存在当前浏览器；重新制定方案会保留旧版本。'
@@ -1426,7 +1538,7 @@ function OpenMotionStudio({
                 readOnly ||
                 work?.status === 'planning' ||
                 active ||
-                !spec.character_id ||
+                !motionObjectId(spec) ||
                 spec.description.trim().length < 4
               }
               onClick={plan}
@@ -1438,7 +1550,7 @@ function OpenMotionStudio({
           {step === 1 && planningStopped && (
             <button
               className="motion-primary"
-              disabled={busy || !ready || readOnly || !spec.character_id || spec.description.trim().length < 4}
+              disabled={busy || !ready || readOnly || !motionObjectId(spec) || spec.description.trim().length < 4}
               onClick={plan}
             >
               <Sparkles size={16} />
@@ -1467,11 +1579,13 @@ function OpenMotionStudio({
                       }
                       await mutate('generate', {
                         plan_sha256: work?.plan_sha256,
+                        expected_targets: work?.target_set_sha256,
+                        allow_unsupported_motion: work?.plan?.quality?.interactable?.motion_type === 'occluded_rigid_translation',
                       });
                     })
               }
             >
-              {work?.job ? '查看制作结果' : '确认方案，开始制作'}
+              {work?.job ? '查看制作结果' : work?.plan?.quality?.interactable?.motion_type === 'occluded_rigid_translation' ? '已知遮挡平移不受支持，仍尝试制作' : '确认方案，开始制作'}
               <ArrowRight size={16} />
             </button>
           )}
@@ -1506,6 +1620,7 @@ function OpenMotionStudio({
                       await mutate('review', {
                         candidate_index: candidateIndex,
                         candidate_sha256: candidate?.review_token,
+                        ...(reviewSeconds===''?{}:{human_seconds:Number(reviewSeconds)}),
                         note,
                         acknowledge_warnings: acknowledge,
                       });
@@ -1533,34 +1648,20 @@ function OpenMotionStudio({
   );
 }
 
-function ExpertRecord({ work }: { work: MotionWork }) {
-  return (
-    <details>
-      <summary>专家协作记录 · {work.planning_calls.length} 次调用</summary>
-      <div className="motion-expert-record">
-        {work.messages.map((m, i) => (
-          <article key={i}>
-            <b>
-              {roles[m.role]} ·{' '}
-              {
-                (
-                  {
-                    propose: '提出建议',
-                    consult: '请求协作',
-                    inspect_reference: '观察参考图',
-                    finalize: '形成方案',
-                    validation_feedback: '返回校验意见',
-                  } as Record<string, string>
-                )[m.response.action]
-              }
-            </b>
-            <p>{m.response.summary}</p>
-            {m.response.question && <p>{m.response.question}</p>}
-          </article>
-        ))}
-      </div>
-    </details>
-  );
+function StateImages({work, candidate}: {work: MotionWork; candidate: MotionCandidate}) {
+  if (!candidate.state_chain?.length) return null;
+  return <details>
+    <summary>状态图（{candidate.state_chain.length}）</summary>
+    <ol>{candidate.state_chain.map(state => {
+      const path = state.stage === null ? 'reference' : `candidates/${candidate.candidate_index}/stages/${state.stage}/state-image`;
+      return <li key={state.stage ?? 'reference'}>
+        <img width={64} height={64} loading="lazy" alt={state.name} src={motionUrl(`open-motion/${work.id}/${path}`, {
+          revision: String(work.revision), expected_sha256: state.sha256,
+        })} />
+        {state.name} · {state.stage === null ? '参考原图' : `第 ${state.stage + 1} 段，提供方第 ${(state.raw_index ?? 0) + 1} 帧`}
+      </li>;
+    })}</ol>
+  </details>;
 }
 
 function FramePlayer({
@@ -1568,11 +1669,13 @@ function FramePlayer({
   candidate,
   work,
   readOnly,
+  onEditFrame,
 }: {
   job: MotionJob;
   candidate: MotionCandidate;
   work: MotionWork;
   readOnly: boolean;
+  onEditFrame:(frame:number)=>void;
 }) {
   const [frame, setFrame] = useState(0),
     [playing, setPlaying] = useState(false),
@@ -1601,7 +1704,7 @@ function FramePlayer({
   const current = candidate.frames[Math.min(frame, count - 1)];
   const url = motionUrl(
     `jobs/${job.job_id}/candidates/${candidate.candidate_index}/frames/${current.index}/image`,
-    { v: current.sha256 },
+    { revision: String(job.revision), expected_sha256: current.sha256 },
   );
   const stage = candidate.plan_execution.timeline.find(
     (s) => current.index >= s.start && current.index < s.start + s.count,
@@ -1667,16 +1770,18 @@ function FramePlayer({
         <span>
           {current.index + 1} / {count}
         </span>
-        <select
+        <NativeSelect
           aria-label="预览速度"
           value={speed}
           onChange={(e) => setSpeed(Number(e.target.value))}
         >
-          <option value={0.5}>0.5×</option>
-          <option value={1}>1×</option>
-          <option value={2}>2×</option>
-        </select>
+          <NativeSelectOption value={0.5}>0.5×</NativeSelectOption>
+          <NativeSelectOption value={1}>1×</NativeSelectOption>
+          <NativeSelectOption value={2}>2×</NativeSelectOption>
+        </NativeSelect>
       </div>
+      <button disabled={readOnly||playing||imageError||frame===0||frame===count-1||candidate.plan_execution.timeline.some(s=>frame===s.start||frame>=s.start+s.count-1-(s.hold_frames??0)&&frame<s.start+s.count)}
+        onClick={()=>onEditFrame(frame)}>局部调整当前帧</button>
       <p className="motion-muted">
         {stage?.name} · {job.action.fps} FPS ·{' '}
         {job.action.loop ? '循环播放' : '播放到末帧停止'}

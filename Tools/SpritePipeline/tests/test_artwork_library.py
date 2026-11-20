@@ -41,10 +41,14 @@ def test_animation_cards_are_per_material_and_catalog_remains_lazy(library_setup
     job = service.create_job(request)
     paths = fixture.write_sequence(fixture.root / 'inputs')
     service.ingest_candidate(job.job_id, 2, fixture.root / 'inputs')
+    with service.store.locked_job(job.job_id) as updated:
+        updated.character.display_name = '红袍法师'
+        updated.action.display_name = '红袍法师原地举杖施法循环'
     with patch.object(service.store, 'load', side_effect=AssertionError('must not open tasks')), patch.object(Image, 'open', side_effect=AssertionError('must not decode frames')):
         rows = library.list_artworks()
     animations = [row for row in rows if row['kind'] == 'animation']
     assert len(animations) == 1
+    assert animations[0]['title'] == '红袍法师原地举杖施法循环'
     assert animations[0]['candidate_index'] == 2
     assert animations[0]['job_id'] == job.job_id
     assert 'review' in animations[0]['actions']
@@ -73,7 +77,9 @@ def test_repair_and_approval_change_available_actions(library_setup):
     fixture.write_sequence(fixture.root / 'inputs')
     service.ingest_candidate(job.job_id, 1, fixture.root / 'inputs')
     artwork_id = f'animation:{job.job_id}:1'
-    assert 'export' not in library.get(artwork_id)['actions']
+    with patch.object(service, 'list_jobs', side_effect=AssertionError('single artwork must not enumerate jobs')), \
+         patch.object(service.presets, 'list_characters', side_effect=AssertionError('single artwork must not enumerate presets')):
+        assert 'export' not in library.get(artwork_id)['actions']
     service.review_frame(job.job_id, 1, {'frame_index': 0, 'status': 'repair_requested', 'issue_type': 'other'})
     assert library.get(artwork_id)['actions'][0] == 'edit'
     service.review_frame(job.job_id, 1, {'frame_index': 0, 'status': 'approved'})
@@ -147,6 +153,7 @@ def test_filters_and_pages_preserve_distinct_material_ids():
 
 @pytest.mark.parametrize("archived", [False, True])
 def test_gradio_renders_material_cards_and_routes_exact_candidate(library_setup, archived):
+    pytest.importorskip("gradio", reason="requires the optional native UI profile")
     import asyncio
     from functools import partial
     from gradio.state_holder import SessionState
@@ -185,6 +192,7 @@ def test_gradio_renders_material_cards_and_routes_exact_candidate(library_setup,
 
 @pytest.mark.parametrize("archived", [False, True])
 def test_workbench_link_opens_visible_details_for_exact_candidate(library_setup, archived):
+    pytest.importorskip("gradio", reason="requires the optional native UI profile")
     from types import SimpleNamespace
     from sprite_pipeline.ui import build_ui
 

@@ -3,7 +3,7 @@ import hashlib
 
 from ..errors import ConflictError, ValidationHarnessError
 from .review_evaluation import ReviewEvidence
-from .review_inputs import TIMING_NOTE
+from .review_inputs import TIMING_NOTE, prop_review_context
 from .visual_review import frame_digest
 
 
@@ -43,6 +43,7 @@ def snapshot_review(service, job_id, candidate_index, destination, *, expected_t
             context = {'segment': binding.plan.stages[stage].model_dump(mode='json'),
                 'appearance': binding.plan.quality.appearance_contract,
                 'user_request': binding.spec.description, 'seconds_per_frame': 1/job.action.fps}
+        context.update(prop_review_context(binding, stage))
         if token != expected_token:
             raise ConflictError('动画版本已改变，请重新读取实际帧后评估')
         paths = [service.store.resolve_job_path(job_id, f['path']) for f in frames]

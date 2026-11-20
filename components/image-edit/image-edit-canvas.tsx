@@ -1,6 +1,7 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Context layers display exact existing blob/data sources at explicit source geometry. */
 
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { screenToPixel } from '@/features/image-edit/core.mjs';
@@ -8,7 +9,7 @@ import type { PixelPoint, PixelBounds } from '@/features/image-edit/core.mjs';
 import type { PixelController } from '@/features/image-edit/pixel-controller.mjs';
 import type { ImageEditContextLayer } from '@/features/image-edit/client';
 
-export type ImagePixelTool = 'pencil' | 'eraser' | 'mask-add' | 'mask-erase' | 'rectangle' | 'connected' | 'picker' | 'pan';
+export type ImagePixelTool = 'pencil' | 'eraser' | 'fill' | 'move' | 'mask-add' | 'mask-erase' | 'rectangle' | 'connected' | 'picker' | 'pan';
 export type ImageViewMode = 'candidate' | 'source' | 'diff';
 interface Props {
   controller: PixelController; version: number; tool: ImagePixelTool; color: string; alpha: number; brushSize: number;
@@ -16,10 +17,15 @@ interface Props {
   viewPixels?: Uint8Array; beforePixels?: Uint8Array; selectionMode: 'replace' | 'add' | 'subtract';
   selectionVisible: boolean; onSelectionVisible: (value: boolean) => void;
   onChange: () => void; onColor: (color: string, alpha: number) => void; onError: (message: string) => void;
+  /** Non-error feedback, e.g. a stroke that fell outside the editable range. */
+  onNotice: (message: string) => void;
+  /** Editing tools return from the before/diff views to the current image. */
+  onEditView: () => void;
+  onFill: (point: PixelPoint) => void; onMove: (dx: number, dy: number) => void;
 }
-type Gesture = { kind: 'pan'; x: number; y: number; panX: number; panY: number } | { kind: 'rectangle'; start: PixelPoint; last: PixelPoint; mode: 'replace' | 'add' | 'subtract' } | { kind: 'transform'; start: PixelPoint; rectangle: PixelBounds; handle: string; next: PixelBounds } | { kind: 'paint' } | { kind: 'mask'; mode: 'add' | 'erase' };
+type Gesture = { kind: 'pan'; x: number; y: number; panX: number; panY: number } | { kind: 'rectangle'; start: PixelPoint; last: PixelPoint; mode: 'replace' | 'add' | 'subtract' } | { kind: 'transform'; start: PixelPoint; rectangle: PixelBounds; handle: string; next: PixelBounds } | { kind: 'move'; start: PixelPoint; rectangle: PixelBounds; dx: number; dy: number } | { kind: 'paint' } | { kind: 'mask'; mode: 'add' | 'erase' };
 
-export function ImageEditCanvas({ controller, version, tool, color, alpha, brushSize, display, disabled, tolerance, contextLayers, showContext, onChange, onColor, onError, viewPixels, beforePixels, selectionMode, selectionVisible, onSelectionVisible }: Props) {
+export function ImageEditCanvas({ controller, version, tool, color, alpha, brushSize, display, disabled, tolerance, contextLayers, showContext, onChange, onColor, onError, onNotice, onEditView, onFill, onMove, viewPixels, beforePixels, selectionMode, selectionVisible, onSelectionVisible }: Props) {
   const viewport = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null), selectionCanvas = useRef<HTMLCanvasElement>(null);
   const frame = useRef<ImageData | null>(null), gesture = useRef<Gesture | null>(null);
   const maskFrame = useRef<ImageData | null>(null);
@@ -111,11 +117,25 @@ export function ImageEditCanvas({ controller, version, tool, color, alpha, brush
     const point = pixel(event);
     if (tool === 'pan' || event.button === 1 || space.current) gesture.current = { kind: 'pan', x: event.clientX, y: event.clientY, panX: view.panX, panY: view.panY };
     else {
-      if (disabled || display !== 'candidate' || showContext || !point) return;
+      if (disabled || showContext || viewPixels || !point) return;
+      // Comparing is a view, not a lock: starting an edit returns to the current image.
+      if (display !== 'candidate') onEditView();
       try {
         if (tool === 'picker') {
           const offset = (point.y * controller.width + point.x) * 4;
           onColor(`#${Array.from(controller.pixels.subarray(offset, offset + 3), byte => byte.toString(16).padStart(2, '0')).join('')}`, controller.pixels[offset + 3]); return;
+        }
+        if (tool === 'fill') {
+          if (!controller.mask[point.y * controller.width + point.x]) { onSelectionVisible(true); onNotice('填充起点在修改范围外，未执行。请在蓝色范围内点击，或先「选整图」。'); return; }
+          onFill(point); return;
+        }
+        if (tool === 'move') {
+          const rect = controller.region?.type === 'rectangle' ? controller.region : null;
+          onSelectionVisible(true);
+          if (!rect) { onNotice('移动像素需要一个矩形选区：先用「矩形」框选要移动的内容。'); return; }
+          if (!(point.x >= rect.x && point.x < rect.x + rect.width && point.y >= rect.y && point.y < rect.y + rect.height)) { onNotice('请在矩形选区内按下并拖动。'); return; }
+          gesture.current = { kind: 'move', start: point, rectangle: rect, dx: 0, dy: 0 }; setSelectionPreview(rect);
+          event.currentTarget.setPointerCapture(event.pointerId); return;
         }
         const combination = event.altKey ? 'subtract' : event.shiftKey ? 'add' : selectionMode;
         onSelectionVisible(true);
@@ -139,13 +159,21 @@ export function ImageEditCanvas({ controller, version, tool, color, alpha, brush
     try {
       if (active.kind === 'paint' || active.kind === 'mask') paint(point);
       else if (active.kind === 'transform') { active.next = transformRectangle(active.rectangle, active.handle, active.start, point, controller.width, controller.height); setSelectionPreview(active.next); }
+      else if (active.kind === 'move') {
+        const moved = transformRectangle(active.rectangle, 'move', active.start, point, controller.width, controller.height);
+        active.dx = moved.x - active.rectangle.x; active.dy = moved.y - active.rectangle.y; setSelectionPreview(moved);
+      }
       else { active.last = point; setSelectionPreview({ x: Math.min(active.start.x, point.x), y: Math.min(active.start.y, point.y), width: Math.abs(point.x - active.start.x) + 1, height: Math.abs(point.y - active.start.y) + 1 }); }
     } catch (error) { gesture.current = null; controller.cancelStroke(); controller.cancelMaskStroke(); onChange(); onError(error instanceof Error ? error.message : '这一笔未写入。'); }
   };
   const finishPointer = (event: React.PointerEvent<HTMLDivElement>, cancel = false) => {
     const active = gesture.current; gesture.current = null; setSelectionPreview(null);
     try {
-      if (active?.kind === 'paint') { if (cancel) controller.cancelStroke(); else controller.endStroke(); onChange(); }
+      if (active?.kind === 'paint') {
+        if (cancel) controller.cancelStroke(); else controller.endStroke(); onChange();
+        if (!cancel && !controller.strokeWritten && controller.strokeBlocked) { onSelectionVisible(true); onNotice('这一笔在修改范围（蓝色）外，未写入。可点「选整图」或调整选区后再画。'); }
+      }
+      if (active?.kind === 'move' && !cancel && (active.dx || active.dy)) onMove(active.dx, active.dy);
       if (active?.kind === 'mask') { if (cancel) controller.cancelMaskStroke(); else controller.endMaskStroke(); onChange(); }
       if (active?.kind === 'transform' && !cancel) { controller.selectRegion({ type: 'rectangle', ...active.next }); onChange(); }
       if (active?.kind === 'rectangle' && !cancel) { controller.selectRectangle(active.start, active.last, active.mode); onChange(); }
@@ -170,7 +198,7 @@ export function ImageEditCanvas({ controller, version, tool, color, alpha, brush
       <Button size="sm" variant="ghost" aria-label="放大" onClick={() => zoomTo(view.zoom * 1.5)}>+</Button>
       <label><input type="checkbox" checked={grid} onChange={event => setGrid(event.target.checked)} />网格</label>
       <label><input type="checkbox" checked={selectionVisible} onChange={event => onSelectionVisible(event.target.checked)} />显示修改范围</label>
-      <select aria-label="画布底色" value={background} onChange={event => setBackground(event.target.value)}><option value="checker">棋盘格</option><option value="dark">深色</option><option value="light">浅色</option></select>
+      <NativeSelect aria-label="画布底色" value={background} onChange={event => setBackground(event.target.value)}><NativeSelectOption value="checker">棋盘格</NativeSelectOption><NativeSelectOption value="dark">深色</NativeSelectOption><NativeSelectOption value="light">浅色</NativeSelectOption></NativeSelect>
     </div>
     <div ref={viewport} className={`ie-viewport ie-bg-${background} ${tool === 'pan' ? 'ie-pan' : ''}`} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={event => finishPointer(event)} onPointerCancel={event => finishPointer(event, true)}>
       <div className="ie-world" style={{ width: controller.width, height: controller.height, transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})` }}>
@@ -182,10 +210,23 @@ export function ImageEditCanvas({ controller, version, tool, color, alpha, brush
         {selectionPreview && <div className="ie-drag-selection" style={{ left: selectionPreview.x, top: selectionPreview.y, width: selectionPreview.width, height: selectionPreview.height, borderWidth: 1 / view.zoom }} />}
       </div>
     </div>
-    <p className="ie-hint">滚轮缩放 · 平移工具或中键拖动 · {showContext ? '上下文只读，不进入图片输出' : display === 'candidate' ? '蓝色范围可修改 · Shift 添加 · Alt 减去 · 拖动矩形内部移动、角点调整' : '对比只读'} · {controller.width} × {controller.height}</p>
+    {!selectionVisible && controller.selectionCount > 0 && display === 'candidate' && !viewPixels && !showContext && <button type="button" className="ie-selection-badge" onClick={() => onSelectionVisible(true)}>
+      修改范围已隐藏 · {controller.selectionCount === controller.width * controller.height ? '整张图片' : `${controller.selectionCount.toLocaleString()} 像素`} · 显示</button>}
+    <p className="ie-hint">{toolHint(tool, showContext, display, Boolean(viewPixels))} · 滚轮缩放 · 空格或中键拖动平移 · {controller.width} × {controller.height}</p>
   </div>;
 }
 
+function toolHint(tool: ImagePixelTool, showContext: boolean, display: ImageViewMode, viewing: boolean) {
+  if (showContext) return '摆放上下文只读，不进入图片输出';
+  if (viewing) return '正在查看其他版本，只读';
+  const hint: Record<ImagePixelTool, string> = {
+    pencil: '在蓝色范围内绘制', eraser: '在蓝色范围内擦成透明', fill: '点击蓝色范围内的像素，用画笔颜色填充相连同色区域',
+    move: '在矩形选区内拖动，松开后移动其中像素', rectangle: '拖动框选 · Shift 添加 · Alt 减去 · 拖动内部移动选框、角点调整',
+    'mask-add': '涂抹添加修改范围 · Alt 减去', 'mask-erase': '涂抹减去修改范围', connected: '点击选择相连的同色像素 · Shift 添加 · Alt 减去',
+    picker: '点击取色，设为画笔颜色', pan: '拖动平移画布',
+  };
+  return (display === 'candidate' ? '' : '对比视图 · 开始编辑会回到当前图 · ') + hint[tool];
+}
 function paintDiff(data: ImageData, pixels: Uint8Array | Uint8ClampedArray, before: Uint8Array | Uint8ClampedArray, imageWidth: number, x: number, y: number, width: number, height: number) {
   for (let row = y; row < y + height; row++) for (let column = x; column < x + width; column++) {
     const offset = (row * imageWidth + column) * 4;

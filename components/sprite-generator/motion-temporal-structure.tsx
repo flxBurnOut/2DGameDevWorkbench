@@ -1,4 +1,5 @@
 'use client';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import {
   useCallback,
   useEffect,
@@ -6,7 +7,8 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { motionRequest, motionUrl, type MotionWork } from './open-motion-model';
+import { motionRequest, motionUrl, motionObjectId, type MotionWork } from './open-motion-model';
+import { MotionStructureHistory, StructureHistoryImage, temporalHistoryImage, type StructureHistoryEntry } from './motion-structure-history';
 import './motion-structure.css';
 
 type Point = { x: number; y: number; label: 0 | 1 };
@@ -35,6 +37,7 @@ type Temporal = {
   error?: string;
   supports_review?: boolean;
   calls: { state: string }[];
+  history: StructureHistoryEntry[];
   structured_review?: {
     state: string;
     current: boolean;
@@ -57,6 +60,7 @@ type Temporal = {
     height: number;
     confirmation: { note: string } | null;
     manual_corrections: unknown[];
+    compute?: { device?: string; seconds?: number; mps_fallback_enabled?: boolean };
     parts: { id: string; name: string }[];
     frames: { frame_index: number; source_sha256: string; parts: Region[] }[];
     observations: {
@@ -107,6 +111,19 @@ const visibility: Record<string, string> = {
   occluded: '遮挡',
 };
 
+type MotionTemporalStructureProps = {
+  work: MotionWork;
+  candidate: number;
+  stage?: number;
+  frame: number;
+  frameSha: string;
+  playing: boolean;
+  readOnly: boolean;
+  onFrame: (frame: number) => void;
+  onStop: () => void;
+  children: ReactNode;
+};
+
 export function MotionTemporalStructure({
   work,
   candidate,
@@ -118,18 +135,7 @@ export function MotionTemporalStructure({
   onFrame,
   onStop,
   children,
-}: {
-  work: MotionWork;
-  candidate: number;
-  stage?: number;
-  frame: number;
-  frameSha: string;
-  playing: boolean;
-  readOnly: boolean;
-  onFrame: (frame: number) => void;
-  onStop: () => void;
-  children: ReactNode;
-}) {
+}: MotionTemporalStructureProps) {
   const [analysis, setAnalysis] = useState<Temporal | null>(null),
     [opened, setOpened] = useState(false),
     [overlay, setOverlay] = useState(false);
@@ -222,7 +228,7 @@ export function MotionTemporalStructure({
     setError('');
     try {
       const ref = await motionRequest<Reference>(
-        `open-motion/references/${work.spec.character_id}/structure`,
+        `open-motion/references/${motionObjectId(work.spec)}/structure`,
       );
       if (
         !ref.analysis?.source_current ||
@@ -250,8 +256,8 @@ export function MotionTemporalStructure({
       setBusy(false);
     }
   }
-  async function mutate(payload: Record<string, unknown>) {
-    if (!analysis || !doc) return;
+  async function mutate(payload: Record<string, unknown>, requestKey = crypto.randomUUID()) {
+    if (!analysis || !doc || busy) return false;
     setBusy(true);
     setError('');
     try {
@@ -260,15 +266,17 @@ export function MotionTemporalStructure({
         {
           expected_revision: analysis.revision,
           token: doc.token,
-          request_key: crypto.randomUUID(),
+          request_key: requestKey,
           ...payload,
         },
       );
       applyAnalysis(value);
       setDraft(null);
       setNote('');
+      return true;
     } catch (e) {
       setError((e as Error).message);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -395,6 +403,13 @@ export function MotionTemporalStructure({
         )}
         {doc && (
           <>
+            {doc.compute?.device && (
+              <p>
+                追踪设备：{doc.compute.device.toUpperCase()}
+                {doc.compute.seconds != null ? ` · ${doc.compute.seconds.toFixed(1)} 秒` : ''}
+                {doc.compute.mps_fallback_enabled ? ' · 已允许部分算子使用 CPU' : ''}
+              </p>
+            )}
             <div className="structure-actions">
               <label>
                 <input
@@ -406,16 +421,16 @@ export function MotionTemporalStructure({
               </label>
               <label>
                 查看部件
-                <select
+                <NativeSelect
                   value={selected}
                   onChange={(e) => setPart(e.target.value)}
                 >
                   {doc.parts.map((p) => (
-                    <option key={p.id} value={p.id}>
+                    <NativeSelectOption key={p.id} value={p.id}>
                       {p.name}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </select>
+                </NativeSelect>
               </label>
             </div>
             <p>
@@ -512,7 +527,7 @@ export function MotionTemporalStructure({
                   )}
                   <label>
                     可见性
-                    <select
+                    <NativeSelect
                       value={draft.state}
                       disabled={!draftCurrent || !editable}
                       onChange={(e) =>
@@ -523,23 +538,23 @@ export function MotionTemporalStructure({
                         })
                       }
                     >
-                      <option value="visible">可见，点击图像放置提示点</option>
-                      <option value="unknown">身份或位置未知</option>
-                      <option value="occluded">已确认被遮挡</option>
-                    </select>
+                      <NativeSelectOption value="visible">可见，点击图像放置提示点</NativeSelectOption>
+                      <NativeSelectOption value="unknown">身份或位置未知</NativeSelectOption>
+                      <NativeSelectOption value="occluded">已确认被遮挡</NativeSelectOption>
+                    </NativeSelect>
                   </label>
                   {draft.state === 'visible' && (
                     <label>
                       点的作用
-                      <select
+                      <NativeSelect
                         value={pointLabel}
                         onChange={(e) =>
                           setPointLabel(Number(e.target.value) as 0 | 1)
                         }
                       >
-                        <option value={1}>保留部件</option>
-                        <option value={0}>排除误收部位</option>
-                      </select>
+                        <NativeSelectOption value={1}>保留部件</NativeSelectOption>
+                        <NativeSelectOption value={0}>排除误收部位</NativeSelectOption>
+                      </NativeSelect>
                     </label>
                   )}
                   <div className="structure-actions">
@@ -587,21 +602,15 @@ export function MotionTemporalStructure({
                 >
                   确认这些观察
                 </button>
-                <button
-                  disabled={!editable || doc.revision < 2 || !!draft}
-                  onClick={() =>
-                    void mutate({
-                      restore_revision: doc.revision - 1,
-                      note: '恢复上一版时序结构，保留全部历史',
-                    })
-                  }
-                >
-                  恢复上一版结构
-                </button>
               </div>
               {doc.confirmation && (
                 <p>已保存观察确认。它不代表动画审批或导出。</p>
               )}
+              {analysis && <MotionStructureHistory current={analysis} route={`open-motion/temporal-structures/${analysis.id}`} disabled={!editable} dirty={Boolean(draft)} onPreview={onStop}
+                onRestore={(request) => mutate(request, request.request_key)}
+                onRefresh={async () => { try { await load(); } catch (e) { setError((e as Error).message); } }}>
+                {(historical) => <TemporalHistoryPreview key={`${historical.id}:${historical.document?.revision}`} analysis={historical} initialFrame={frame} />}
+              </MotionStructureHistory>}
             </details>
             <details>
               <summary>用结构辅助专家复核</summary>
@@ -688,4 +697,24 @@ export function MotionTemporalStructure({
       </details>
     </>
   );
+}
+
+function TemporalHistoryPreview({ analysis, initialFrame }: { analysis: Temporal; initialFrame: number }) {
+  const doc = analysis.document;
+  const [frame, setFrame] = useState(initialFrame);
+  if (!doc) return null;
+  const index = Math.min(frame, doc.frames.length - 1);
+  const route = `open-motion/temporal-structures/${analysis.id}`;
+  const observation = doc.observations.frames.find((entry) => entry.frame_index === index);
+  return <>
+    <p>历史结构第 {index + 1} / {doc.frames.length} 帧 · {doc.manual_corrections.length} 条观察纠正</p>
+    <input aria-label="历史时序结构预览帧" type="range" min={0} max={doc.frames.length - 1} value={index} onChange={(event) => setFrame(Number(event.target.value))} />
+    <StructureHistoryImage image={motionUrl(`${route}/frames/${index}`)} width={doc.width} height={doc.height} caption={`时序结构版本 ${doc.revision} 第 ${index + 1} 帧`}
+      parts={doc.parts.map((part) => {
+        const region = doc.frames[index]?.parts.find((entry) => entry.id === part.id);
+        return { id: part.id, name: `${part.name} · ${visibility[region?.state || 'unknown'] || '未知'}`, maskUrl: region && !['unknown', 'occluded'].includes(region.state) ? temporalHistoryImage(route, index, doc.revision, part.id, region.sha256) : undefined };
+      })} anchors={observation?.structure.anchors || []} />
+    {!!observation?.structure.relations.length && <ul>{observation.structure.relations.map((relation) => <li key={relation.id}>{relation.id} · {relation.state}：{relation.evidence}</li>)}</ul>}
+    {doc.observations.issues.filter((issue) => issue.frame_index === index).map((issue, key) => <p key={key}>{issue.message}</p>)}
+  </>;
 }

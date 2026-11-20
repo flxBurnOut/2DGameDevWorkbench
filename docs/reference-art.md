@@ -2,17 +2,23 @@
 
 `reference-art` 是工作台独立能力。它使用 PixelLab Pixflux 生成 64×64 或 128×128 透明背景像素角色，供现有序列帧工作区直接使用。输入和输出以 `workbench/manifest.json` 为准。
 
-物品原图复用本适配器的 `generate`，传入 `subject: prop`，从交互物编辑器制作与采用，不能执行角色 transfer。角色请求省略 subject 保持原行为。详见[物品原图](prop-art.md)。
+物品原图使用本适配器的 `generate` / `import`（`subject: prop`），或 `convert-prop` 本地转换大图，从交互物编辑器制作与采用。`transfer` 按已保存源任务的 subject 分派：角色创建角色预设，128×128 物品创建交互物预设，导入/转换来源须附实际检查的 confirmation。角色请求省略 subject 保持原行为。详见[物品原图](prop-art.md)。
 
 ## 使用流程
 
-1. 用 `npm run dev` 启动完整工作台，在 `/player` 选择“制作角色原图”。此能力复用 SpritePipeline 服务；首次安装仍使用 `npm run sprite-pipeline:setup`，无需增加一套服务或 Python 依赖。
+1. 用 `npm run dev` 启动完整工作台，在 `/player` 选择“制作角色原图”。此能力复用 SpritePipeline 服务；首次安装仍使用 `npm run sprite-pipeline:setup`，同时安装独立 PixelProp 包，无需增加一套服务。
 2. 在原图的 PixelLab 设置中保存 Key；如果已在序列帧设置中保存，无需再输入。两处使用同一个服务实例的受保护凭据，页面只显示配置状态。环境变量 `PIXELLAB_API_KEY` 可覆盖本地存储，启用覆盖时不能从界面修改。
 3. 输入角色描述、可选名称和朝向，点击“生成一张原图”。可选原生 64×64 粗像素或 128×128 精细像素（默认），侧视、透明背景，提示词原样传给 PixelLab；不额外调用付费提示词增强。每次生成都是新的付费任务。
-4. 等待完成，检查人物、武器、朝向及边缘。页面按整数倍显示，下载保持原始 PNG。
+4. 需要自动核对时，勾选生成按钮上方的视角与朝向检查。它用当前 reviewer 视觉模型查看生成的 PNG，一张图至多调用一次，另计模型用量。检查员仅看图，工具将实际视角、朝向与要求作比较。页面和 Agent 结果显示一致、不符或待核实。未勾选时直接人工核对；视角不符或尚未核实时，移送前填写实际观察及采用理由。
 5. 点击“用于制作序列帧”。原图被创建为可复用角色预设，随后在序列帧生成页预选该角色、显示参考图、名称与外观提示词。选择动作后再主动生成动画。
 
 重复移送同一原图会复用相同角色 ID，不重复创建角色；若相同 ID 的内容已发生变化则拒绝覆盖。移送验证源任务身份、登记产物、SHA-256、图片尺寸与 Alpha。它不缩放、不重画、不提交动画。
+
+原图预览下的“角色外观约束（可选）”最多 300 字符，移送时通过 `identityDescription` 单独保存；它描述需要保持的配色、装备、比例和轮廓，不改写原生图提示词，也不承载动作或站姿要求。留空维持既有默认移送行为。切换原图记录时按源任务隔离草稿，并恢复该原图最近一次成功移送的外观约束；不会沿用另一角色的文字。同源角色已经移送后仍保留不可变身份合同，不会因改填文字覆盖已有角色。
+
+角色动画准备页展开“上传角色原图”时也可填写同名可选字段，按既有上传接口最多 1000 字符，通过 `identity_description` 进入新角色预设。选择已有角色、成功上传或打开另一个作品后，新上传字段不会携带前一角色的文字。角色名称、朝向、图片大小和透明度仍由原有接口校验；填写这些文字不会规划或绘图。
+
+已有角色图片可在资产详情选择“用作角色参考”，或在角色原图页点击“从资产库选用角色原图”。选择器先按角色类型筛选再分页；选用通过既有 `operation: import` 保存一条真实的本地导入记录，不调用图片生成服务。原图必须是最多 2,000,000 字节、64×64 或 128×128 的 PNG，且同时具有可见像素和透明背景；不会自动缩放、重新绘制或推断其他尺寸的角色预设。导入后仍需主动点击移送按钮才能进入角色动画。导入记录可以通过 `?task=` 刷新恢复，来自资产详情的 `returnTo` 继续保留。
 
 ## 架构与密钥
 
@@ -24,14 +30,13 @@
 
 ## PixelLab 协议与任务恢复
 
-依据 [PixelLab 官方文档](https://api.pixellab.ai/v2/docs) 和 [OpenAPI](https://api.pixellab.ai/v2/openapi.json)：
+余额和任务协议取自 [PixelLab v2 OpenAPI](https://api.pixellab.ai/v2/openapi.json)。
 
-- 提交：`POST /v2/create-image-pixflux-background`，传递 description、image_size、no_background、view、direction 和可选 seed。
-- 接收 `background_job_id` 后记录到 runtime task 的 `adapter.referenceJobId`，状态为 `running`。
-- 查询：`GET /v2/background-jobs/{id}`，完成图位于 `last_response.image.base64`。页面约每 6 秒查询，适配器限制两次查询至少间隔 5 秒。
-- 查询不会再次提交生图。进程重启后可从任务记录继续查询；必须在上游任务过期前取回并保存产物。页面关闭期间没有额外常驻轮询器。
-- POST 超时或响应丢失时不自动重试，明确报告结果无法确认；先检查 PixelLab 账户任务再决定是否重新生成。
-- 无 Key 或服务不可用时停在 `awaiting_configuration`；它不代表已生成。配置完成后需要明确发起新的生成。
+- 工作台用已保存的任务 ID 排队。SpritePipeline 后台按凭据协调原图与动画的上游任务，原图队列按加入顺序推进。关闭页面或重启服务后仍可继续处理同一请求。
+- 获得空位后读取 `GET /v2/balance` 的 `subscription.generations` 和 `credits.usd`。可核实余额不足时标记 `not_submitted`。原图提交使用 `POST /v2/create-image-pixflux-background`，接收任务 ID 后通过 `GET /v2/background-jobs/{id}` 查询并保存结果。精确费用以上游账务为准。
+- 上游明确拒绝、没有受理标识、用量和原图时，任务显示「未提交」。首页「继续制作」与待处理计数略过这些记录。历史、原图工具和 Agent 查询仍可查看原因。旧记录的明确额度和并发拒绝按相同状态显示。
+- 已接收的上游 ID 和用量保留在原任务。上游返回 429 且明确未接单时继续等空位。超时或回执不明时保存待核对状态，后续只读取同一请求。读到已受理 ID 后跟进原任务，已扣额但缺图的任务仍可查看问题。
+- Key 未配置或本机服务未连接时显示 `awaiting_configuration`。已排队的请求保留提交时的凭据绑定，恢复原凭据后继续处理。
 
 成功产物为 `outputs/<task-id>/reference.png` 与 `result.json`。用户原始提示词、名称、朝向及上游任务 ID 保存在 `work/tasks/<task-id>.json`。图像尺寸不符、完全透明、缺少透明背景或不可解码时不标记成功。
 
@@ -46,10 +51,18 @@ npm run workbench -- run reference-art --input examples/requests/reference-art.j
 npm run workbench -- status <task-id> --json
 ```
 
-生成输入：`operation: generate`，必需 prompt，可选 name、facing（right/left）及 seed、size（64/128）。移送输入包含 `operation: transfer` 与 `sourceTaskId`，可选不超过 300 字符的 identityDescription 仅描述外观；名称、提示词和朝向来自已保存的源任务。移送任务产出 `result.json`，包含 characterId、sourceTaskId 和序列帧打开链接。MCP 通过通用工作台任务工具执行；使用 get_result 读取移送的 characterId，使用 read_artifact 查看原图，无需直接读取磁盘 JSON。
+生成输入：`operation: generate`，必需 prompt，可选 name、facing（right/left）及 seed、size（64/128）。设 `checkOrientation: true` 授权一次视觉核对；`result.json.orientationReview` 保存核对结论和回执。对需要人工核对的新生成原图，`transfer` 同时提交 `confirmation.note`（至少 4 字）。移送输入包含 `operation: transfer` 与 `sourceTaskId`，可选不超过 300 字符的 identityDescription 仅描述外观；名称、提示词和朝向来自已保存的源任务。移送任务产出 `result.json`，包含 characterId、sourceTaskId 和序列帧打开链接。MCP 通过通用工作台任务工具执行；使用 get_result 读取移送的 characterId，使用 read_artifact 查看原图，无需直接读取磁盘 JSON。
+
+本地导入输入为 `operation: import`，`sourceImagePath`（仓库内 PNG 路径）与 `sourceImage`（严格的 `data:image/png;base64,...`）二选一，二者使用同一尺寸、像素和透明度校验。`sourceImage` 的原始字节上限为 2,000,000；最多 2,666,690 个字符包含 data URL 前缀。`prompt` 是导入时补充的展示描述，`result.json` 将其标为 `description-added-on-import`，不冒充原始生成提示词；`model=null`、`providerCalled=false` 和实际字节哈希表明本次只保存已有图片。
+
+物品原图另有两条本地路径：`import` 加 `subject=prop`（只接受 128×128 透明 PNG，记录颜色数与半透明诊断），以及 `convert-prop`（`sourceTaskId` 指向 image-assets 物品任务、`sourceImagePath` 或 `sourceImage` 三选一，可带 PixelProp `recipe`）。两者都不调用 PixelLab；移送时必须附 `confirmation: {note}`。字段、确认规则与重算核对见[物品原图导入与转换](prop-art.md#导入与转换为动画原图)。
 
 ## 验证
 
-`npm run test:reference-art` 覆盖准备、配置缺失、异步恢复、产物校验、移送和 HTTP；SpritePipeline 的 `tests/test_reference_art.py` 覆盖官方请求结构、一次提交、密钥共用与不回显、图片校验、幂等角色导入及真实 Gradio 角色选择回调。测试使用模拟服务或内存传输，不产生 PixelLab 费用。真实付费生成需要用户在界面或 Agent 中另行发起。
+`npm run test:reference-art` 覆盖准备、配置缺失、异步恢复、产物校验、移送和 HTTP；SpritePipeline 的 `tests/test_reference_art.py` 覆盖官方请求结构、一次提交、密钥共用与不回显、图片校验、幂等角色导入、物品导入与转换的来源核验、确认说明、重算比对（含不同 PNG 压缩下按像素通过）及真实 Gradio 角色选择回调；`npm run test:pixel-prop` 覆盖转换工具本身。测试使用模拟服务或内存传输，不产生 PixelLab 费用。真实付费生成需要用户在界面或 Agent 中另行发起。
 
 长于 300 字符的生图提示词默认不原样附入动画提示，改用参考图身份锁定，避免“站立不动”等原图要求污染动作或超过动画 API 上限。完整生图提示保留在源任务。物品原图仍固定 128×128。
+
+## 与对象库存的边界
+
+开放动作的 objects 库存支持选择已有角色或交互物预设；本页仍只生成、导入与移送角色参考。旧 `?character=` 深链继续有效，开放动作另接受 `?object=`，交互物对象打开 `/tools/interactable-motion?object=`。本页上传不创建交互物预设；物品原图的生成、导入、转换与移送入口在交互物编辑器和交互物动画面板，见[物品原图](prop-art.md#导入与转换为动画原图)。详见[序列帧对象身份](sprite-generator.md#对象身份与预设n1)。

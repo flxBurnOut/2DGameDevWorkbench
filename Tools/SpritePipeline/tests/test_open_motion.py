@@ -14,7 +14,7 @@ from sprite_pipeline.collaboration.api import candidate_digest
 from sprite_pipeline.collaboration.contracts import TaskSpec
 from sprite_pipeline.collaboration.workspace import OpenMotionWorkspace
 from sprite_pipeline.collaboration.execution import PlanGeneration
-from sprite_pipeline.errors import ConflictError, ValidationHarnessError, ProviderTemporaryError
+from sprite_pipeline.errors import ConflictError, NotFoundError, ValidationHarnessError, ProviderTemporaryError
 from sprite_pipeline.models import ExportOptions
 from sprite_pipeline.providers.base import Submission, PollResult, PollStatus
 from sprite_pipeline.service import SpritePipelineService
@@ -80,6 +80,30 @@ def ready(workspace, value=None):
     return workspace.plan(w.id)
 
 
+def test_waiting_for_pixellab_account_does_not_start_a_plan_stage(setup, monkeypatch):
+    from sprite_pipeline.providers.account import AccountSlotBusy
+
+    service, workspace, _, provider, _ = setup
+    work = ready(workspace)
+    work = workspace.start(work.id, work.revision, work.plan_sha256)
+    busy = True
+
+    def account_slot():
+        if busy:
+            raise AccountSlotBusy('等待 PixelLab 账户空位')
+
+    monkeypatch.setattr(provider, 'check_account_slot', account_slot, raising=False)
+    monkeypatch.setattr(provider, 'get_balance', lambda: {'subscription': {'generations': 20}}, raising=False)
+    provider.name = 'pixellab'
+    queued = PlanGeneration(service).advance(work.job_id, provider)
+    assert queued.status == 'queued' and not provider.requests
+    stage = queued.candidates[0].plan_execution.stages[0]
+    assert stage.state == 'created' and stage.submission_attempts == 0
+    busy = False
+    result = PlanGeneration(service).advance(work.job_id, provider)
+    assert len(provider.requests) == 1 and result.candidates[0].provider_job_id == 'remote-000001'
+
+
 @pytest.mark.parametrize("description", ["拔出地面上的长剑，最后高举长剑", "受惊后倒退两步，最后保持惊讶姿势", "摘下帽子弯腰致意，最后保持鞠躬"])
 def test_novel_tasks_complete_without_presets(setup, description):
     service, workspace, planner, provider, fixture = setup
@@ -117,8 +141,105 @@ def test_read_does_not_create_idempotency_and_revision_conflict(setup):
     with pytest.raises(ConflictError): workspace.start(w.id, 2, w.plan_sha256)
     newer = workspace.revise(w.id, 1, spec("倒地后留在地面"), uuid.uuid4().hex, planning_authorized=True)
     assert newer.revision == 2 and workspace.view(w.id, 1)["spec"]["description"] != newer.spec.description
+    client = TestClient(create_api(service=service))
+    original = client.get(f'/v1/open-motion/requests/{key}')
+    assert original.status_code == 200 and original.json()['revision'] == 1 and original.json()['latest_revision'] == 2
+    assert workspace.create(spec(), key, planning_authorized=True).revision == 1
     with pytest.raises(ConflictError): workspace.start(w.id, 1, w.plan_sha256)
     assert not provider.requests
+
+
+@pytest.mark.parametrize('boundary', ['receipt', 'publish'])
+def test_creation_retry_never_dispatches_two_works(setup, monkeypatch, boundary):
+    service, workspace, planner, provider, _ = setup
+    key = uuid.uuid4().hex
+    from sprite_pipeline.collaboration import workspace as workspace_module
+    write_json = workspace_module.atomic_write_json
+    replace = workspace_module.replace_with_retry
+
+    def write_with_fault(path, value):
+        if path.parent.name == 'requests':
+            raise OSError('interrupted before request receipt')
+        write_json(path, value)
+
+    def replace_with_fault(path, target):
+        if path.parent.name == 'pending':
+            raise OSError('interrupted before work publication')
+        return replace(path, target)
+
+    with monkeypatch.context() as fault:
+        if boundary == 'receipt':
+            fault.setattr(workspace_module, 'atomic_write_json', write_with_fault)
+        else:
+            fault.setattr(workspace_module, 'replace_with_retry', replace_with_fault)
+        with pytest.raises(OSError, match='interrupted'):
+            workspace.create(spec(), key, planning_authorized=True, auto_execute=True)
+    prepared = workspace.request_path(key).parent / 'pending' / workspace.request_path(key).name
+    assert prepared.is_file() and not workspace.listing()
+    original_id = json.loads(prepared.read_text(encoding='utf8'))['id']
+    with pytest.raises(NotFoundError, match='未找到'):
+        workspace.original_request(key)
+    workspace.recover_planning()
+    assert len(planner.calls) == (4 if boundary == 'publish' else 0)
+
+    if boundary == 'publish':
+        with pytest.raises(ConflictError):
+            workspace.create(spec('Different request'), key, planning_authorized=True, auto_execute=True)
+    work = workspace.create(spec(), key, planning_authorized=True, auto_execute=True)
+    assert work.id == original_id and not prepared.exists()
+    workspace.recover_planning()
+    assert len(planner.calls) == 4 and len(workspace.listing()) == len(service.list_jobs()) == 1
+    assert workspace.create(spec(), key, planning_authorized=True, auto_execute=True).id == work.id
+    PlanGeneration(service).advance(workspace.load(work.id).job_id, provider)
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.parametrize('boundary', ['history', 'work', 'job'])
+def test_revision_publication_does_not_leave_wrong_generation_enabled(setup, monkeypatch, boundary):
+    service, workspace, _, provider, _ = setup
+    work = ready(workspace)
+    work = workspace.start(work.id, work.revision, work.plan_sha256)
+    assert service.store.load(work.job_id).plan_control.enabled
+    if boundary == 'history':
+        work.history = [{'revision': n + 1, 'title': 'previous'} for n in range(50)]
+        workspace.save(work)
+
+    def write_failure(_):
+        raise OSError('interrupted revision write')
+
+    from sprite_pipeline import store as store_module
+    write_json = store_module.atomic_write_json
+
+    def fail_job_publish(path, value):
+        if path.parent.name == 'history' and path.name.startswith('job_'):
+            raise OSError('interrupted revision write')
+        write_json(path, value)
+
+    key = uuid.uuid4().hex
+    amended = spec('A different motion spec')
+    with monkeypatch.context() as fault:
+        if boundary == 'history':
+            with pytest.raises(ValidationHarnessError, match='版本过多'):
+                workspace.revise(work.id, 1, amended, key, planning_authorized=True)
+        else:
+            if boundary == 'work':
+                fault.setattr(workspace, 'save', write_failure)
+            else:
+                fault.setattr(store_module, 'atomic_write_json', fail_job_publish)
+            with pytest.raises(OSError, match='interrupted revision write'):
+                workspace.revise(work.id, 1, amended, key, planning_authorized=True)
+
+    assert service.store.load(work.job_id).plan_control.enabled
+    if boundary == 'job':
+        assert workspace.load(work.id).revision == 2
+        assert workspace.revise(work.id, 1, amended, key, planning_authorized=True).revision == 2
+        PlanGeneration(service).advance(work.job_id, provider)
+        assert not provider.requests and not service.store.load(work.job_id).plan_control.enabled
+        assert not (PlanGeneration(service).directory(work.job_id, 1, 0) / 'submit.intent.json').exists()
+    else:
+        assert workspace.load(work.id).revision == 1
+        PlanGeneration(service).advance(work.job_id, provider)
+        assert len(provider.requests) == 1
 
 
 def test_pause_restart_multiple_candidates_and_ambiguous_request(setup):
@@ -304,3 +425,38 @@ def test_paraphrase_is_expert_interpretation_and_full_original_is_preserved(setu
     assert plan.requirements[0].source=='expert'
     assert plan.requirements[-1].source=='user' and plan.requirements[-1].evidence==work.spec.description
     assert plan.stages[0].prompt==turn['plan']['stages'][0]['prompt']
+
+
+def test_motion_workspace_identity_survives_restart_and_rejects_replaced_store(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    def restart():
+        # Each interpreter opens the same path with a fresh API and no cached identity.
+        program = """
+import json, sys
+from fastapi.testclient import TestClient
+from sprite_pipeline.api_app import create_api
+client = TestClient(create_api(sys.argv[1]))
+assert 'motion_workspace_id' not in client.get('/health').json()
+print(json.dumps(client.get('/health', headers={'x-forge-motion-identity': '1'}).json()['motion_workspace_id']))
+"""
+        run = subprocess.run([sys.executable, "-c", program, str(tmp_path)], check=True, capture_output=True,
+                             text=True, cwd=Path(__file__).resolve().parents[1])
+        return json.loads(run.stdout)
+
+    marker = tmp_path / "open-motion" / ".workspace-identity.json"
+    original = restart()
+    assert len(original) == 64 and restart() == original
+    client = TestClient(create_api(tmp_path))
+    probe = {"x-forge-motion-identity": "1"}
+    with patch("sprite_pipeline.store.JobStore.global_lock", side_effect=PermissionError):
+        assert client.get("/health", headers=probe).json()["motion_workspace_id"] == original
+        marker.parent.rename(tmp_path / "archived-motion")
+        assert client.get("/health").json()["ok"]
+        assert client.get("/health", headers=probe).json()["motion_workspace_id"] is None
+        assert not marker.exists()
+    assert restart() != original
+    denied = client.get("/paired/v1/v1/open-motion", headers={"x-forge-workspace": original})
+    assert denied.status_code == 409 and denied.json()["error"]["code"] == "WORKSPACE_MISMATCH"

@@ -13,7 +13,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from .motion_constraints import Phase
 from .credential_store import CredentialStore
-from .errors import ValidationHarnessError
+from .errors import InvalidPlanningResponse, ValidationHarnessError
 from .jsonio import atomic_write_json, read_json
 
 MAX_REVIEW_FRAMES = 64
@@ -27,6 +27,18 @@ PROVIDERS = {
                "endpoint":"https://api.openai.com/v1/responses",
                "key_env":"OPENAI_API_KEY", "key_name":"motion_vision_api_key"},
 }
+
+
+def planning_validation_fields(error):
+    fields = []
+    for issue in error.errors(include_input=False, include_context=False, include_url=False)[:12]:
+        location = issue['loc']
+        if issue['type'] == 'extra_forbidden':
+            location = (*location[:-1], '<extra field>')
+        path = '.'.join(str(part) for part in location) or 'turn'
+        fields.append(f"{path}: {issue['msg'][:200]}")
+    return fields
+
 
 class MotionIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -183,6 +195,7 @@ class VisionReviewer:
                 body['max_output_tokens'] = limit
                 if effort == 'auto': body.pop('reasoning', None)
                 else: body['reasoning'] = {'effort': effort}
+        output = None
         try:
             with httpx.Client(timeout=model_options.get('timeout_seconds',180) if model_options else 180, follow_redirects=False) as client:
                 if on_request is not None: on_request()
@@ -209,22 +222,33 @@ class VisionReviewer:
                 hint='；参数：'+failure['provider_error_parameter'] if failure.get('provider_error_parameter') else ''
                 raise ValidationHarnessError(f"视觉检查请求失败（HTTP {response.status_code}{hint}）；未自动重试", details=failure)
             data=response.json()
+            if not isinstance(data, dict):
+                raise ValueError("incomplete visual review")
+            response_model=data.get("model") if isinstance(data.get("model"), str) else None
+            response_id=data.get("id") if isinstance(data.get("id"), str) else None
+            usage=data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            receipt={"requested_model":info["model"], "response_model":response_model,
+                     "response_id":response_id,"usage":usage}
             if provider == "hunyuan":
                 choices=data.get("choices",[])
-                if len(choices)!=1:
+                if not isinstance(choices, list) or len(choices)!=1 or not isinstance(choices[0], dict):
+                    if on_response is not None:
+                        on_response({**receipt, "output_characters":0, "output_sha256":None})
                     raise ValueError("incomplete visual review")
+                receipt['finish_reason'] = choices[0].get('finish_reason')
                 message=choices[0].get("message",{})
-                if message.get("refusal") or message.get("tool_calls"):
+                if not isinstance(message, dict) or message.get("refusal") or message.get("tool_calls"):
+                    if on_response is not None:
+                        on_response({**receipt, "output_characters":0, "output_sha256":None})
                     raise ValueError("visual review refused")
                 output=message.get("content")
             else:
                 if data.get("status") != "completed":
+                    if on_response is not None:
+                        extra = {"response_status": data["status"]} if isinstance(data.get("status"), str) else {}
+                        on_response({**receipt, **extra, "output_characters":0, "output_sha256":None})
                     raise ValueError("incomplete visual review")
                 output="".join(part.get("text", "") for item in data.get("output", []) if item.get("type")=="message" for part in item.get("content", []) if part.get("type")=="output_text")
-            response_model=data.get("model")
-            receipt={"requested_model":info["model"], "response_model":response_model,
-                     "response_id":data.get("id"),"usage":data.get("usage",{})}
-            if provider == 'hunyuan': receipt['finish_reason'] = choices[0].get('finish_reason')
             if on_response is not None:
                 on_response({**receipt, "output_characters":len(output) if isinstance(output,str) else 0,
                              "output_sha256":hashlib.sha256(output.encode()).hexdigest() if isinstance(output,str) else None})
@@ -235,9 +259,9 @@ class VisionReviewer:
                 # JSON or infer missing fields. The same strict model still validates.
                 fenced=re.fullmatch(r"\s*```(?:json)?\s*\n?(.*?)\n?```\s*",output,re.DOTALL)
                 if fenced: output=fenced.group(1)
-            parsed=schema_type.model_validate_json(output)
             if response_model is not None and response_model != info["model"]:
                 raise ValidationHarnessError("视觉服务回传的模型与请求不一致；未采纳结论")
+            parsed=schema_type.model_validate_json(output)
             return parsed,receipt
         except ValidationHarnessError:
             raise
@@ -250,11 +274,22 @@ class VisionReviewer:
             known={"phase","stage","code","status","verdict","grip_height","blade_tip","observations","frame","frames"}
             fields=sorted({part for item in errors for part in item["loc"] if part in known})
             if schema_name == "open_motion_plan":
-                fields = sorted({".".join(str(part) for part in item["loc"]) + ": " + item["msg"] for item in errors})
+                fields = planning_validation_fields(exc)
             if schema_name == 'motion_adjustment':
                 fields=sorted({str(item['loc'][0]) for item in errors if item['loc'] and item['loc'][0] in {'goal','preserve','method','provider_prompt','conflict'}})
-            raise ValidationHarnessError("视觉检查未取得有效结论；结构化字段无效（"+", ".join(categories+fields)+"），未自动重试",
-                details={'validation_fields':fields} if schema_name=='motion_adjustment' else {}) from None
+            message = "视觉检查未取得有效结论；结构化字段无效（"+", ".join(categories+fields)+"），未自动重试"
+            complete_plan = schema_name == 'open_motion_plan' and isinstance(output, str) and bool(output.strip()) and 'json_invalid' not in categories
+            if complete_plan:
+                draft = None
+                if len(output) <= 24_000:
+                    try:
+                        parsed_draft = json.loads(output)
+                        if isinstance(parsed_draft, dict):
+                            draft = parsed_draft
+                    except (ValueError, RecursionError):
+                        pass  # Validation feedback is still available without the draft.
+                raise InvalidPlanningResponse(message, details={'validation_fields': fields}, draft=draft) from None
+            raise ValidationHarnessError(message, details={'validation_fields': fields} if schema_name == 'motion_adjustment' else {}) from None
         except Exception:
             raise ValidationHarnessError("视觉检查未取得有效结论；请人工检查，不会自动重新生成") from None
 

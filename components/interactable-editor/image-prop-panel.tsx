@@ -14,7 +14,7 @@ export function ImagePropPanel({ projectId, definitionId, objectName, imageId, d
     if (new URLSearchParams(location.search).has('imageTask')) queueMicrotask(() => setOpen(true));
   }, []);
   return <details className="ie-prop-art" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary><Sparkles size={16} />生成透明物件<small>GPT Image 2.5</small></summary>
+    <summary><Sparkles size={16} />生成透明物件<small>GPT Image 2.6</small></summary>
     {open && <div className="ie-prop-art-body"><ImageAssetsPanel kind="prop" name={objectName} disabled={disabled} beforeGenerate={beforeGenerate} onBusy={onBusy} adoptionLabel={`采用到「${objectName}」`} onAdopt={async (taskId) => {
       const target = { projectId, definitionId, previousAssetId: imageId };
       const asset = await readImagePropAsset(taskId);

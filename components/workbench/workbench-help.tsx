@@ -1,0 +1,44 @@
+'use client';
+import { ArrowRight, Save } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { currentWorkbenchPage, workbenchDestinations } from '@/lib/workbench/navigation';
+import { useWorkbench } from './workbench-provider';
+
+export function ContextHelp() {
+  const wb = useWorkbench();
+  const { tool, name } = currentWorkbenchPage(wb.pathname);
+  const help = tool?.id === 'sprite-generator'
+    ? '选择角色并描述动作，确认方案后开始制作。最近动作只列出当前动作流程；顶部“制作记录”可查看各工具作品。'
+      : tool?.id === 'interactable-editor'
+        ? '新建或打开工程，先添加物件外观，再配置状态、行为和碰撞。已有图片、动画和交互物项目可从资产库选用。'
+          : tool?.id === 'reference-art'
+            ? '描述角色外观并生成原图，检查后采用。已有角色原图也可直接进入角色动画制作。'
+            : wb.pathname === '/assets'
+              ? '在资产库搜索、筛选并点击素材查看详情；动画的每个候选单独列出。交互物可回到编辑器继续修改，其他素材可下载或导出到游戏项目。悬停素材时右上角出现选择框，可批量下载或移入回收站。浏览器独有的交互物草稿和下载文件不会自动收录。导入 Forge 素材包会先检查可恢复内容；从编辑器选用素材会保留来源。'
+              : '从顶栏或首页的工具卡进入制作工具；首页“继续制作”列出最近的作品，“制作记录”列出全部。';
+  const session = wb.sessions.find((entry) => entry.capabilityId === tool?.id);
+  const active = session?.items[0];
+  const saveState = wb.navigationError || wb.storageError
+    ? '当前保存需要处理，请先查看页面错误提示。'
+    : session?.busy ? '当前操作进行中，完成后再离开。'
+      : tool?.id === 'sprite-generator' && active ? '当前动作任务由本机服务保存；准备表单另存为当前浏览器草稿。'
+      : session?.dirty ? '当前修改正在保存，离开前会检查保存结果。'
+        : active?.savedAt ? '当前本机草稿已保存。' : '当前还没有可恢复的本机草稿。';
+  return <Dialog open={wb.helpOpen} onOpenChange={wb.setHelpOpen}>
+    <DialogContent className="wb-dialog wb-help-dialog">
+      <DialogHeader><DialogTitle>{name} · 帮助</DialogTitle><DialogDescription>{help}</DialogDescription></DialogHeader>
+      {tool && <div className="wb-help-next"><strong>下一步</strong><p>{tool.starterHint}</p><span className="wb-muted">{tool.stages.join(' → ')}</span></div>}
+      <div className="wb-guide-materials"><div><Save size={21} /><div><strong>当前保存状态</strong><p>{saveState}</p></div></div></div>
+      <details className="wb-save-details">
+        <summary>数据保存在哪里</summary>
+        <dl className="wb-save-locations">
+        <dt>本机草稿</dt><dd>保存在当前浏览器，保存成功后可从制作记录恢复；下载源文件可另存备份。</dd>
+        <dt>服务端工程</dt><dd>共享交互物工程和动作任务由本机服务保存，按工程版本恢复。</dd>
+        <dt>资产库素材</dt><dd>登记已有素材和导入文件，供其他工具选用；浏览器草稿不会自动入库。</dd>
+        <dt>Godot 导出</dt><dd>导出是该次工程的交付快照；继续修改后需要重新导出。</dd>
+        </dl>
+      </details>
+      {wb.pathname !== workbenchDestinations.home.href && <div className="wb-guide-actions"><button className="wb-button" onClick={() => { wb.setHelpOpen(false); void wb.navigate(workbenchDestinations.home.href); }}>回到首页<ArrowRight size={15} /></button></div>}
+    </DialogContent>
+  </Dialog>;
+}

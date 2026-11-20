@@ -1,7 +1,7 @@
 """Evaluate an explicit alternative before adoption using the existing reviewers."""
 import copy
 from .review_evaluation import ReviewEvidence, validated_audit
-from .review_inputs import observation_content, audit_content
+from .review_inputs import review_dimensions, observation_content, audit_content
 from .visual_review import Observations, Audit, evidence_panels
 from .production_review import independent_followup, diagnostic_report
 from ..errors import ValidationHarnessError
@@ -42,12 +42,12 @@ def review_alternative(manager, task):
         if comparison:remember(task,phase,value);manager.save(task)
         return value
     pictures=evidence.pictures();segment=task['stage'] is not None
-    observations=call('observe',observation_content(pictures,segment=segment),Observations)
+    observations=call('observe',observation_content(pictures,segment=segment,interactable=bool(task.get('interactable'))),Observations)
     if [f.frame for f in observations.frames] != list(range(1,len(evidence.paths)+1)):
         raise ValidationHarnessError('备选逐帧观察不完整；不自动重试')
     context=evidence.context();context['observations']=observations.model_dump(mode='json')
     result=call('audit',audit_content(pictures,context,task['fps'],segment=segment),Audit)
-    baseline={'state':'complete',**validated_audit(result,len(evidence.paths))}
+    baseline={'state':'complete',**validated_audit(result,len(evidence.paths), review_dimensions(context))}
     if task['protocol']!='experts_v1':return baseline
     original={**copy.deepcopy(baseline),'mode':'baseline','evidence_token':evidence.token,
               'model_snapshot':task['models'],'requests':copy.deepcopy(task['review_calls'])}
@@ -92,6 +92,8 @@ def context_for(task):
     else:
         context['quality_contract']={'event_contract':goal,'appearance_contract':intent['preserve'],
             'ending_contract':'Keep unchanged source endpoints','rhythm_contract':'Keep FPS/frame order and natural joins; the chosen change must remain coherent with the full clip'}
+    if task.get('interactable'):
+        context['interactable'] = task['interactable']
     return context
 
 

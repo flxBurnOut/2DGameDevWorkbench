@@ -17,6 +17,8 @@ const test = (name, run) => tests.push({ name, run });
 try {
   const { workbenchModules: modules, productionLines: lines } =
     await server.ssrLoadModule('/lib/workbench/modules.ts');
+  const { workspaceGroups, currentWorkbenchPage, assetReturnHref } =
+    await server.ssrLoadModule('/lib/workbench/navigation.ts');
   const { taskWorkItems, spriteWorkItem, mergeWorkItems, interactableItemId } =
     await server.ssrLoadModule('/lib/workbench/work-items.ts');
   const sessions = await server.ssrLoadModule(
@@ -30,6 +32,28 @@ try {
     '/features/interactable-editor/contract.mjs',
   );
   const { restoreTaskProject } = await server.ssrLoadModule('/features/interactable-editor/task-project.ts');
+  test('shared navigation names every tool once and resolves compatibility deep links', () => {
+    assert.deepEqual(workspaceGroups.flatMap((group) => group.tools.map((tool) => tool.id)).sort(), modules.map((tool) => tool.id).sort());
+    assert.deepEqual(new Set(modules.map((tool) => tool.name)), new Set(['角色原图', '角色动画', '交互物动画', '交互物编辑']));
+    for (const tool of modules) {
+      assert.equal(tool.name, tool.shortName);
+      assert.equal(tool.name, tool.entryTitle);
+      assert.equal(currentWorkbenchPage(tool.href).tool.id, tool.id);
+      assert.equal(currentWorkbenchPage(tool.href).group.id, tool.productionLine);
+    }
+    assert.equal(currentWorkbenchPage('/player').name, '角色制作总览');
+    assert.equal(currentWorkbenchPage('/tools/interactable-editor').group.id, 'interactable');
+    assert.equal(currentWorkbenchPage('/tools/interactable-motion').tool.id, 'interactable-motion');
+    assert.deepEqual(workspaceGroups.find((group) => group.id === 'interactable').tools.map((tool) => tool.id), ['interactable-motion', 'interactable-editor']);
+  });
+  test('asset return links preserve list and detail state and reject other navigation targets', () => {
+    const source = '/assets?q=城门&kind=interactable&scope=active&offset=40&asset=example#selected';
+    assert.equal(decodeURI(assetReturnHref('?returnTo=' + encodeURIComponent(source))), source);
+    for (const target of ['https://evil.example/assets', '//evil.example/assets', '/advanced', '/assets/other', '/assets\\other', '/assets\n', 'javascript:alert(1)', '']) {
+      assert.equal(assetReturnHref('?returnTo=' + encodeURIComponent(target)), undefined, target);
+    }
+    assert.equal(assetReturnHref('?importAsset=example'), undefined);
+  });
   test('Agent project resume preserves different local drafts and reuses the imported version', async () => {
     const project = createProject();
     const local = structuredClone(project);
@@ -48,7 +72,7 @@ try {
     loaded.objects[0].displayName = '继续编辑 Agent 版本';
     assert.equal((await restoreTaskProject('t1', storage)).objects[0].displayName, '继续编辑 Agent 版本');
     assert.equal(requests, 2);
-    await assert.rejects(restoreTaskProject('bad', { ...storage, request: async () => Response.json({ task: { capabilityId: 'map-stitcher', status: 'completed' } }) }), /尚未完成或无法读取/);
+    await assert.rejects(restoreTaskProject('bad', { ...storage, request: async () => Response.json({ task: { capabilityId: 'reference-art', status: 'completed' } }) }), /尚未完成或无法读取/);
   });
   test('saved Agent projects appear saved and link directly to the editor', () => {
     const project = createProject();
@@ -56,18 +80,20 @@ try {
     assert.equal(item.state, 'saved');
     assert.match(item.detail, /尚未导出/);
     assert.match(item.href, /interactable-editor\?task=saved-task/);
-    assert.equal(lines.find((line) => line.id === 'player').name, '角色美术');
+    assert.equal(lines.find((line) => line.id === 'player').name, '角色制作总览');
   });
 
-  test('prop generation records open the exact image in scene art, not the character editor', () => {
-    const [item] = taskWorkItems([{id:'prop-task',capabilityId:'reference-art',status:'completed',input:{operation:'generate',subject:'prop'}}], modules);
-    assert.equal(item.capabilityId,'interactable-editor');
-    assert.equal(item.title,'物品原图');
-    assert.equal(item.href,'/tools/interactable-editor?artTask=prop-task');
+  test('prop generation records open the exact image in interactable artwork, not the character editor', () => {
+    for (const input of [{operation:'generate',subject:'prop'}, {operation:'import',subject:'prop'}, {operation:'convert-prop'}]) {
+      const [item] = taskWorkItems([{id:'prop-task',capabilityId:'reference-art',status:'completed',input}], modules);
+      assert.equal(item.capabilityId,'interactable-editor');
+      assert.equal(item.title,'物品原图');
+      assert.equal(item.href,'/tools/interactable-editor?artTask=prop-task');
+    }
   });
-  test('Image 2.5 work items use existing editors without duplicate navigation modules', () => {
+  test('Image 2.6 work items use existing editors without duplicate navigation modules', () => {
     assert.equal(modules.some((entry) => entry.id === 'image-assets'), false);
-    for (const [operation, kind, module] of [['generate-background', 'background', 'map-stitcher'], ['generate-prop', 'prop', 'interactable-editor'], ['edit-image', 'prop', 'interactable-editor']]) {
+    for (const [operation, kind, module] of [['generate-prop', 'prop', 'interactable-editor'], ['edit-image', 'prop', 'interactable-editor']]) {
       const [item] = taskWorkItems([{ id: 'image-result', capabilityId: 'image-assets', status: 'completed', input: { operation, kind } }], modules);
       assert.equal(item.capabilityId, module);
       assert.equal(item.href, `/tools/${module}?imageTask=image-result`);
@@ -154,10 +180,10 @@ try {
   test('manifest production lines route every tool to a valid workflow', () => {
     assert.deepEqual(
       lines.map((line) => line.id),
-      ['player', 'scene'],
+      ['player', 'interactable'],
     );
     assert.equal(lines.find((line) => line.id === 'player').href, '/player');
-    assert.equal(lines.find((line) => line.id === 'scene').href, '/scene');
+    assert.equal(lines.find((line) => line.id === 'interactable').href, '/tools/interactable-editor');
     for (const capability of modules) {
       assert.ok(lines.some((line) => line.id === capability.productionLine));
       assert.ok(capability.stages.length >= 2);
@@ -165,11 +191,23 @@ try {
     }
     assert.deepEqual(
       modules
-        .filter((m) => m.productionLine === 'scene')
+        .filter((m) => m.productionLine === 'interactable')
         .map((m) => m.id)
         .sort(),
-      ['interactable-editor', 'map-stitcher', 'scene-composer'],
+      ['interactable-editor', 'interactable-motion'],
     );
+  });
+  test('pages read a current UI manifest without capability schemas', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { syncUiManifest } = await import('../../scripts/sync-ui-manifest.mjs');
+    assert.equal(await syncUiManifest({ check: true }), false);
+    const full = JSON.parse(await readFile('workbench/manifest.json', 'utf8'));
+    const text = await readFile('lib/workbench/ui-manifest.json', 'utf8');
+    assert.ok(!text.includes('inputSchema') && !text.includes('connector'));
+    assert.ok(text.length < JSON.stringify(full).length / 5);
+    const executable = full.capabilities.filter((c) => 'connector' in c).map((c) => c.id);
+    assert.deepEqual(modules.filter((m) => m.executable).map((m) => m.id).sort(),
+      executable.filter((id) => modules.some((m) => m.id === id)).sort());
   });
   test('prepared and unconfigured tasks never appear completed or running', () => {
     for (const status of ['prepared', 'awaiting_configuration', 'failed']) {
@@ -183,6 +221,8 @@ try {
   test('sprite states distinguish saved, review, generation and actual export', () => {
     const expected = {
       created: 'saved',
+      queued: 'running',
+      not_submitted: 'not_submitted',
       submitting: 'running',
       provider_pending: 'running',
       saving: 'running',
@@ -299,7 +339,7 @@ try {
   test('navigation validates all editors before saving any of them', async () => {
     let saves = 0;
     sessions.publishEditorSession({
-      capabilityId: 'test-map',
+      capabilityId: 'test-art',
       items: [],
       dirty: false,
       busy: false,
@@ -324,7 +364,7 @@ try {
   });
   test('save failures block navigation and edits during a save are flushed before leaving', async () => {
     sessions.publishEditorSession({
-      capabilityId: 'test-map',
+      capabilityId: 'test-art',
       items: [],
       dirty: true,
       busy: false,
@@ -335,13 +375,13 @@ try {
     await assert.rejects(sessions.saveBeforeNavigation(), /disk full/);
     let saves = 0;
     sessions.publishEditorSession({
-      capabilityId: 'test-map',
+      capabilityId: 'test-art',
       items: [],
       dirty: true,
       busy: false,
       save: async () => {
         saves++;
-        if (saves === 2) sessions.markEditorSaved('test-map');
+        if (saves === 2) sessions.markEditorSaved('test-art');
       },
     });
     await sessions.saveBeforeNavigation();
@@ -351,7 +391,7 @@ try {
   test('replacing a workspace also respects the active operation guard', async () => {
     let saves = 0;
     sessions.publishEditorSession({
-      capabilityId: 'test-map',
+      capabilityId: 'test-art',
       items: [],
       dirty: true,
       busy: true,
@@ -363,7 +403,7 @@ try {
       },
     });
     await assert.rejects(
-      sessions.saveBeforeReplacement('test-map'),
+      sessions.saveBeforeReplacement('test-art'),
       /queue running/,
     );
     assert.equal(saves, 0);
@@ -389,6 +429,23 @@ try {
     await assert.rejects(readTaskHistory(async () => ++calls === 1
       ? { tasks: source.slice(0, 200), snapshot: 'first', nextOffset: 200 }
       : { tasks: [], snapshot: 'changed', nextOffset: null }), /历史已变化/);
+  });
+
+  test('an unchanged history revision keeps records without resending them', async () => {
+    const { readTaskHistoryRevision } = await server.ssrLoadModule('/lib/workbench/task-history.ts');
+    const first = await readTaskHistoryRevision(async (url) => {
+      assert.equal(new URL(url, 'http://localhost').searchParams.get('since'), null);
+      return { tasks: [{ id: 'a' }], snapshot: 's1', revision: 'r1', nextOffset: null };
+    });
+    assert.deepEqual(first, { tasks: [{ id: 'a' }], revision: 'r1' });
+    const same = await readTaskHistoryRevision(async (url) => {
+      assert.equal(new URL(url, 'http://localhost').searchParams.get('since'), 'r1');
+      return { tasks: [], unchanged: true, snapshot: 's1', revision: 'r1', nextOffset: null };
+    }, first);
+    assert.equal(same, first);
+    // Older bridges ignore `since` and return the full page.
+    const legacy = await readTaskHistoryRevision(async () => ({ tasks: [{ id: 'b' }], nextOffset: null }), first);
+    assert.deepEqual(legacy.tasks, [{ id: 'b' }]);
   });
 
   for (const { name, run } of tests) {

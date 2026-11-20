@@ -16,13 +16,13 @@ from ..errors import ConflictError, ValidationHarnessError
 from ..jsonio import atomic_write_json, read_json, inside
 from ..store import JobStore
 from ..vision_evidence import image_part, raster
-from .contracts import digest
+from .contracts import CHARACTER_DIMENSIONS, PROP_DIMENSIONS, digest
 from .motion_evidence import measurements
-from .review_inputs import observation_content, audit_content
+from .review_inputs import review_dimensions, observation_content, audit_content
 from .visual_review import Observations, Audit, evidence_panels, grounded_audit
 
-DIMENSIONS = ('completeness', 'equipment', 'rhythm')
-CONTEXT_KEYS = {'user_request', 'quality_contract', 'segment_motion_constraints',
+DIMENSIONS = CHARACTER_DIMENSIONS
+CONTEXT_KEYS = {'interactable', 'user_request', 'quality_contract', 'segment_motion_constraints',
                 'actual_stage_boundaries', 'timing_note', 'segment', 'appearance',
                 'seconds_per_frame', 'pixel_cues_not_verdict'}
 
@@ -91,12 +91,13 @@ class ReviewEvidence:
 
     def context(self):
         value = copy.deepcopy(self.manifest['context'])
-        value['pixel_cues_not_verdict'] = measurements([p.read_bytes() for p in self.paths], self.manifest['fps'])
+        value['pixel_cues_not_verdict'] = measurements([p.read_bytes() for p in self.paths], self.manifest['fps'],
+            value.get('interactable'), self.folder / self.manifest['reference']['file'])
         return value
 
 
-def validated_audit(result, count):
-    if {c.dimension for c in result.checks} != set(DIMENSIONS) or any(f < 1 or f > count for c in result.checks for f in c.frames):
+def validated_audit(result, count, dimensions=DIMENSIONS):
+    if {c.dimension for c in result.checks} != set(dimensions) or any(f < 1 or f > count for c in result.checks for f in c.frames):
         raise ValidationHarnessError('视觉验收维度或帧证据无效')
     verdict, checks, summary = grounded_audit(result, count)
     return {'verdict': verdict, 'checks': checks, 'summary': summary, 'model_audit': result.model_dump(mode='json')}
@@ -133,7 +134,8 @@ class ReviewExperiment:
         receipt = {}
         try:
             result, metadata = self.registry.send(role, content, schema, len(self.evidence.paths),
-                snapshot=self.snapshot, schema_name='open_motion_quality', on_response=receipt.update)
+                snapshot=self.snapshot, schema_name='open_motion_quality', on_response=receipt.update,
+                **({'interactable': True} if self.evidence.manifest['context'].get('interactable') else {}))
             request.update(state='complete', **metadata)
             request['response'] = result.model_dump(mode='json')
             self.evidence.verify()
@@ -223,21 +225,21 @@ class ReviewExperiment:
                 if mode == 'baseline':
                     pictures = self.evidence.pictures()
                     segment = self.evidence.manifest['scope'] == 'segment'
-                    observations = self.call('observe', observation_content(pictures, segment=segment), Observations)
+                    observations = self.call('observe', observation_content(pictures, segment=segment, interactable=bool(self.evidence.manifest['context'].get('interactable'))), Observations)
                     if [o.frame for o in observations.frames] != list(range(1, len(self.evidence.paths)+1)):
                         raise ValidationHarnessError('逐帧观察不完整或顺序错误')
                     self.record['observations'] = observations.model_dump(mode='json')
                     context = self.evidence.context()
                     context['observations'] = self.record['observations']
                     result = self.call('audit', audit_content(pictures, context, self.evidence.manifest['fps'], segment=segment), Audit)
-                    self.record.update(state='complete', **validated_audit(result, len(self.evidence.paths)))
+                    self.record.update(state='complete', **validated_audit(result, len(self.evidence.paths), review_dimensions(self.evidence.manifest['context'])))
                 else:
                     from .independent_review import EXPERTS, PROMPT_VERSION, expert_content, consensus
                     self.record.update(experts={}, prompt_version=PROMPT_VERSION)
                     for expert in EXPERTS:
                         # No previous opinion or observation is passed to the next expert.
                         result = self.call(expert, expert_content(self.evidence, expert), Audit)
-                        self.record['experts'][expert] = validated_audit(result, len(self.evidence.paths))
+                        self.record['experts'][expert] = validated_audit(result, len(self.evidence.paths), review_dimensions(self.evidence.manifest['context']))
                         self.save()
                     self.record.update(state='complete', **consensus(self.record['experts'], len(self.evidence.paths)))
             except Exception as exc:
@@ -247,8 +249,22 @@ class ReviewExperiment:
             return self.record
 
 
-def score_reviews(labels, reports):
-    """Labels are local-only and never part of model inputs. No cherry-picking."""
+def _case_dimensions(expected, dimensions=None):
+    if dimensions is not None:
+        return tuple(dimensions)
+    if set(expected) == set(PROP_DIMENSIONS):
+        return PROP_DIMENSIONS
+    return DIMENSIONS
+
+
+def score_reviews(labels, reports, *, dimensions=None):
+    """Labels are local-only and never part of model inputs. No cherry-picking.
+
+    Supports both character (``CHARACTER_DIMENSIONS``) and interactable
+    (``PROP_DIMENSIONS``) review rubrics. Note metric polarity:
+    ``false_positive`` counts false rejects (truth=pass, pred=fail), while
+    ``false_negative`` counts false accepts (truth=fail, pred=pass).
+    """
     totals = {k: 0 for k in ('criteria', 'correct', 'false_positive', 'false_negative',
         'abstentions', 'missed_defects', 'unnecessary_blocks', 'disputed_overconfidence', 'failed_reports')}
     rows = []
@@ -257,7 +273,7 @@ def score_reviews(labels, reports):
         if report.get('state') != 'complete':
             totals['failed_reports'] += 1
         checks = {c['dimension']: c for c in report.get('checks', [])} if report.get('state') == 'complete' else {}
-        for dimension in DIMENSIONS:
+        for dimension in _case_dimensions(expected, dimensions):
             truth = expected[dimension]['status']
             prediction = criterion_status(checks[dimension]) if dimension in checks else 'uncertain'
             totals['criteria'] += 1

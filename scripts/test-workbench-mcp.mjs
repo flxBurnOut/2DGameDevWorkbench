@@ -8,7 +8,8 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { access, readFile, readdir } from 'node:fs/promises';
-import { loadManifest, agentRequest } from '../lib/workbench/runtime.mjs';
+import { loadManifest } from '../lib/workbench/workbench-manifest.mjs';
+import { agentRequest } from '../lib/workbench/agent-api.mjs';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '..');
@@ -151,15 +152,20 @@ try {
     throw new Error('Prepared task could not be read back.');
   }
 
-  const beforeManual = await client.callTool({ name: 'workbench_list_tasks', arguments: {} });
+  const detailedTask = await client.callTool({ name: 'workbench_get_task', arguments: { taskId: prepared.structuredContent.taskId, detail: true } });
+  assert.equal(JSON.parse(detailedTask.content[0].text).task.input.characterId, 'diagnostic_dummy');
+
+  const beforeUnknown = await client.callTool({ name: 'workbench_list_tasks', arguments: {} });
+  assert.equal(JSON.parse(beforeUnknown.content[0].text).snapshot, beforeUnknown.structuredContent.snapshot);
+  assert.equal(JSON.parse(beforeUnknown.content[0].text).nextOffset, beforeUnknown.structuredContent.nextOffset);
   assert(!capabilities.structuredContent.capabilities.some((c) => c.id === 'map-stitcher'));
   for (const name of ['workbench_prepare_task', 'workbench_run_task', 'workbench_describe_capability']) {
     const blocked = await client.callTool({ name, arguments: { capabilityId: 'map-stitcher', ...(name === 'workbench_describe_capability' ? {} : { input: { operation: 'compose' } }) } });
     assert(blocked.isError);
-    assert.match(blocked.content[0].text, /manual frontend/);
+    assert.match(blocked.content[0].text, /Unknown capability/);
   }
-  const afterManual = await client.callTool({ name: 'workbench_list_tasks', arguments: {} });
-  assert.deepEqual(afterManual.structuredContent, beforeManual.structuredContent);
+  const afterUnknown = await client.callTool({ name: 'workbench_list_tasks', arguments: {} });
+  assert.deepEqual(afterUnknown.structuredContent, beforeUnknown.structuredContent);
   for (const kind of ['inspect', 'toggle', 'pickup', 'sequence']) {
     const candidate = await client.callTool({ name: 'workbench_interactable_template', arguments: { kind } });
     assert(!candidate.isError);
@@ -169,7 +175,7 @@ try {
   assert(!template.isError);
   assert.equal(template.structuredContent.createsTask, false);
   assert.equal(template.structuredContent.project.objects[0].behavior.kind, 'toggle');
-  assert.deepEqual((await client.callTool({ name: 'workbench_list_tasks', arguments: {} })).structuredContent, beforeManual.structuredContent);
+  assert.deepEqual((await client.callTool({ name: 'workbench_list_tasks', arguments: {} })).structuredContent, beforeUnknown.structuredContent);
   const project = template.structuredContent.project;
   project.objects[0].content.prompt = '按 E 开门';
   const saved = await client.callTool({ name: 'workbench_run_task', arguments: { capabilityId: 'interactable-editor', input: { operation: 'save-project', project } } });
@@ -184,9 +190,18 @@ try {
   assert.equal(sourceResult.structuredContent.value.objects[0].content.prompt, '按 E 开门');
   project.objects[0].activation.key = 'F';
   project.objects[0].content.prompt = '按 F 开门';
-  const revised = await client.callTool({ name: 'workbench_run_task', arguments: { capabilityId: 'interactable-editor', input: { operation: 'save-project', project } } });
+  const command = { capabilityId: 'interactable-editor', input: { operation: 'save-project', project }, commandId: 'mcp:revision' };
+  const staged = await client.callTool({ name: 'workbench_prepare_task', arguments: command });
+  assert.equal(staged.structuredContent.status, 'prepared');
+  const revised = await client.callTool({ name: 'workbench_run_task', arguments: command });
   assert(!revised.isError);
-  const revision = await client.callTool({ name: 'workbench_get_task', arguments: { taskId: revised.structuredContent.taskId } });
+  assert.equal(revised.structuredContent.taskId, staged.structuredContent.taskId);
+  const repeated = await client.callTool({ name: 'workbench_run_task', arguments: command });
+  assert.equal(repeated.structuredContent.taskId, staged.structuredContent.taskId);
+  assert.equal(repeated.structuredContent.replayed, true);
+  const compactRevision = await client.callTool({ name: 'workbench_get_task', arguments: { commandId: command.commandId } });
+  assert.equal(compactRevision.structuredContent.task.input.project.objects, undefined);
+  const revision = await client.callTool({ name: 'workbench_get_task', arguments: { taskId: revised.structuredContent.taskId, detail: true } });
   assert.equal(revision.structuredContent.task.input.project.projectId, project.projectId);
   assert.equal(revision.structuredContent.task.input.project.objects[0].definitionId, project.objects[0].definitionId);
   assert.equal(revision.structuredContent.task.input.project.objects[0].activation.key, 'F');
@@ -216,7 +231,7 @@ try {
       capabilityId: 'interactable-editor',
       input: {
         operation: 'export-godot',
-        targetProfile: 'copyworms',
+        targetProfile: 'generic',
         project,
       },
     },
@@ -225,7 +240,7 @@ try {
   assert.equal(interaction.structuredContent?.status, 'completed');
   assert(
     interaction.structuredContent.outputs.some((output) =>
-      output.endsWith('/interactables-copyworms.zip'),
+      output.endsWith('/interactables.zip'),
     ),
   );
   const interactionTask = await client.callTool({

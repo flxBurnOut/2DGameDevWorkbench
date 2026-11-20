@@ -105,9 +105,13 @@ def bind_report(report, comparison):
             if finding['status']=='pass':
                 finding.update(status='uncertain',evidence='本次检查未完整完成，保留已有意见但不能标记通过。'+finding['evidence'])
         comparison['verdict']='fail' if any(v['status']=='fail' for v in comparison['findings'].values()) else 'uncertain'
+    classes={c.get('classification') for c in (report.get('expert_review',{}).get('resolution') or {}).get('checks',[])}
+    for finding in comparison['findings'].values():
+        finding['classification']={'pass':'satisfied','fail':'material_defect','uncertain':'insufficient_evidence'}[finding['status']]
     result['comparison']=comparison
     statuses=[report.get('verdict','uncertain'),comparison['verdict']]
     result['verdict']='fail' if 'fail' in statuses else 'uncertain' if 'uncertain' in statuses else 'pass'
+    result['classification']='material_defect' if result['verdict']=='fail' else 'insufficient_evidence' if result['verdict']=='uncertain' else 'preference' if 'preference' in classes else 'satisfied'
     labels={'pass':'模型判断通过','fail':'发现问题','uncertain':'需要实际对比确认'}
     result['summary']='修改目标：'+labels[comparison['findings']['change']['status']]+'；原有内容保持：'+labels[comparison['findings']['preservation']['status']]+'。'+report.get('summary','')
     return result

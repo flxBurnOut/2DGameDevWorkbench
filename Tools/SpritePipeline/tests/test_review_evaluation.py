@@ -239,3 +239,25 @@ def test_developer_cli_read_is_free_and_paid_commands_require_authorization(evid
     with pytest.raises(ValidationHarnessError):
         main(['independent','--evidence',str(evidence.folder),'--output',str(tmp_path/'paid')])
     assert not (tmp_path/'paid').exists()
+
+
+def test_score_reviews_supports_interactable_dimensions_and_counterfactual_checks():
+    from sprite_pipeline.collaboration.contracts import PROP_DIMENSIONS
+    from sprite_pipeline.collaboration.experiment import counterfactual_verdicts
+    from sprite_pipeline.collaboration.prop_measurements import guard_measurements
+
+    labels = {'lever': {'state_frame': {'status': 'pass'}, 'transition': {'status': 'fail'}, 'fixed_parts': {'status': 'pass'}}}
+    base_checks = [
+        {'dimension': 'state_frame', 'status': 'pass', 'confidence': .95, 'frames': [1, 8], 'evidence': 'ok'},
+        {'dimension': 'transition', 'status': 'pass', 'confidence': .95, 'frames': [1, 4, 8], 'evidence': 'ok'},
+        {'dimension': 'fixed_parts', 'status': 'pass', 'confidence': .95, 'frames': [1, 4, 8], 'evidence': 'ok'},
+    ]
+    report = {'state': 'complete', 'verdict': 'pass', 'checks': base_checks}
+    guarded = guard_measurements(report, {'flags': {'transition': [4, 5, 6]}})
+    ablation = counterfactual_verdicts(guarded)
+
+    full_score = score_reviews(labels, {'lever': {'state': 'complete', 'checks': ablation['checks_by_condition']['full']}})
+    no_probe_score = score_reviews(labels, {'lever': {'state': 'complete', 'checks': ablation['checks_by_condition']['without_probes']}})
+    assert [r['dimension'] for r in full_score['rows']] == list(PROP_DIMENSIONS)
+    assert full_score['totals']['false_negative'] == 0 and full_score['totals']['abstentions'] == 1
+    assert no_probe_score['totals']['false_negative'] == 1 and no_probe_score['totals']['abstentions'] == 0

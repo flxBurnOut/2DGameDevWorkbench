@@ -5,11 +5,9 @@ import { previewPath } from '../../lib/workbench/preview-follow.mjs';
 import { previewInputs } from '../../lib/workbench/preview-follow-contract.mjs';
 const manifest = JSON.parse(await readFile(new URL('../../workbench/manifest.json', import.meta.url), 'utf8'));
 const refs = [
-  { kind: 'map-layer', projectId: 'map-a', tileKey: '2,-1', layer: 'object' },
   { kind: 'interactable', documentId: 'prop-a', definitionId: 'door-a', slot: 'visual' },
   { kind: 'image-task', taskId: 'source-a' },
-  { kind: 'scene-layer', documentId: 'scene-a', layerId: 'object' },
-  { kind: 'scene-instance', documentId: 'scene-a', instanceId: 'door-a', slot: 'toggle-state', index: 1 },
+  {kind:'motion-frame',workId:'a'.repeat(32),workRevision:2,candidateIndex:1,stageIndex:0,frameIndex:3},
 ];
 for (const target of refs) {
   const view = imageEditViewPath(manifest, target, 'edit-a', '2');
@@ -24,9 +22,8 @@ for (const target of refs) {
   assert.equal(imageEditPresentation(manifest, edit, 'source').state, 'editing');
   assert.equal(imageEditPresentation(manifest, edit, '1').viewPath, imageEditViewPath(manifest, target, 'edit-a', '1'));
 }
-assert.equal(new URL(imageEditViewPath(manifest, refs[0], 'edit-a'), 'http://localhost').searchParams.get('map'), 'map-a');
-assert.equal(new URL(imageEditViewPath(manifest, refs[1], 'edit-a'), 'http://localhost').searchParams.get('object'), 'door-a');
-assert.equal(new URL(imageEditViewPath(manifest, refs[2], 'edit-a'), 'http://localhost').searchParams.get('asset'), 'image:source-a');
+assert.equal(new URL(imageEditViewPath(manifest, refs[0], 'edit-a'), 'http://localhost').searchParams.get('object'), 'door-a');
+assert.equal(new URL(imageEditViewPath(manifest, refs[1], 'edit-a'), 'http://localhost').searchParams.get('asset'), 'image:source-a');
 assert.equal(previewInputs.present.parse({ editId: 'edit-a', candidateVersion: 'source' }).candidateVersion, 'source');
 assert.throws(() => previewInputs.present.parse({ editId: 'edit-a', candidateVersion: '../private' }));
-console.log('Image-edit presentation: exact source/session/candidate across four hosts and five target kinds; task context preserved; 0 provider requests.');
+console.log('Image-edit presentation: exact source/session/candidate for interactable slots and independent image tasks; task context preserved; 0 provider requests.');

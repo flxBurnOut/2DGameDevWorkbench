@@ -2,7 +2,10 @@ import {
   fetchWorkbenchRuntime,
   runtimeUnavailable,
 } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 export async function POST(request: Request) {
+  const denied = trustedRequest(request, { json: true });
+  if (denied) return denied;
   let input: unknown;
   try {
     input = await request.json();

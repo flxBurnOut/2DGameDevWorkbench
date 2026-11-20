@@ -180,7 +180,8 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         self.assertEqual(self.service.candidate_safety(job.job_id, 1)["stage"], "saved")
 
     def test_insufficient_quota_is_recorded_before_any_submission(self) -> None:
-        self.service.configure_pixellab_api_key("unit_test_key_123456")
+        with patch.dict(os.environ, {'PIXELLAB_API_KEY': 'unit_test_key_123456'}):
+            self.service = SpritePipelineService(self.root)
         request_values = self.harness.create_request("pixellab")
         request_values["candidate_count"] = 2
         job = self.service.create_job(
@@ -204,7 +205,7 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         self.assertIsNotNone(blocked.quota_before)
         self.assertEqual(blocked.events[-1]["event"], "generation_blocked_by_quota")
         self.assertFalse(blocked.events[-1]["chargeable_submission_created"])
-        self.assertEqual(blocked.status, JobStatus.attention_required)
+        self.assertEqual(blocked.status, JobStatus.not_submitted)
         self.assertEqual(
             blocked.candidates[0].error["code"],
             "insufficient_quota",
@@ -219,6 +220,21 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
             scan["attention_required"][0]["reason"],
             "insufficient_quota",
         )
+
+        from fastapi.testclient import TestClient
+        from sprite_pipeline.api_app import create_api
+        keyed_job = self.service.create_job(GenerationRequest(**request_values, request_key='keyed-quota-job'))
+        route = '/v1/jobs/' + keyed_job.job_id
+        api = TestClient(create_api(service=self.service))
+        with patch('sprite_pipeline.providers.get_provider', return_value=provider):
+            result = api.post(route + '/generate', json={'wait': True, 'request_key': 'keyed-quota-rejection'}).json()['data']
+        self.assertEqual(result['generation_receipt']['state'], 'rejected')
+        self.assertFalse(result['generation_receipt']['submission_created'])
+        self.assertEqual(result['job']['revision'], result['generation_receipt']['revision'])
+        self.assertEqual(result['job']['status'], 'not_submitted')
+        self.assertEqual(result['job']['candidates'][0]['error']['code'], 'insufficient_quota')
+        self.assertEqual(api.get(route + '/generation-requests/keyed-quota-rejection').json()['data'], result)
+        self.assertEqual(provider.submit_count, 0)
 
     def test_dynamic_generation_unit_estimate_matches_pixellab_contract(self) -> None:
         self.assertEqual(
@@ -333,6 +349,31 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         self.assertEqual(len(recovered.candidates[0].frames), 4)
         self.assertTrue(restarted.candidate_safety(job.job_id, 1)["result_integrity"])
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows sharing errors')
+    def test_raw_result_directory_retries_only_the_same_publication(self) -> None:
+        job = self.service.create_job(self.harness.create_request('pixellab'))
+        provider = SequencedProvider(self._frame_bytes())
+        replace = os.replace
+        moves = []
+
+        def temporarily_locked(source, target):
+            if Path(target).name == 'candidate_01' and Path(source).name.startswith('.candidate_01.'):
+                moves.append((source, target))
+                if len(moves) == 1:
+                    raise PermissionError(13, 'temporary sharing violation', str(target), 5)
+            return replace(source, target)
+
+        with patch('sprite_pipeline.providers.get_provider', return_value=provider), patch('os.replace', temporarily_locked):
+            for _ in range(3):
+                result = self.service.generate_job(job.job_id, wait=False)
+                if result.candidates[0].frames:
+                    break
+
+        self.assertEqual(provider.submit_count, 1)
+        self.assertEqual(len(moves), 2)
+        self.assertEqual(moves[0], moves[1])
+        self.assertTrue(result.candidates[0].frames)
+
     def test_poll_audit_write_failure_does_not_discard_completed_images(self) -> None:
         self.service.configure_pixellab_api_key("unit_test_key_123456")
         job = self.service.create_job(
@@ -343,9 +384,9 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         )
         provider = SequencedProvider(self._frame_bytes())
         provider.poll_count = 1
-        from sprite_pipeline import service as service_module
+        from sprite_pipeline import job_execution
 
-        original_write = service_module.atomic_write_json
+        original_write = job_execution.atomic_write_json
 
         def fail_only_poll_audit(path: Path, payload: object) -> None:
             if path.name.endswith(".poll.response.json"):
@@ -355,7 +396,7 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
         with (
             patch("sprite_pipeline.providers.get_provider", return_value=provider),
             patch(
-                "sprite_pipeline.service.atomic_write_json",
+                "sprite_pipeline.job_execution.atomic_write_json",
                 side_effect=fail_only_poll_audit,
             ),
         ):
@@ -732,6 +773,62 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
             second = self.service.list_jobs()
         self.assertEqual(second, first)
 
+    def test_job_catalog_repairs_a_stale_summary_after_interrupted_save(self) -> None:
+        for interruption in ("job.json", "summary.json"):
+            with self.subTest(interruption=interruption):
+                job = self.service.create_job(self.harness.create_request("pixellab"))
+                store = self.service.store
+
+                def fail_selected_write(path, value):
+                    if path.name == interruption:
+                        raise OSError("interrupted job publication")
+                    atomic_write_json(path, value)
+
+                def submit():
+                    with store.locked_job(job.job_id) as submitted:
+                        submitted.generation_requested_at = submitted.updated_at
+                        submitted.candidates[0].status = CandidateStatus.provider_pending
+                        submitted.candidates[0].provider_job_id = "durable-provider-id"
+
+                with patch("sprite_pipeline.store.atomic_write_json", side_effect=fail_selected_write):
+                    if interruption == "job.json":
+                        with self.assertRaisesRegex(OSError, "interrupted job publication"):
+                            submit()
+                    else:
+                        submit()
+
+                reader = type(store)(self.service.settings)
+                summary = next(row for row in reader.list_jobs() if row["job_id"] == job.job_id)
+                self.assertEqual(summary["job_revision"], job.revision + 1)
+                self.assertEqual(summary["candidate_status_counts"], {"provider_pending": 1})
+                self.assertTrue(summary["needs_recovery"])
+                with patch.object(reader, "load", side_effect=AssertionError("repaired summary must stay lightweight")):
+                    self.assertEqual(next(row for row in reader.list_jobs() if row["job_id"] == job.job_id), summary)
+
+    def test_older_job_read_cannot_replace_newer_summary(self) -> None:
+        job = self.service.create_job(self.harness.create_request("import"))
+        writer = self.service.store
+        reader = type(writer)(self.service.settings)
+        history = writer.job_dir(job.job_id) / "history" / f"job_{job.revision:08d}.json"
+        from sprite_pipeline.jsonio import read_json
+
+        writing = False
+
+        def interleave_write(path):
+            nonlocal writing
+            value = read_json(path)
+            if path == history and not writing:
+                writing = True
+                with writer.locked_job(job.job_id) as next_job:
+                    next_job.candidates[0].status = CandidateStatus.failed
+            return value
+
+        with patch("sprite_pipeline.store.read_json", side_effect=interleave_write):
+            self.assertEqual(reader.load(job.job_id).revision, job.revision)
+        summary = read_json(writer.job_dir(job.job_id) / "summary.json")
+        self.assertEqual(summary["job_revision"], job.revision + 1)
+        self.assertEqual(summary["candidate_status_counts"], {"failed": 1})
+
     def test_multiple_candidates_share_one_task_folder(self) -> None:
         request = self.harness.create_request("fixture")
         request["candidate_count"] = 3
@@ -856,6 +953,40 @@ class QuotaAndResultSafetyTests(unittest.TestCase):
             self.assertEqual(second.status_code, 201)
             first_id = first.json()["data"]["job"]["job_id"]
             self.assertEqual(first_id, second.json()["data"]["job"]["job_id"])
+
+            generate = f'/v1/jobs/{first_id}/generate'
+            receipts = f'/v1/jobs/{first_id}/generation-requests/'
+            command = {'request_key': 'received-command-B', 'candidate_index': 1, 'wait': False}
+            generated = client.post(generate, json=command)
+            self.assertEqual(generated.status_code, 200, generated.text)
+            data = generated.json()['data']
+            self.assertEqual({key: value for key, value in data['generation_receipt'].items() if key != 'evidence'}, {
+                **command, 'job_id': first_id, 'state': 'returned', 'revision': data['job']['revision']})
+            self.assertEqual(client.get(receipts + 'undelivered-command-A').status_code, 404)
+            self.assertEqual(client.get(receipts + command['request_key']).json()['data'], data)
+            self.assertEqual(client.post(generate, json=command).json()['data'], data)
+            self.assertEqual(client.post(generate, json={**command, 'wait': True}).status_code, 409)
+
+            rejected = client.post(generate, json={**command, 'request_key': 'preflight-invalid', 'candidate_index': 99})
+            rejection = rejected.json()['data']['generation_receipt']
+            self.assertEqual(rejection['state'], 'rejected')
+            self.assertIs(rejection['submission_created'], False)
+            self.assertNotIn('revision', rejection)
+
+            def unrelated_then_raise(job_id, **_kwargs):
+                from threading import Thread
+                def foreign_write():
+                    with self.service.store.locked_job(job_id) as job:
+                        job.candidates[0].usage = {'usd': 101}
+                thread = Thread(target=foreign_write)
+                thread.start()
+                thread.join()
+                raise ValidationHarnessError('unknown fault after another caller updated this candidate')
+            with patch.object(self.service, 'generate_job', side_effect=unrelated_then_raise):
+                unknown = client.post(generate, json={**command, 'request_key': 'no-own-evidence'}).json()['data']
+            self.assertEqual(unknown['generation_receipt']['state'], 'unknown')
+            self.assertNotIn('job', unknown)
+            self.assertNotIn('evidence', unknown['generation_receipt'])
 
             safety = client.get(
                 f"/v1/jobs/{first_id}/candidates/1/safety"

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forge-pixel-prop"
+version = "0.1.0"
+description = "Offline deterministic pixel-art prop conversion"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["Pillow>=11.0,<13"]
+
+[project.scripts]
+pixel-prop = "pixel_prop.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pixel_prop", "pixel_prop.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

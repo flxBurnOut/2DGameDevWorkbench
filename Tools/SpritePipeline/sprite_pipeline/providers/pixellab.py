@@ -17,9 +17,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlparse
+from uuid import uuid4
 
 from sprite_pipeline.errors import (
     ProviderConfigurationError,
@@ -40,8 +42,10 @@ from .base import (
     redact_provider_payload,
     structured_error,
 )
+from .account import AccountSlotBusy, safe_usage
 
 
+PIXELLAB_ACTION_MAX_CHARACTERS = 1000
 PIXELLAB_TOTAL_PIXEL_BUDGET = 524_288
 """Documented ``width * height * frame_count`` limit for animation v3."""
 
@@ -69,6 +73,16 @@ def _load_httpx() -> Any:
             "PixelLab provider requires the optional httpx dependency",
             details={"dependency": "httpx"},
         ) from exc
+
+
+def poll_identity_mismatch(response, job_id):
+    """Return bounded diagnostic IDs without retaining the unbound response."""
+    if isinstance(response, Mapping):
+        for key in ("id", "background_job_id", "job_id"):
+            if key in response and response[key] != job_id:
+                return {"requested_job_id": job_id, "response_id_field": key,
+                        "response_job_id": redact_provider_payload(response[key])}
+    return None
 
 
 class PixelLabProvider(SpriteProvider):
@@ -109,6 +123,7 @@ class PixelLabProvider(SpriteProvider):
         http_client: Any | None = None,
         sleep_fn: Callable[[float], None] | None = None,
         monotonic_fn: Callable[[], float] | None = None,
+        account_slot: Any | None = None,
     ) -> None:
         """Validate configuration without importing httpx or opening a socket."""
 
@@ -162,6 +177,7 @@ class PixelLabProvider(SpriteProvider):
         self._client = http_client
         self._owns_client = False
         self._jobs: dict[str, _JobContext] = {}
+        self._account_slot = account_slot
 
     def __enter__(self) -> "PixelLabProvider":
         """Return this provider for use as a context manager."""
@@ -207,7 +223,45 @@ class PixelLabProvider(SpriteProvider):
             self._owns_client = True
         return self._client
 
+    def check_account_slot(self) -> None:
+        if self._account_slot is not None:
+            with self._account_slot.lock():
+                self._account_slot.require_available(self._active_job_status)
+
+    @property
+    def account_fingerprint(self) -> str | None:
+        return self._account_slot.key if self._account_slot is not None else None
+
+    def _active_job_status(self, job_id: str) -> str | None:
+        try:
+            result = self.poll(job_id)
+        except ProviderPermanentError as exc:
+            if exc.details.get("http_status") == 404:
+                return "expired"
+            raise
+        return result.provider_status if result.raw_response.get("id", job_id) == job_id else None
+
     def submit(self, request: ProviderRequest) -> Submission:
+        if self._account_slot is None:
+            return self._submit(request)
+        with self._account_slot.lock():
+            self._account_slot.require_available(self._active_job_status)
+            intent_id = request.local_submission_id or uuid4().hex
+            self._account_slot.reserve(intent_id)
+            try:
+                receipt = self._submit(request)
+            except (ProviderPermanentError, ProviderTemporaryError, AccountSlotBusy) as exc:
+                if exc.details.get("provider_job_id"):
+                    self._account_slot.accept(exc.details["provider_job_id"], intent_id,
+                                              usage=safe_usage((exc.details.get("response") or {}).get("usage")))
+                elif not exc.details.get("submission_unknown"):
+                    self._account_slot.reject()
+                raise
+            self._account_slot.accept(receipt.provider_job_id, intent_id,
+                                      usage=safe_usage(receipt.raw_response.get("usage")), status=receipt.status)
+            return receipt
+
+    def _submit(self, request: ProviderRequest) -> Submission:
         """Submit one PixelLab v3 job with only conclusive 429/529 retries.
 
         Transport failures, timeouts, and malformed 200 responses are reported
@@ -215,7 +269,7 @@ class PixelLabProvider(SpriteProvider):
         remote service may already have accepted and charged for the job.
         """
 
-        if len(request.prompt) > 1000:
+        if len(request.prompt) > PIXELLAB_ACTION_MAX_CHARACTERS:
             raise ProviderPermanentError(
                 "PixelLab animation action exceeds 1000 characters",
                 details={"action_length": len(request.prompt)},
@@ -357,7 +411,7 @@ class PixelLabProvider(SpriteProvider):
                         "request": request_record,
                     },
                 ) from exc
-            if response.status_code not in {429, 529} or retry_index >= self.max_get_retries:
+            if self._account_slot is not None or response.status_code not in {429, 529} or retry_index >= self.max_get_retries:
                 break
             self._sleep(self._retry_delay(response, retry_index))
 
@@ -422,12 +476,12 @@ class PixelLabProvider(SpriteProvider):
 
         job_id = self._validate_job_id(provider_job_id)
         response = self._get_with_backoff(job_id)
-        if response.status_code != 200:
-            self._raise_poll_status(response, job_id)
 
         try:
             response_json = self._json_object(response)
         except _ResponseShapeError as exc:
+            if response.status_code != 200:
+                self._raise_poll_status(response, job_id)
             return PollResult(
                 provider=self.name,
                 provider_job_id=job_id,
@@ -441,9 +495,23 @@ class PixelLabProvider(SpriteProvider):
                 ),
             )
 
+        mismatch = poll_identity_mismatch(response_json, job_id)
+        if mismatch:
+            return PollResult(
+                provider=self.name, provider_job_id=job_id, status=PollStatus.failed,
+                provider_status="identity_mismatch",
+                raw_response={"_http_status": int(response.status_code), **mismatch},
+                error=structured_error("provider_job_mismatch", "PixelLab poll returned another job", **mismatch),
+            )
+        if response.status_code != 200:
+            self._raise_poll_status(response, job_id)
         raw_response = self._response_record(response_json, response.status_code)
         provider_status = response_json.get("status")
         usage = self._usage_record(response_json.get("usage"))
+        if (self._account_slot is not None
+                and isinstance(provider_status, str) and provider_status in {"completed", "failed"}):
+            with suppress(AccountSlotBusy), self._account_slot.lock():
+                self._account_slot.release(job_id)
         if not isinstance(provider_status, str) or not provider_status:
             return self._contract_failure(
                 job_id,
@@ -582,76 +650,45 @@ class PixelLabProvider(SpriteProvider):
                 "policy": "preserve_all_returned_images",
             }
 
-        normalized_images: list[bytes] = []
-        observed_size: tuple[int, int] | None = None
+        decoded: list[bytes | None] = []
+        errors = []
+        expected_size = (context.expected_width, context.expected_height) if context else None
         for index, value in enumerate(image_values):
-            if isinstance(value, Mapping):
-                image_type = value.get("type", "base64")
-                if image_type != "base64":
-                    return self._contract_failure(
-                        job_id,
-                        "completed",
-                        raw_response,
-                        usage,
-                        "PixelLab returned an unsupported image object type",
-                        frame_index=index,
-                        image_type=image_type,
-                    )
             try:
+                if isinstance(value, Mapping) and value.get("type", "base64") != "base64":
+                    raise ImagePayloadError("unsupported image object type")
                 image = normalize_base64_image(
-                    value,
-                    max_bytes=self.max_response_bytes,
-                    max_width=256,
-                    max_height=256,
-                    max_pixels=256 * 256,
+                    value, max_bytes=self.max_response_bytes, max_width=256,
+                    max_height=256, max_pixels=256 * 256,
                 )
             except (ImagePayloadError, TypeError) as exc:
-                return self._contract_failure(
-                    job_id,
-                    "completed",
-                    raw_response,
-                    usage,
-                    "PixelLab returned an invalid PNG/JPEG frame",
-                    frame_index=index,
-                    reason=str(exc),
-                )
+                errors.append({"frame_index": index, "reason": str(exc)})
+                decoded.append(None)
+                continue
+            size = (image.width, image.height)
+            if expected_size is None:
+                expected_size = size
+            elif size != expected_size:
+                errors.append({"frame_index": index, "reason": "inconsistent dimensions",
+                               "expected_size": expected_size, "actual_size": size})
+            # After a restart the adapter may lack the original request size.
+            # The stage archives each decoded image against its frozen canvas.
+            decoded.append(image.data)
 
-            current_size = (image.width, image.height)
-            if observed_size is None:
-                observed_size = current_size
-            elif current_size != observed_size:
-                return self._contract_failure(
-                    job_id,
-                    "completed",
-                    raw_response,
-                    usage,
-                    "PixelLab returned frames with inconsistent dimensions",
-                    frame_index=index,
-                    expected_size=observed_size,
-                    actual_size=current_size,
-                )
-            if context is not None and current_size != (
-                context.expected_width,
-                context.expected_height,
-            ):
-                return self._contract_failure(
-                    job_id,
-                    "completed",
-                    raw_response,
-                    usage,
-                    "PixelLab returned a frame size different from the reference frame",
-                    frame_index=index,
-                    expected_size=(context.expected_width, context.expected_height),
-                    actual_size=current_size,
-                )
-            normalized_images.append(image.data)
+        if errors:
+            return PollResult(
+                provider=self.name, provider_job_id=job_id, status=PollStatus.failed,
+                provider_status="completed", partial_images=decoded, raw_response=raw_response, usage=usage,
+                error=structured_error("provider_contract_error", "PixelLab returned invalid animation frames",
+                                       reason="invalid_drawing_frame", raw_count=len(decoded), frames=errors),
+            )
 
         return PollResult(
             provider=self.name,
             provider_job_id=job_id,
             status=PollStatus.completed,
             provider_status="completed",
-            images=normalized_images,
+            images=[image for image in decoded if image is not None],
             raw_response=raw_response,
             usage=usage,
         )
@@ -685,19 +722,10 @@ class PixelLabProvider(SpriteProvider):
                     },
                 ) from exc
 
-            if response.status_code not in {429, 529}:
+            if response.status_code not in {429, 529} or retry_index >= self.max_get_retries:
                 return response
-            if retry_index >= self.max_get_retries:
-                raise ProviderTemporaryError(
-                    "PixelLab job poll remained rate-limited after bounded retries",
-                    details={
-                        "provider_job_id": job_id,
-                        "http_status": response.status_code,
-                        "get_retries": self.max_get_retries,
-                        "safe_to_retry": True,
-                        "response": self._best_effort_response_record(response),
-                    },
-                )
+            if poll_identity_mismatch(self._best_effort_response_record(response), job_id):
+                return response
             self._sleep(self._retry_delay(response, retry_index))
         raise AssertionError("unreachable GET retry state")
 
@@ -737,13 +765,23 @@ class PixelLabProvider(SpriteProvider):
         """Classify a non-200 POST response without retrying it."""
 
         status_code = int(response.status_code)
+        record = self._best_effort_response_record(response)
+        job_id = record.get("background_job_id")
+        usage = record.get("usage")
+        charged = isinstance(usage, dict) and any(isinstance(usage.get(key), (int, float)) and usage[key] > 0 for key in ("usd", "generations"))
+        known_rejection = status_code in {401, 402, 403, 422, 429, 529} and not job_id and not charged
         details = {
             "http_status": status_code,
-            "submission_unknown": False,
-            "safe_to_retry": status_code in {429, 529},
+            "submission_unknown": not known_rejection,
+            "submission_rejected": known_rejection,
+            "safe_to_retry": known_rejection and status_code in {429, 529},
             "request": request_record,
-            "response": self._best_effort_response_record(response),
+            "response": record,
         }
+        if isinstance(job_id, str) and job_id.strip():
+            details["provider_job_id"] = job_id.strip()
+        if self._account_slot is not None and details["safe_to_retry"]:
+            raise AccountSlotBusy("PixelLab 账户当前任务过多，等待空位", details=details)
         if status_code in {429, 529} or status_code >= 500:
             raise ProviderTemporaryError("PixelLab rejected or could not process the submission", details=details)
         raise ProviderPermanentError("PixelLab rejected the animation submission", details=details)
@@ -758,6 +796,9 @@ class PixelLabProvider(SpriteProvider):
             "safe_to_retry": status_code >= 500,
             "response": self._best_effort_response_record(response),
         }
+        if status_code in {429, 529}:
+            details.update(get_retries=self.max_get_retries, safe_to_retry=True)
+            raise ProviderTemporaryError("PixelLab job poll remained rate-limited after bounded retries", details=details)
         if status_code >= 500:
             raise ProviderTemporaryError("PixelLab job poll failed temporarily", details=details)
         raise ProviderPermanentError("PixelLab job poll was rejected", details=details)

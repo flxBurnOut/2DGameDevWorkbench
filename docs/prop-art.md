@@ -1,12 +1,14 @@
 # 交互物品原图生成
 
-> 默认场景物件能力：`image-assets` / `generate-prop`；支持 `edit-image`。旧 `reference-art` / `generate` / `subject=prop` 继续兼容。地图拼接仍由用户在前端完成。
+> 默认物品原图能力：`image-assets` / `generate-prop`；支持 `edit-image`。旧 `reference-art` / `generate` / `subject=prop` 继续兼容。
 
 ## 前端流程
 
-进入“场景 → 制作交互物”，选择要编辑的物件，展开右侧“生成透明物件”。输入单个物品的描述，例如“深蓝金属外壳的复古工业电池，黄色指示灯，清晰轮廓”。默认使用 GPT Image 2.5，实际模型 ID 为 `gpt-image-2.5-sunburst`，输出透明 PNG；默认 1024×1024，可选择其他支持的尺寸，不强制缩成 128×128。可上传最多 8 张 PNG、JPEG 或 WebP 参考图。
+从首页进入“交互物编辑”，选择要编辑的物件，在右侧“外观”页签的“获取图片”中展开“生成透明物件”。输入单个物品的描述，例如“深蓝金属外壳的复古工业电池，黄色指示灯，清晰轮廓”。默认使用 GPT Image 2.6，实际模型 ID 为 `gpt-image-2.6-sunburst`，输出透明 PNG；默认 1024×1024，可选择其他支持的尺寸，不强制缩成 128×128。可上传最多 8 张 PNG、JPEG 或 WebP 参考图。
 
-GPT 图片设置与地图图片生成共用受保护的本机 Key，也可使用 `OPENAI_API_KEY`。旧 GPT Image 2 配置的 Key 可复用；已有 Key 不回显。文本请求使用 Images generations，有源图或参考图时使用 Images edits；原有自定义服务地址继续生效。此流程只需要网页和 Runtime Bridge，不要求启动 PixelLab / SpritePipeline。
+“输出尺寸”保留方形、横向和竖向预设，也可选择“自定义宽高”。宽高必须为 16 的倍数，总像素为 655,360–8,294,400，最长边不超过 3840，宽高比在 1:3–3:1 内；不合法时显示原因并禁止提交。重新打开制作记录会回填该任务的尺寸；本地处理等未记录请求尺寸的任务读取已保存结果，无法读取时明确提示并恢复默认尺寸，不继承上一条记录。
+
+GPT 图片设置使用受保护的本机 Key，也可使用 `OPENAI_API_KEY`。旧 GPT Image 2 配置的 Key 可复用；已有 Key 不回显。文本请求使用 Images generations，有源图或参考图时使用 Images edits；原有自定义服务地址继续生效。此流程只需要网页和 Runtime Bridge，不要求启动 PixelLab / SpritePipeline。
 
 每次生成是新的付费请求。提交后先保存并返回 `running` 任务，查询只跟踪原任务，不重复提交。等待期间可以离开页面，从制作记录、资产库的“物品原图”或面板中的最近记录恢复。超时、连接中断、服务商 5xx 或执行进程退出可能留下未知的上游结果，此时标为 `attention_required`；先检查任务产物及服务商记录，再决定是否另行生成。刷新或重启不会恢复一次新的付费提交。图片不会自动覆盖物件。
 
@@ -33,7 +35,7 @@ GPT 图片设置与地图图片生成共用受保护的本机 Key，也可使用
   "capabilityId": "image-assets",
   "input": {
     "operation": "generate-prop",
-    "provider": "gpt-image-2.5",
+    "provider": "gpt-image-2.6",
     "name": "备用电池",
     "prompt": "blue metal battery, yellow indicator light, clear silhouette",
     "width": 1024,
@@ -42,7 +44,7 @@ GPT 图片设置与地图图片生成共用受保护的本机 Key，也可使用
 }
 ```
 
-`prompt` 最多12000字符。`edit-image` 需要 `image`，用 `kind="prop"` 校验透明物件；可带 `references` 和 `mask`。图片源只接受仓库内普通图片或 base64 data URL。带蒙版时，结果、源图和蒙版必须完全同尺寸；输出尺寸改变会在调用模型前拒绝。仅蒙版 Alpha=0 可编辑，Alpha=1–255（包括半透明边缘）从源图复制，保存后按解码 sRGB/RGBA8 校验四通道逐字节一致，包含透明像素下的 RGB。蒙版内的形状、大小与接缝仍需看图。旧地图扩图保持自身契约。
+`prompt` 最多12000字符。`edit-image` 需要 `image`，用 `kind="prop"` 校验透明物件；可带 `references` 和 `mask`。图片源只接受仓库内普通图片或 base64 data URL。带蒙版时，结果、源图和蒙版必须完全同尺寸；输出尺寸改变会在调用模型前拒绝。仅蒙版 Alpha=0 可编辑，Alpha=1–255（包括半透明边缘）从源图复制，保存后按解码 sRGB/RGBA8 校验四通道逐字节一致，包含透明像素下的 RGB。蒙版内的形状、大小与接缝仍需看图。
 
 ### 不调用模型的本地处理
 
@@ -87,17 +89,39 @@ get_task 查询同一任务，get_result 直达 `/tools/interactable-editor?imag
 
 用户只要图片时，在图片交付处结束。需要完整交互物时，读取真实 PNG 和结果 metadata，将其绑定到原项目中正确物件的 visual.assetId；资产 source 使用实际工作区路径或内嵌 data URL，可附 generation 来源字段，再执行 interactable-editor 的 save-project / export-godot。沿用 projectId / definitionId，不新建同名物件代替原目标。默认图更新不应静默覆盖状态专用图片。
 
-物品图不是角色预设，transfer 会拒绝。生成一张 PNG 也不表示已经配置拾取、开关、动画、碰撞或游戏逻辑。
+从 PixelLab 物品面板选择已完成的 128×128 原图，点击“移送到交互物动画”（交互物动画面板内也可直接生成并移送）。MCP 可用 `reference-art` 的 `transfer`，传入已完成的物品生成任务 `sourceTaskId`。服务核对登记产物、尺寸、透明度和 SHA-256，重复移送复用同一交互物预设。打开返回的 `/tools/interactable-motion?object=` 链接后按状态图规划动画。
+
+## 导入与转换为动画原图
+
+交互物编辑器“外观 → 获取图片”和交互物动画面板“还没有 128 px 物品原图？”提供“导入 PNG / 从物品图转换”。GPT Image 已完成物品候选上也有“转换为 128 px 物品原图”。共用对话框支持历史 GPT 物品任务或上传 PNG/WebP/JPEG、预设与调参、棋盘/深浅背景、1× 与真实 4× 预览。
+
+- **导入**：`reference-art` 的 `import` 传 `subject=prop`、`prompt` 以及 `sourceImagePath` 或 `sourceImage`。仅接受 2 MB 以内、128×128、有可见像素及真实透明背景的 PNG；不接受 facing/seed。记录颜色数、半透明像素数及比例，诊断不阻断导入。
+- **转换**：`convert-prop` 传 `prompt`，以及 `sourceTaskId`、`sourceImagePath`、`sourceImage` 中恰好一个。任务源只能是已完成的 `image-assets generate-prop` 或 `kind=prop` 的 `edit-image`，读取登记的 image.png/result.json 并核对哈希。文件最长边 4096、最多 30 MB。工作台固定输出 128 px；无透明背景时须显式选择精确抠色。
+- **预览**：`POST /v1/reference-art/convert-prop/preview` 只收源字段与 recipe，返回 base64 图片、对比图、报告；不建任务、不写文件。网页按源与配方哈希去抖并缓存最多八份预览。保存仍重新转换并核验来源。
+
+```json
+{"operation":"convert-prop","sourceImagePath":"Tools/PixelProp/examples/battery.png","prompt":"侧视电池，完整电极与黄色指示灯","recipe":{"colors":24,"resample":"area","padding":4}}
+```
+
+默认配方见 [PixelProp 中文说明](../Tools/PixelProp/README.zh-CN.md)。支持 area/dominant/nearest、颜色数 0 或 2–64、透明度阈值、留白、底部/居中、抖动、孤立像素清理与外轮廓。`palette` 可为颜色列表、仓库内 JSON 文件或 `object:<ID>`，后者只沿用已登记 PixelLab 交互物的不透明颜色。“已是像素画”预设使用 nearest 和 colors=0。
+
+导入输出 reference.png/result.json；转换额外保存 compare.png、recipe.json、report.json。两种本地任务均记录 `providerCalled=false`，不调用图片或 PixelLab 接口、不计费。服务内直接调用独立 `forge-pixel-prop` 包，不另有 Node 算法；转换需要 SpritePipeline，服务离线时提示 `npm run dev`。`npm run sprite-pipeline:setup` 安装 PixelProp，独立 CLI 为 `npm run pixel-prop -- convert <源图> -o <输出>`。
+
+导入或转换后，先检查视角、初始状态、部件完整和背景透明，再用 `transfer` 的 `confirmation: {note}` 提交至少 4 字的实际确认说明。缺少说明时拒绝移送，不自动补写。用户明确委托 Agent 检查时，Agent 看过原图/对比图后可提交实际核对内容；未委托或保留选择时，用 `workbench_present` 展示准确对比图并等待用户确认。转换或导入参考图的真实 PixelLab 动画效果尚未验证，动画的付费授权单独处理。
+
+移送会核对登记产物、PNG、尺寸和哈希；转换还会重新读取原始来源、解析原配方并重算。重算结果按解码像素（`pixelSha256`）与登记的原图比对，不比较 PNG 文件字节，因此换机器或 zlib 构建不同不会误判；源图、配方、报告、像素或算法版本变化均拒绝，提示重新转换，不改写已有对象。算法版本 1 的转换任务需在版本 2 下重新转换。重复移送沿用同一 `reference_<任务ID哈希前24位>` 对象，不改写首次确认。
+
+对象旁的 provenance.json 保存来源类型（pixellab/import/convert-prop）、任务、哈希、带时区确认时间及转换证据；不改 object.json 模型。旧对象无来源文件时按 PixelLab 读取。对象清单和动画面板显示来源，新作品规划时冻结来源类型与哈希；旧作品不补写。论文统计按来源筛选，导入/转换不自动归入 PixelLab 原图样本。
 
 ## 兼容与输出
 
-省略 subject 的旧角色请求继续按 character 执行，角色页记录不混入物品。仍复用已有 `/v1/reference-art/jobs` 网关及 protected settings，不增加服务、依赖或另一份 Key。
+省略 subject 的旧角色请求继续按 character 执行，角色页记录不混入物品。仍复用已有 `/v1/reference-art/jobs` 网关及 protected settings，不增加服务或另一份 Key；本地转换新增独立 PixelProp 包。
 
 旧 PixelLab 成功输出为任务目录的 reference.png 与 result.json；result 增加 subject。物品保持独立任务身份，资产 ID 为 reference:<task-id>，其分类和编辑入口按 subject 区分。旧角色元数据没有 subject 也继续兼容。新 GPT 图片任务使用前文的 image.png 与独立 image: 身份，不改写旧记录。
 
 ## 验证
 
-`npm run test:image-assets` 验证 GPT 图片生成、参考图与蒙版、原始字节、透明验证、来源哈希、跨进程查询和不确定提交；`npm run test:prop-art` 继续验证旧 PixelLab 的 MCP、恢复、分类、采用和导出。均使用模拟服务与隔离目录，不证明真实模型画面质量，也不产生真实生图费用。
+`npm run test:image-assets` 验证 GPT 图片生成、参考图与蒙版、原始字节、透明验证、来源哈希、跨进程查询和不确定提交；`npm run test:prop-art` 验证旧 PixelLab 的 MCP、恢复、分类、采用和导出，以及真实本地转换网关、导入确认、哈希重算、MCP 与 HTTP 预览。`npm run test:pixel-prop` 验证独立工具的黄金样例与边界。均使用模拟服务与隔离目录，不证明真实模型画面质量，也不产生真实生图费用。
 
 旧 PixelLab 面板的人工验收：
 

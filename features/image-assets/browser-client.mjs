@@ -1,3 +1,5 @@
+import { documentMediaReference } from '../editor-documents/media-references.mjs';
+
 const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
 export const IMAGE_ASSET_MAX_BYTES = 40 * 1024 * 1024;
 
@@ -18,7 +20,6 @@ export async function imageAssetJson(url, init, request = fetch) {
 
 export function imageAssetKind(task) {
   if (task?.capabilityId !== 'image-assets') return undefined;
-  if (task.input?.operation === 'generate-background') return 'background';
   if (task.input?.operation === 'generate-prop') return 'prop';
   if (['edit-image', 'process-image'].includes(task.input?.operation))
     return task.input.kind === 'prop' ? 'prop' : 'background';
@@ -41,15 +42,6 @@ export function imageBytesDataUrl(bytes, mime = 'image/png') {
   for (let start = 0; start < bytes.length; start += 32768)
     binary += String.fromCharCode(...bytes.subarray(start, start + 32768));
   return `data:${mime};base64,${btoa(binary)}`;
-}
-
-export function readImageGeneration(value) {
-  if (value === undefined) return undefined;
-  if (!value || typeof value !== 'object' ||
-    typeof value.sourceTaskId !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,199}$/i.test(value.sourceTaskId) ||
-    typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256))
-    throw new Error('图片来源记录无效。');
-  return { sourceTaskId: value.sourceTaskId, sha256: value.sha256 };
 }
 
 // Adoption always re-reads the durable task, result and exact PNG bytes.
@@ -88,7 +80,7 @@ export async function readImageAsset(taskId, kind, request = fetch) {
     task, imagePath, bytes, width: result.width, height: result.height,
     kind, generation: { sourceTaskId: taskId, sha256 },
     provider: result.provider, model: result.model,
-    name: String(task.input?.name || (kind === 'prop' ? '透明物件' : '场景背景')).slice(0, 80),
+    name: String(task.input?.name || (kind === 'prop' ? '透明物件' : '参考图片')).slice(0, 80),
   };
 }
 
@@ -98,4 +90,37 @@ export async function imageReferenceUpload(file) {
   if (!file.size || file.size > 30 * 1024 * 1024)
     throw new Error('每张参考图必须小于 30 MB。');
   return imageBytesDataUrl(new Uint8Array(await file.arrayBuffer()), file.type);
+}
+
+async function putTaskImage(bytes, mime, request) {
+  const reference = documentMediaReference(await imageBytesSha256(bytes), mime);
+  const confirmed = await imageAssetJson(reference, { method: 'PUT', headers: { 'content-type': mime }, body: bytes,
+    signal: AbortSignal.timeout(120000) }, request);
+  if (confirmed.media?.reference !== reference) throw new Error('参考图存储回执与原始文件不符。');
+  return reference;
+}
+
+export async function storeTaskImageReference(file, request = fetch) {
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('参考图仅支持 PNG、JPEG 和 WebP。');
+  if (!file.size || file.size > 30 * 1024 * 1024) throw new Error('每张参考图必须小于 30 MB。');
+  return putTaskImage(new Uint8Array(await file.arrayBuffer()), file.type, request);
+}
+
+export async function storeInlineTaskImages(input, request = fetch) {
+  if (Array.isArray(input.references) && input.references.length > 8) throw new Error('参考图最多 8 张。');
+  const freeze = async value => {
+    if (typeof value !== 'string' || !value.startsWith('data:')) return value;
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,([a-zA-Z0-9+/]+={0,2})$/.exec(value);
+    if (!match || match[2].length > Math.ceil(IMAGE_ASSET_MAX_BYTES / 3) * 4) throw new Error('图片数据无效或超过 40 MiB。');
+    const binary = atob(match[2]);
+    if (btoa(binary) !== match[2]) throw new Error('图片 base64 数据无效。');
+    return putTaskImage(Uint8Array.from(binary, char => char.charCodeAt(0)), match[1], request);
+  };
+  const next = { ...input };
+  for (const key of ['image', 'mask']) if (Object.hasOwn(input, key)) next[key] = await freeze(input[key]);
+  if (Array.isArray(input.references)) {
+    next.references = [];
+    for (const value of input.references) next.references.push(await freeze(value));
+  }
+  return next;
 }

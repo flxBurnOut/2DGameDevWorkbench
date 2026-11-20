@@ -33,7 +33,7 @@ authorization; do not invent a target PNG or silently generate it.
 '''
 
 
-def freeze_structure(service,selection,reference_sha256):
+def freeze_structure(service,selection,reference_sha256, *, object_type):
     if selection is None:return None
     from .structures import VisualStructures
     structures=VisualStructures(service);value=structures.view(selection.analysis_id)
@@ -42,7 +42,7 @@ def freeze_structure(service,selection,reference_sha256):
         raise ConflictError('所选角色结构已过期，请重新核对后选择；未调用模型')
     if doc['issues'] or not doc['confirmation'] or value['pending']:
         raise ValidationHarnessError('先确认已核对的角色结构，再用于制作；未知部位可保留')
-    if value['source']['sha256']!=reference_sha256:
+    if value['source'].get('object_type','character') != object_type or value['source']['sha256']!=reference_sha256:
         raise ConflictError('结构与本次角色原图不一致；未调用模型')
     parts={p['id']:p for p in doc['data']['parts']};geometry=[]
     for mask in doc['masks']:
@@ -164,3 +164,29 @@ def bind_planning_schema(schema_type,snapshot,*,stage_type='PlanStage'):
                             raise ValueError('structure_usage cites unavailable '+key)
             return self
     return BoundStructurePlan
+
+
+def prop_structure_problem(prop, snapshot):
+    if not snapshot:
+        if prop and prop.motion_type in {'hinge_rotation', 'deformation'}:
+            return '此运动需要已核对的部件结构。请解析或标注部件与锚点，确认结构并重新规划。'
+        return None
+    if not prop:
+        return '交互物方案缺少部件合同'
+    parts = {p['id'] for p in snapshot['data']['parts']}
+    moving, fixed = set(prop.moving_parts), set(prop.fixed_parts)
+    missing = sorted(parts - (moving | fixed))
+    unknown = sorted((moving | fixed) - parts)
+    shared = sorted(moving & fixed)
+    duplicates = len(moving) != len(prop.moving_parts) or len(fixed) != len(prop.fixed_parts)
+    if duplicates:
+        return '同一部件在所属清单内只能登记一次。'
+    if missing or unknown or shared:
+        return f'部件必须按结构 ID 唯一归类。遗漏 {missing}，未知 {unknown}，重复归类 {shared}。'
+    if prop.motion_type == 'hinge_rotation':
+        eligible = eligible_structure(snapshot)
+        pivots = {a['id'] for a in eligible['anchors'] if a['part_id'] in fixed}
+        endpoints = {g['part_id'] for g in snapshot['geometry']} & moving
+        if not prop.hinge or prop.hinge.pivot_anchor_id not in pivots or prop.hinge.endpoint_part_id not in endpoints:
+            return '铰接转动须引用固定部件上已核对的可见轴点和具有蒙版的运动端点部件。'
+    return None

@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("stage_assets", ROOT / ".agents/skills/forge-game-engineering/scripts/stage_assets.py")
@@ -82,42 +81,6 @@ class StagingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             self.sprite()
         self.assertEqual(marker.read_text(), "user project")
-
-    def test_current_map_package_stages_without_project_settings(self):
-        report = stage.stage_map(FIXTURES / "map.zip", self.root / "out", "LevelModule/Forest")
-        self.assertEqual(report["canvas"]["originX"], -96)
-        self.assertFalse((self.root / "out/LevelModule/Forest/project.godot").exists())
-        regions = json.loads((self.root / "out/LevelModule/Forest/regions.json").read_text())
-        self.assertEqual(regions["regions"][0]["points"][0], {"x": -96, "y": -16})
-        self.assertEqual((self.root / "out/LevelModule/Forest/assets/map_surface.png").read_bytes(), (FIXTURES / "map.png").read_bytes())
-
-    def bad_map(self, filename, data, pattern, remove=None):
-        target = self.root / "bad.zip"
-        with zipfile.ZipFile(FIXTURES / "map.zip") as source, zipfile.ZipFile(target, "w") as dest:
-            for name in source.namelist():
-                if name != filename and name != remove:
-                    dest.writestr(name, source.read(name))
-            dest.writestr(filename, data)
-        with self.assertRaisesRegex(ValueError, pattern):
-            stage.stage_map(target, self.root / "out", "LevelModule/Forest")
-        self.assertFalse((self.root / "out").exists())
-
-    def test_traversal_rejected(self):
-        self.bad_map("../escape.gd", "", "Unsafe")
-        self.assertFalse((self.root / "escape.gd").exists())
-
-    def test_unresolved_map_dependency_rejected(self):
-        self.bad_map("map_scene.tscn", '[ext_resource path="res://missing.png"]', "unresolved")
-
-    def test_foreign_map_format_not_silently_coerced(self):
-        self.bad_map("map_export.json", '{"format":"pixelwork-v2"}', "Unsupported")
-
-    def test_duplicate_case_paths_rejected(self):
-        self.bad_map("MAP_SCENE.TSCN", "", "case-colliding")
-
-    def test_missing_map_runtime_rejected(self):
-        self.bad_map("INSTALL.md", "", "Missing map resource", remove="frame_ronin_regions.gd")
-
 
 if __name__ == "__main__":
     unittest.main()

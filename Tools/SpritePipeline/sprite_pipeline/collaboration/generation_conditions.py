@@ -14,9 +14,7 @@ from ..errors import ValidationHarnessError
 
 VERSION = 1
 LIMIT = 1000
-# Policy 5 completed all four real planning roles on 2026-10-28. Earlier failed
-# policies remain frozen. This verifies planning, not a new animation quality gain.
-DEFAULT_GENERATION_POLICY = 5
+DEFAULT_GENERATION_POLICY = 6
 # Policy 2 reserves capacity mechanically. Full expert findings, requirements,
 # checkpoints' reasons and hold reasons remain available to planning/review.
 # These limits apply only to the strings actually sent for drawing.
@@ -31,10 +29,13 @@ TEXT_LIMITS = {
 
 
 def enabled(plan, policy_version):
-    return policy_version in (1,2,3,4,5) and plan.quality is not None and plan.quality.version == 4
+    return policy_version in (1,2,3,4,5,6) and plan.quality is not None and plan.quality.version == 4
 
 
 def condition_rows(plan, stage_index, *, policy_version=1):
+    if policy_version == 6:
+        from .structured_brief import checked_rows
+        return checked_rows(plan, stage_index)
     if policy_version in (3,4,5):
         from .executable_brief import rows
         return rows(plan,stage_index)
@@ -83,6 +84,9 @@ def condition_rows(plan, stage_index, *, policy_version=1):
 
 
 def compile_conditions(plan, stage_index, *, policy_version=1):
+    if policy_version == 6:
+        condition_rows(plan, stage_index, policy_version=6)
+        return plan.stages[stage_index].prompt
     if policy_version in (3,4,5):
         from .executable_brief import compile_brief
         return compile_brief(plan,stage_index)
@@ -117,13 +121,17 @@ def submission_conditions(binding, stage_index, prompt, first_sha256, last_sha25
         'structure_usage': stage.structure_usage.model_dump(mode='json') if stage.structure_usage else None,
         'structure_sha256': binding.visual_structure['sha256'] if binding.visual_structure else None,
         **({'coverage_kind':'coordinator-authored brief; source fields are context, not verbatim copies'} if version in (3,4,5) else {}),
+        **({'coverage_kind': 'approved coordinator fields assembled verbatim'} if version == 6 else {}),
     }
 
 
 def planning_instructions(legacy, *, policy_version=1):
     """Select only for a new, frozen policy; never rewrite old task prompts."""
-    if policy_version==3:
-        from .executable_brief import INSTRUCTIONS
+    if policy_version in (3, 6):
+        if policy_version == 6:
+            from .structured_brief import INSTRUCTIONS
+        else:
+            from .executable_brief import INSTRUCTIONS
         # Keep legacy string immutable. Remove conflicting length/compilation
         # advice only in this new policy, not by altering saved task data.
         start=legacy.index('Keep EACH contract field preferably')
@@ -134,6 +142,9 @@ def planning_instructions(legacy, *, policy_version=1):
         text=text[:start]+text[end:]
         text=text.replace('Total compiled prompt, including this hint and key poses, must stay under 1000 characters.',
                           'The complete executable brief has its own 1000-character limit; analysis is not appended.')
+        if policy_version == 6:
+            text = text.replace('Prompts must\nbe self-contained, at most 1000 characters each, and include relevant identity/facing.',
+                                'The assembled drawing brief must be self-contained and include the relevant identity and facing.')
         return text+'\n'+INSTRUCTIONS
     text = legacy.replace(
         'Keep EACH contract field preferably under 90 characters and each stage prompt under\n'

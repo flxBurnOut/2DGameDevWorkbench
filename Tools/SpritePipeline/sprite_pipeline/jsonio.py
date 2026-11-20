@@ -17,6 +17,18 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def replace_with_retry(source: str | Path, destination: Path) -> None:
+    """Retry the same atomic publication through transient Windows sharing errors."""
+    for attempt in range(8):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            if os.name != 'nt' or getattr(exc, 'winerror', None) not in {5, 32, 33} or attempt == 7:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
 def atomic_write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -26,18 +38,7 @@ def atomic_write_json(path: Path, data: Any) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        for attempt in range(8):
-            try:
-                os.replace(temp_name, path)
-                break
-            except PermissionError as exc:
-                # A concurrent read of job/summary JSON on Windows can briefly
-                # deny atomic replacement. Retry only the same local rename;
-                # this cannot repeat a provider call or overwrite a newer job
-                # because callers retain their mutation lock throughout.
-                if os.name != "nt" or getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 7:
-                    raise
-                time.sleep(0.01 * (attempt + 1))
+        replace_with_retry(temp_name, path)
     except Exception:
         try:
             os.unlink(temp_name)

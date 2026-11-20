@@ -1,24 +1,24 @@
 import type { RegionSpec } from './core.mjs';
 import type { PixelSpan } from './pixel-controller.mjs';
-import type { Interactable } from '../interactable-editor/contract.mjs';
+import { browserRequestJournal } from '../editor-documents/browser-journal';
+import { readPaidWorkspace } from '../workbench/paid-task.mjs';
+import { createLocalHistoryGuard } from '@/lib/workbench/browser-store';
+import { appearanceAnimation, type Interactable } from '../interactable-editor/contract.mjs';
 
 export type ImageTargetRef =
-  | { kind: 'map-layer'; projectId: string; tileKey: string; layer: 'overall' | 'surface' | 'object' | 'black' | 'white' }
   | { kind: 'interactable'; documentId: string; definitionId: string; slot?: 'visual' | 'toggle-state' | 'sequence-entry'; index?: number }
-  | { kind: 'image-task'; taskId: string }
-  | { kind: 'scene-layer'; documentId: string; layerId: string }
-  | { kind: 'scene-instance'; documentId: string; instanceId: string; slot?: 'visual' | 'toggle-state' | 'sequence-entry'; index?: number };
+  | { kind: 'motion-frame'; workId:string; workRevision:number; candidateIndex:number; stageIndex?:number; frameIndex:number }
+  | { kind: 'image-task'; taskId: string };
 export interface ImageTargetInfo {
   targetId: string; targetRef: ImageTargetRef; revision: number | string; sha256: string; rgbaSha256: string;
   width: number; height: number; editable: boolean; locked: boolean; kind: 'prop' | 'background'; name: string;
+  placement?: { width: number; height: number; x: number; y: number; flipH: boolean; flipV: boolean };
   slotFingerprint?: string; readOnlyReason?: string; source?: Record<string, unknown>; willStopDefaultAnimations?: boolean;
-  scope?: 'single-instance' | 'scene-snapshot-layer'; affectedInstanceIds?: string[]; sharedInstanceCount?: number;
-  sourceEntry?: { kind?: string; documentId?: string; layerId?: string; sourceField?: string; filename?: string; format?: string; sha256?: string; viewPath?: string; action?: string };
   aiEdit?: { supported: boolean; reason?: string; code?: string; provider: string; model?: string; width: number; height: number; minPixels: number; maxPixels: number; maxEdge: number; dimensionStep: number; maxAspectRatio: number; maxReferences: number; maxImageBytes: number; maxTotalImageBytes: number; constraints: { preserveOutsideRegion: true; preserveDimensions: true; preserveAlpha: boolean }; alphaPreservation?: 'copy-edit-base-alpha' };
 }
 export interface ImageAdoptionReceipt {
   target: ImageTargetInfo; revision: number | string; currentRevision: number | string; replayed?: boolean;
-  adoption: { status: 'adopted' | 'saved_variant'; targetId?: string; sourceTaskId?: string; sha256: string; revision?: number | string; commandId: string; documentId?: string; definitionId?: string; slot?: string; index?: number; assetId?: string; sourceChanged?: boolean; previewInvalidated?: boolean; scope?: 'single-instance' | 'scene-snapshot-layer'; affectedInstanceIds?: string[]; sharedInstanceCount?: number };
+  adoption: { status: 'adopted' | 'saved_variant'; targetId?: string; sourceTaskId?: string; sha256: string; revision?: number | string; commandId: string; documentId?: string; definitionId?: string; slot?: string; index?: number; assetId?: string; sourceChanged?: boolean; previewInvalidated?: boolean };
 }
 export interface ImageEditContextLayer { id?: string; url: string; x?: number; y?: number; width: number; height: number; opacity?: number; target?: boolean }
 export interface ImagePixels {
@@ -26,6 +26,10 @@ export interface ImagePixels {
   rgbaSha256: string; rgbaBase64: string; rgbaByteLength: number; pixelFormat: string;
 }
 export interface ImageCandidate {
+  visualReviewRefs?:string[];
+  attributePlan?: {planRef:string;part:string;policy:Record<string,string>;successCriteria:string[];referenceManifest?:{slot:number;role:'user-reference'|'rgb-control'|'clean-crop';width:number;height:number}[]};
+  recolorEvidence?: {route:string;clippedChannels:number;changedPixels:number};
+  reviews?: {verdict:string;reviewer:string;reviewerType:string;targetAchieved:boolean|null;preservedContent:boolean|null;boundaryAndAlpha:boolean|null}[];
   version: string; taskId?: string; status: string; createdAt: string; error?: string; derivedState?: boolean;
   operation: { type: string }; sha256?: string; rgbaSha256?: string; baseCandidateVersion?: string; previewPath?: string;
   constraints?: { preserveOutsideRegion: boolean; preserveDimensions: boolean; preserveAlpha: boolean };
@@ -34,7 +38,12 @@ export interface ImageCandidate {
 }
 export interface ImageCandidateDiff { changedPixelCount: number; changedOutsideRegion: number; alphaChangedPixelCount: number }
 export interface ImageEditSession {
+  mediaProtocol?: number;
+  partContexts?: {partRef:string;baseCandidateVersion:string;expectedEditRevision:number}[];
   editId: string; revision: number; target: ImageTargetInfo; source: { sha256: string; rgbaSha256: string };
+  comparison?: { editId: string; baseCandidateVersion: string; candidateVersion: string; targetRevision: number | string;
+    baseSha256: string; candidateSha256: string; width: number; height: number; viewport: { x: number; y: number; width: number; height: number };
+    beforePng: string; afterPng: string };
   candidates: ImageCandidate[]; adoptions: unknown[]; selectedVersion?: string; pixels?: ImagePixels;
 }
 export interface NamedImageRegion { regionId: string; name: string; spec: RegionSpec; stale?: boolean }
@@ -48,6 +57,7 @@ export interface ImageInspection extends Partial<ImagePixels> {
 }
 export type ImageLocalOperation =
   | { type: 'clean-alpha'; threshold: number }
+  | { type: 'palette-map'; pairs: { from: string; to: string }[] }
   | { type: 'replace-color'; from: string; to: string }
   | { type: 'fill'; x: number; y: number; rgba: [number, number, number, number] }
   | { type: 'erase' }
@@ -55,20 +65,36 @@ export type ImageLocalOperation =
   | { type: 'restore-region'; candidateVersion: string }
   | { type: 'pixel-patch'; baseRgbaSha256: string; spans: { startPixel: number; beforeRgbaBase64: string; afterRgbaBase64: string }[] };
 export type ImageAiOperation = { type: 'ai-edit'; prompt: string; references?: string[] };
-export type ImageEditOperation = ImageLocalOperation | ImageAiOperation;
+type ImageRecomposeOperation = { type: 'recompose-ai'; candidateVersion: string; rawSha256: string };
+export type SimpleColorMapping = 'rgb'|'luminance';
+export type ImageAttributeOperation = {type:'color-map';from:string;to:string;mapping?:SimpleColorMapping};
+export type ImageEditOperation = ImageLocalOperation | ImageAiOperation | ImageAttributeOperation | ImageRecomposeOperation;
 export interface ImageAiReference { id: string; name: string; source: string; bytes: number }
 export const IMAGE_AI_REFERENCE_LIMITS = Object.freeze({ count: 8, perImageBytes: 30 * 1024 * 1024, totalBytes: 32 * 1024 * 1024 });
 export class ImageEditClientError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) { super(message); this.name = 'ImageEditClientError'; }
 }
-export async function imageEditRequest<T>(operation: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`/api/workbench/image-edit/${operation}`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+export async function imageEditRequest<T>(operation: string, body: unknown, signal?: AbortSignal, workspaceId?: string): Promise<T> {
+  const route = workspaceId ? 'paid-' + operation : operation;
+  const response = await fetch(`/api/workbench/image-edit/${route}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...(workspaceId && { 'x-forge-workspace': workspaceId }) }, body: JSON.stringify(body),
     cache: 'no-store', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000),
   });
   const value = await response.json() as { error?: unknown; code?: string };
   if (!response.ok) throw new ImageEditClientError(typeof value.error === 'string' ? value.error : '局部调整请求未完成。', response.status, value.code);
   return value as T;
+}
+export async function submitImageAnalysis<T>(operation: 'part-suggest' | 'critic-run', ref: string, commandId: string): Promise<T> {
+  const journal = browserRequestJournal('image-analysis', operation + ':' + ref);
+  const input = operation === 'part-suggest' ? { partRef: ref, commandId } : { reviewRef: ref, commandId };
+  const request = (await journal.pending())?.request ?? { operation, input };
+  const workspaceId = await readPaidWorkspace();
+  const entry = await journal.begin(request, { workspaceId });
+  if (entry.workspaceId !== workspaceId)
+    throw new Error('请切回视觉分析的原工作区核对原请求。');
+  const result = await imageEditRequest<T>(operation, entry.request.input, undefined, workspaceId);
+  await journal.complete(entry.request);
+  return result;
 }
 export const imageGuards = (target: ImageTargetInfo) => ({ targetId: target.targetId, expectedRevision: target.revision, expectedSha256: target.sha256 });
 export const imageInspectInput = (target: ImageTargetRef, offset = 0) => ({ target, view: 'metadata' as const, includePixels: false, offset });
@@ -143,47 +169,23 @@ export function mergeImageWorkspaceRefresh<TController>(current: ImageWorkspaceS
 }
 export interface ImageSessionBootstrap { commandId: string; createInput?: ReturnType<typeof imageSessionInput>; editId?: string }
 export function imageTargetEquals(left: ImageTargetRef, right: ImageTargetRef) {
-  const normalize = (ref: ImageTargetRef) => JSON.stringify(Object.entries(['interactable', 'scene-instance'].includes(ref.kind) ? { ...ref, slot: 'slot' in ref ? ref.slot || 'visual' : 'visual' } : ref).filter(([, value]) => value !== undefined).sort(([first], [second]) => first.localeCompare(second)));
+  const normalize = (ref: ImageTargetRef) => {
+    const normalized = ref.kind === 'interactable' ? { ...ref, slot: ref.slot || 'visual' } : ref;
+    return JSON.stringify(Object.entries(normalized).filter(([, value]) => value !== undefined).sort(([first], [second]) => first.localeCompare(second)));
+  };
   return normalize(left) === normalize(right);
 }
-export function imageSlotChoices(object: Interactable, scene = false) {
-  const choices: { value: string; slot: 'visual' | 'toggle-state' | 'sequence-entry'; index?: number; label: string; available: boolean; reason?: string }[] = [{ value: 'visual', slot: 'visual', label: '默认图片', available: !!object.visual.assetId && !(scene && (object.visual.idleAnimation || object.visual.focusAnimation)), reason: !object.visual.assetId ? '没有静态源图片' : scene && (object.visual.idleAnimation || object.visual.focusAnimation) ? '场景默认外观使用动画，只读' : undefined }];
+export function imageSlotChoices(object: Interactable) {
+  const choices: { value: string; slot: 'visual' | 'toggle-state' | 'sequence-entry'; index?: number; label: string; available: boolean; reason?: string }[] = [{ value: 'visual', slot: 'visual', label: '默认图片', available: !!object.visual.assetId, reason: !object.visual.assetId ? '没有静态源图片' : undefined }];
   const entries = object.behavior.kind === 'toggle' ? object.behavior.states : object.behavior.kind === 'sequence' ? object.behavior.entries : [];
   entries.forEach((entry, index) => {
     const slot = object.behavior.kind === 'toggle' ? 'toggle-state' : 'sequence-entry';
-    const hasImage = !!(entry.appearance.assetId || object.visual.assetId), animated = !!(entry.appearance.animation || object.visual.idleAnimation);
+    const hasImage = !!(entry.appearance.assetId || object.visual.assetId), animated = !!appearanceAnimation(entry.appearance, object.visual);
     choices.push({ value: `${slot}:${index}`, slot, index, label: `${slot === 'toggle-state' ? `${index ? 'B' : 'A'} 状态` : `第 ${index + 1} 步`} · ${entry.name}${entry.appearance.assetId ? '' : '（继承默认图）'}`, available: hasImage && !animated, reason: animated ? '此状态使用动画，只读' : !hasImage ? '没有静态源图片' : undefined });
   });
   return choices;
 }
-export function validateSceneImageReceipt(target: ImageTargetRef, receipt: ImageAdoptionReceipt) {
-  if (!['scene-instance', 'scene-layer'].includes(target.kind) || !imageTargetEquals(target, receipt.target.targetRef) || typeof receipt.revision !== 'number' || receipt.currentRevision !== receipt.revision) throw new Error('已采用结果与选中的场景图片或共享版本不匹配。');
-  if (target.kind === 'scene-instance' && (receipt.adoption.scope !== 'single-instance' || receipt.adoption.affectedInstanceIds?.length !== 1 || receipt.adoption.affectedInstanceIds[0] !== target.instanceId)) throw new Error('实例采用作用域不匹配，未替换本机场景。');
-}
-export interface ImageSourceActionState { busy: boolean; pending: boolean; pixelDirty: boolean; aiDraftDirty: boolean; referencesLoading: boolean }
-export function imageSourceActionBlockReason(state: ImageSourceActionState, opensEditor: boolean) {
-  if (state.busy || state.pending || state.referencesLoading) return '请等待当前请求或参考图读取完成，再打开或下载源包。';
-  if (opensEditor && (state.pixelDirty || state.aiDraftDirty)) return '请先保存笔划并提交 AI 草稿，或关闭调整窗口并确认舍弃未保存内容，再打开源包。';
-  return '';
-}
-export async function performImageSourceAction(target: ImageTargetInfo, state: ImageSourceActionState, opensEditor: boolean, action: (target: ImageTargetInfo) => void | Promise<void>) {
-  const reason = imageSourceActionBlockReason(state, opensEditor);
-  if (reason) throw new Error(reason);
-  await action(target);
-}
-/** Verify the exact snapshot bytes that will be handed off, rather than a newer metadata label. */
-export async function verifiedSceneImageSource(target: ImageTargetInfo, snapshot: { id: string; revision: number | string; content: { map: { source: string; layers: { id: string }[] } | null } }) {
-  const ref = target.targetRef, entry = target.sourceEntry, map = snapshot.content.map;
-  if (ref.kind !== 'scene-layer' || !map || ref.documentId !== snapshot.id || entry?.documentId !== snapshot.id || entry.layerId !== ref.layerId || entry.kind !== 'embedded-map-source' || entry.sourceField !== 'map.source' || !map.layers.some(layer => layer.id === ref.layerId)) throw new Error('源包所属场景或图层不匹配；请关闭调整窗口并刷新宿主场景。');
-  if (target.revision !== snapshot.revision || !entry.sha256 || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error('源包版本与当前宿主场景不一致；请关闭调整窗口并刷新宿主场景。');
-  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(map.source);
-  if (!match) throw new Error('宿主未持有可验证的嵌入源包；请刷新宿主场景。');
-  const binary = atob(match[2]), bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  if (await rgbaHash(bytes) !== entry.sha256) throw new Error('嵌入源包内容已变化，与当前图片来源证据不一致；请关闭调整窗口并刷新宿主场景。');
-  return { source: map.source, blob: new Blob([bytes], { type: match[1] }) };
-}
-export async function openImageSession(target: ImageTargetRef, attempt: ImageSessionBootstrap) {
+export async function openImageSession(target: ImageTargetRef, attempt: ImageSessionBootstrap, create?: (input: ReturnType<typeof imageSessionInput>) => Promise<{ edit: ImageEditSession }>) {
   if (attempt.editId) {
     const { edit } = await readImageEdit(attempt.editId);
     if (!imageTargetEquals(target, edit.target.targetRef)) throw new Error('会话属于另一图片目标，未打开历史。');
@@ -195,7 +197,7 @@ export async function openImageSession(target: ImageTargetRef, attempt: ImageSes
   }
   const inspection = await inspectImage(target);
   attempt.createInput ||= imageSessionInput(inspection.target, attempt.commandId);
-  const { edit } = await imageEditRequest<{ edit: ImageEditSession }>('session-create', attempt.createInput);
+  const { edit } = await (create ? create(attempt.createInput) : imageEditRequest<{ edit: ImageEditSession }>('session-create', attempt.createInput));
   attempt.editId = edit.editId;
   return { inspection, edit };
 }
@@ -213,7 +215,9 @@ export function base64ToBytes(encoded: string, maximumLength = 45_000_000) {
   return bytes;
 }
 export async function rgbaHash(pixels: Uint8Array | Uint8ClampedArray) {
-  const bytes = new Uint8Array(pixels);
+  const bytes = pixels.buffer instanceof ArrayBuffer
+    ? new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength)
+    : new Uint8Array(pixels);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
@@ -268,26 +272,35 @@ export async function listImagePixelDrafts(editId: string) {
   }); } finally { database.close(); }
 }
 const draftWrites = new Map<string, Promise<void>>();
-async function writeImagePixelDraft(draft: ImagePixelDraft | null, key: string) {
+async function writeImagePixelDraft(draft: ImagePixelDraft | null, key: string, assertCurrent: () => void) {
+  assertCurrent();
   if (draft && new TextEncoder().encode(JSON.stringify(draft)).byteLength > 2 * 1024 * 1024) throw new Error('本机草稿超过 2 MiB；请先保存笔划为候选。');
   const database = await draftDatabase();
   try { await new Promise<void>((resolve, reject) => {
+    assertCurrent();
     const transaction = database.transaction('drafts', 'readwrite');
     const store = transaction.objectStore('drafts');
+    let failure: unknown;
     if (draft) {
       const read = store.getAllKeys();
       read.onsuccess = () => {
-        if (read.result.length >= 12 && !read.result.includes(key)) { transaction.abort(); reject(new Error('本机已保留 12 份笔划草稿；请先保存或明确删除旧草稿。')); }
-        else store.put(draft);
+        try {
+          assertCurrent();
+          if (read.result.length >= 12 && !read.result.includes(key)) throw new Error('本机已保留 12 份笔划草稿；请先保存或明确删除旧草稿。');
+          store.put(draft);
+        } catch (cause) { failure = cause; transaction.abort(); }
       };
     } else store.delete(key);
-    transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error);
+    transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(failure || transaction.error);
+    transaction.onabort = () => reject(failure || transaction.error || new Error('本机笔划草稿保存已中断，请重试。'));
   }); } finally { database.close(); }
 }
 /** Serialize cleanup behind prior writes so a late draft cannot resurrect after saving. */
 export async function saveImagePixelDraft(draft: ImagePixelDraft | null, key: string) {
+  const assertCurrent = createLocalHistoryGuard();
+  assertCurrent();
   const previous = draftWrites.get(key) || Promise.resolve();
-  const pending = previous.catch(() => undefined).then(() => writeImagePixelDraft(draft, key));
+  const pending = previous.catch(() => undefined).then(() => writeImagePixelDraft(draft, key, assertCurrent));
   draftWrites.set(key, pending);
   try { await pending; } finally { if (draftWrites.get(key) === pending) draftWrites.delete(key); }
 }

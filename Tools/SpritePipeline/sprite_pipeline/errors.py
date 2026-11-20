@@ -21,6 +21,14 @@ class ValidationHarnessError(HarnessError):
     code = "validation_error"
 
 
+class InvalidPlanningResponse(ValidationHarnessError):
+    """A completed response rejected by the planning contract."""
+
+    def __init__(self, message: str, *, details: dict[str, Any], draft: dict[str, Any] | None = None):
+        super().__init__(message, details=details)
+        self.draft = draft  # In-memory correction context, never part of as_dict or the receipt.
+
+
 class NotFoundError(HarnessError):
     code = "not_found"
 

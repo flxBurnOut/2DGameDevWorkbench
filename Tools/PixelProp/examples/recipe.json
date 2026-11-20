@@ -1,0 +1,14 @@
+{
+  "size": 128,
+  "padding": 4,
+  "fit": "contain",
+  "anchor": "bottom",
+  "resample": "area",
+  "alphaThreshold": 128,
+  "colors": 24,
+  "palette": null,
+  "dither": false,
+  "removeIsolated": true,
+  "outline": "none",
+  "background": "alpha"
+}

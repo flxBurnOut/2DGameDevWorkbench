@@ -1,6 +1,8 @@
-# Forge — 2D game dev workbench
+# Forge — 论文分支 paper-vbyc
 
-Forge 是面向 2D 游戏美术制作与工程交接的本地工作台，也是 2026 腾讯云黑客松参赛项目。创作者通过“角色美术”和“场景”制作资产，通过“资产库”查找与下载已有作品；WorkBuddy、Codex 等外部 Agent 通过项目 MCP 和 Skills 协作。网页负责编辑、预览、审查和导出，主 Agent 在外部客户端运行。
+本分支用于 *Verify Before You Chain* 论文开发，保留序列帧、交互物编辑器、图片局部调整及共用底座。完整工作台与原参赛功能保存在 [new-arch](https://github.com/aaaarthur666-design/2DGameDevWorkbench/tree/new-arch)；实施进度与后续前提见[论文分支执行计划](docs/论文分支执行计划.md)。
+
+Forge 是面向 2D 游戏美术制作与工程交接的本地工作台。创作者通过“角色美术”和“交互物”制作资产，通过“资产库”查找与下载已有作品；WorkBuddy、Codex 等外部 Agent 通过项目 MCP 和 Skills 协作。网页负责编辑、预览、审查和导出，主 Agent 在外部客户端运行。
 
 完整流程见 [使用与操作手册](docs/operations-manual.md)，公开功能文档见 [文档中心](docs/README.md)。外部 Agent 通过 MCP discovery 与项目 Skills 获取使用流程。
 
@@ -10,17 +12,17 @@ Forge 是面向 2D 游戏美术制作与工程交接的本地工作台，也是 
 | --- | --- | --- |
 | 角色原图 | PixelLab 生成 128×128 透明角色图，移送为动画参考 | MCP 生成、查询和移送；共用序列帧 Key |
 | 序列帧 | 生成候选、播放检查、逐帧修补、审核，导出 PNG 和 Godot SpriteFrames ZIP | MCP 覆盖清单内生成、检查、审核、恢复和导出；像素编辑等操作在原生界面 |
-| 地图 | 生成中心原图、参考扩图、手动拼接、分层与碰撞，导出编辑源和 Godot 包 | 手动前端流程；MCP 不执行地图制作 |
-| 交互物 | 查看、切换、拾取、序列行为，源工程与 Godot 资源包 | MCP 模板、save-project、export-godot；通用或 CopyWorms 兼容包 |
-| 场景组装 | 摆放已完成地图和交互物、调整遮挡、导出完整场景 | 手动网页模块，不是 MCP 生产能力 |
+| 交互物动画 | 以状态图制作开关、点亮等状态动画，逐段检查，用固定部件回填、对齐、倒放等工具修正，写回切换或序列物件 | 同一 `sprite-generator` 作品；MCP 支持状态骨架、分段检查、写回与绑定查询；派生素材只在网页面板创建 |
+| 交互物 | 查看、切换、拾取、序列行为，源工程与 Godot 资源包 | MCP 模板、save-project、export-godot，以及共享工程的文档命令；通用 Godot 包 |
+| 图片生成与局部调整 | 生成透明物品；对已有图片做替色、擦除、蒙版内生成编辑，候选经核验后采用；导入 128 px 物品原图，或用 PixelProp 把大图转换为 128 px 动画参考 | `image-assets` 与图片编辑工具，详见[图片局部调整](docs/image-editing.md)；导入与转换为 `reference-art` 本地操作，PixelProp 也可单独用命令行调用 |
 | 资产库 | 分页查找已有作品、准确定位候选、勾选下载真实素材 ZIP | 三个只读资产工具；范围不含浏览器草稿和外部工程 |
-| 游戏工程 Skill | 按 CopyWorms 方法整理已就绪资产、设计架构并写 Godot 4.7 脚本 | 外部 Agent 在获授权目标工程中实施；不是新的 MCP 生图工具 |
+| 游戏工程 Skill | 按目标工程接入已就绪资产、设计架构并写 Godot 4.7 脚本 | 外部 Agent 在获授权目标工程中实施；不是新的 MCP 生图工具 |
 
-地图原图与扩图支持清单配置的 Nano Banana 2、GPT Image 2 和混元 Image 3.0（`hy-image-v3`）。混元生图适配范围是地图，角色原图和动画继续使用 PixelLab。地图手动边界同样适用于 CLI、HTTP 和浏览器工具。
+角色原图和动画使用 PixelLab；透明物品与静态图的生成式编辑使用清单声明的图片服务。128×128 物品原图（PixelLab 生成、本地导入或 PixelProp 转换后人工确认）可移送为交互物动画参考，确认的状态图与过渡可写回交互物；真实生成下的跨段状态链有效性，以及导入/转换参考图的动画效果仍待验证。
 
 ## 本地启动
 
-需要 Node.js 22.13+。角色原图与序列帧还需要 Python 3.11+；CI 使用 Python 3.12。在仓库根目录运行：
+需要 Node.js 22.13+。角色原图与序列帧还需要 Python 3.11+。在仓库根目录运行：
 
 ```sh
 npm ci
@@ -28,7 +30,7 @@ npm run sprite-pipeline:setup
 npm run dev
 ```
 
-首次 setup 创建 `Tools/SpritePipeline/.venv` 并安装锁定的 Python 依赖，不修改系统 Python。后续通常只需 `npm run dev`。只使用地图、交互物和场景时可跳过 Python setup，运行 `npm run dev:interactable`。
+首次 setup 创建 `Tools/SpritePipeline/.venv` 并安装锁定的 Python 依赖，不修改系统 Python。后续通常只需 `npm run dev`。只使用交互物和静态图片编辑时可跳过 Python setup，运行 `npm run dev:interactable`。
 
 | 服务 | 默认地址 | 说明 |
 | --- | --- | --- |
@@ -40,10 +42,8 @@ npm run dev
 
 ## 界面入口
 
-- `/player`：角色美术，进入 `/tools/reference-art` 或 `/tools/sprite-generator`。
-- `/scene`：地图原图、地图拼接、交互物和场景组装入口。
-- `/tools/map-stitcher`：手动地图编辑器；`/tools/interactable-editor`：交互物编辑器。
-- `/tools/scene-composer`：场景组装；`/assets`：资产库；`/advanced`：服务与执行详情。
+- `/`：首页，直接进入角色原图 `/tools/reference-art`、角色动画 `/tools/sprite-generator` 和交互物编辑器 `/tools/interactable-editor`，并列出最近的作品与素材。
+- `/assets`：资产库；`/advanced`：服务与执行详情。
 
 单纯打开功能、浏览作品或讨论方案不创建任务。制作记录汇总可继续的工作，资产库面向实际作品，二者数量不相等。
 
@@ -56,9 +56,9 @@ WorkBuddy 在首次用户消息后检查并启动前端，再调用它自己的 
 两个项目 Skills 分工如下：
 
 - [2d-game-workbench](.agents/skills/2d-game-workbench/SKILL.md)：资产制作、审查、查找、预览、下载和交接。
-- [forge-game-engineering](.agents/skills/forge-game-engineering/SKILL.md)：消费已有资产，保留 CopyWorms 角色帧、动作计时、地图实例化与生命周期契约。
+- [forge-game-engineering](.agents/skills/forge-game-engineering/SKILL.md)：消费已有资产，保留角色帧、动作计时、交互物运行时及目标工程契约。
 
-MCP 不可用时可用同一运行时 CLI（仍遵守用户限制及手动地图边界）：
+MCP 不可用时可用同一运行时 CLI（仍遵守用户限制）：
 
 ```sh
 npm run workbench -- list --json
@@ -70,17 +70,17 @@ npm run workbench -- doctor --json
 
 ## 配置与数据
 
-PixelLab Key 在原图或序列帧设置中保存一次，两处共用；由 SpritePipeline 受保护存储持久保存，`PIXELLAB_API_KEY` 可覆盖。地图设置中的 Key 目前只在 Bridge 进程内；需要跨重启保留时将对应变量写入未提交的本机 `.env`，参考 [.env.example](.env.example)。混元使用 `TOKENHUB_API_KEY` 和 `MAP_STITCHER_IMAGE_PROVIDER=hunyuan-image-3`。密钥不得写入浏览器存储、任务、产物或日志。
+PixelLab Key 在原图或序列帧设置中保存一次，两处共用；由 SpritePipeline 受保护存储持久保存，`PIXELLAB_API_KEY` 可覆盖。图片服务设置使用受保护的本机持久存储，兼容读取原配置；也可使用未提交的本机 `.env`，参考 [.env.example](.env.example)。密钥不得写入浏览器存储、任务、产物或日志。
 
-`work/tasks/` 保存共享执行记录；`work/sprite-pipeline/` 保存原生作业、角色及配置；`outputs/` 保存真实产物；地图、交互物和场景草稿在当前浏览器 origin 的 IndexedDB。迁移前导出编辑源，并备份磁盘数据。列表缺项或服务离线不等于文件丢失。详见 [资产目录](docs/asset-catalog.md)。
+`work/tasks/` 保存共享执行记录；`work/sprite-pipeline/` 保存原生作业、角色及配置；`outputs/` 保存真实产物；交互物草稿在当前浏览器 origin 的 IndexedDB。迁移前导出编辑源，并备份磁盘数据。列表缺项或服务离线不等于文件丢失。详见 [资产目录](docs/asset-catalog.md)。
 
 ## 目录与维护
 
-`workbench/manifest.json` 是公共能力清单；`lib/workbench/` 提供运行时和适配器；`app/` 与 `components/` 是界面；`features/` 是地图、交互物与场景算法；`Tools/SpritePipeline/` 为集成组件。生产数据 `work/`、`outputs/` 和凭据不提交。
+`workbench/manifest.json` 是公共能力清单；`lib/workbench/` 提供运行时和适配器；`app/` 与 `components/` 是界面；`features/` 是图片编辑、交互物与交付算法；`Tools/SpritePipeline/` 为集成组件。生产数据 `work/`、`outputs/` 和凭据不提交。
 
-`sprite-pipeline` 适配器把 Manifest 的 camelCase 输入转换成 Python `/v1/jobs` 协议；`map-stitcher` 适配器在本地执行 `compose`，仅在 `generate-layer` 时调用所选官方图片 API。也可以在地图设置窗口保存密钥：它持久保存在被 Git 忽略的本机配置文件中，重启后自动恢复；Windows 使用当前账户加密，macOS 使用钥匙串保护，其他系统使用权限受限的文件。服务端不会把密钥回传给页面，也不会写入任务记录或日志。完整请求与响应约定见 [`docs/connector-contract.md`](docs/connector-contract.md)。
+`sprite-pipeline` 适配器把 Manifest 的 camelCase 输入转换成 Python `/v1/jobs` 协议。图片服务设置可以保存密钥：它持久保存在被 Git 忽略的本机配置文件中，重启后自动恢复；Windows 使用当前账户加密，macOS 使用钥匙串保护，其他系统使用权限受限的文件。服务端不会把密钥回传给页面，也不会写入任务记录或日志。完整请求与响应约定见 [`docs/connector-contract.md`](docs/connector-contract.md)。
 
-安全与凭据说明见 [安全策略](SECURITY.md)。本仓库以 [MIT](LICENSE) 发布；组件来源、上游同步基线与 CopyWorms 复用边界见 [第三方声明](THIRD_PARTY_NOTICES.md)。本地集成更新不代表独立上游仓库已同步。
+安全与凭据说明见 [安全策略](SECURITY.md)。本仓库以 [MIT](LICENSE) 发布；组件来源、上游同步基线与 CopyWorms 参考来源见 [第三方声明](THIRD_PARTY_NOTICES.md)。本地集成更新不代表独立上游仓库已同步。
 
 导出到已有游戏：在 Godot 导出窗口选择项目，后续资源安装、场景挂载和脚本连接由 WorkBuddy 按 [游戏交付流程](docs/godot-delivery.md)完成。
 
@@ -88,4 +88,4 @@ PixelLab Key 在原图或序列帧设置中保存一次，两处共用；由 Spr
 
 本仓库分发工作台源码、测试夹具、使用文档和产品 Skills。个人游戏工程、生成资产、导入包、演示材料、内部开发说明及工作记录保留在本机，不随源码分发。首次使用请上传自己的角色参考图或通过原图模块创建；`diagnostic_dummy` 仅用于测试。
 
-忽略规则阻止本机资料被常规提交；`npm run check:public` 与 CI 同时检查已跟踪文件，拦截误用强制添加的情况。
+忽略规则阻止本机资料被常规提交。CI 在 Node.js 22.13.0 和 24 上运行 `npm run check:public` 与工作台功能测试。`check:public` 核对已跟踪文件，拦截强制添加的本机资料。Python 和跨平台门禁见[开发导航](workbench/guides/development.md)。

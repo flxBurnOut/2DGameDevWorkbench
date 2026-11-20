@@ -1,0 +1,120 @@
+{
+  "source_commit": "f21e9ecf9a52fea7f01c22419ca344b8bbd0a15f",
+  "task_spec": {
+    "input": {
+      "character_id": "test_hero",
+      "description": "角色摘帽后鞠躬，结束时保持低头",
+      "provider": "fixture",
+      "review_protocol": "baseline"
+    },
+    "dump": {
+      "character_id": "test_hero",
+      "description": "角色摘帽后鞠躬，结束时保持低头",
+      "ending": "",
+      "return_to_reference": false,
+      "loop": false,
+      "fps": 12.0,
+      "timing_mode": "auto",
+      "candidate_count": 1,
+      "seed": null,
+      "budget": {
+        "max_planning_calls": 8,
+        "max_generation_calls": 4,
+        "max_review_calls": 10
+      },
+      "provider": "fixture",
+      "review_protocol": "baseline"
+    },
+    "request_fingerprint": "c3ad0ae584437c74c45d65d33eb865ca5c15b41d8e1d0428eb781d8d880e1856"
+  },
+  "generation_request": {
+    "input": {
+      "character_id": "test_hero",
+      "action_id": "walk",
+      "provider": "fixture",
+      "request_key": "legacy-identity-key"
+    },
+    "dump": {
+      "schema_version": 1,
+      "character_id": "test_hero",
+      "action_id": "walk",
+      "open_plan": null,
+      "attack_segment": null,
+      "motion_repair": null,
+      "provider": "fixture",
+      "candidate_count": 1,
+      "seed": null,
+      "frame_count": null,
+      "action_description": null,
+      "loop": null,
+      "request_key": "legacy-identity-key"
+    },
+    "request_fingerprint": "17a0e083583aeb2de1182569d6d92290ed08da533e8f6efc1f11512788fd3307"
+  },
+  "character_preset": {
+    "input": {
+      "schema_version": 1,
+      "character_id": "diagnostic_dummy",
+      "display_name": "Diagnostic Dummy (not game art)",
+      "cell_width": 64,
+      "cell_height": 64,
+      "facing": "right",
+      "reference_frame": "idle_reference.png",
+      "master": null,
+      "palette": null,
+      "silhouette": null,
+      "identity_description": "A simple cyan and navy side-view diagnostic robot with a short straight training blade. Preserve its block proportions and limited colors. This is test data, not production game art.",
+      "anchor": {
+        "x": 32,
+        "ground_y": 57
+      },
+      "safe_margin": 4,
+      "sheet_columns": 4,
+      "transparent_background": true,
+      "qa": {
+        "duplicate_run_length": 3,
+        "area_change_ratio": 0.35,
+        "centroid_shift_px": 4.0,
+        "palette_mismatch_ratio": 0.35,
+        "palette_distance": 48.0,
+        "loop_difference_ratio": 0.35,
+        "ground_y_tolerance_px": 2,
+        "rigid_translation_tolerance_px": 2,
+        "alpha_visible_threshold": 1
+      }
+    },
+    "dump": {
+      "schema_version": 1,
+      "character_id": "diagnostic_dummy",
+      "display_name": "Diagnostic Dummy (not game art)",
+      "cell_width": 64,
+      "cell_height": 64,
+      "facing": "right",
+      "weapon_hand": "reference",
+      "reference_frame": "idle_reference.png",
+      "master": null,
+      "palette": null,
+      "silhouette": null,
+      "identity_description": "A simple cyan and navy side-view diagnostic robot with a short straight training blade. Preserve its block proportions and limited colors. This is test data, not production game art.",
+      "anchor": {
+        "x": 32,
+        "ground_y": 57
+      },
+      "safe_margin": 4,
+      "sheet_columns": 4,
+      "transparent_background": true,
+      "qa": {
+        "duplicate_run_length": 3,
+        "area_change_ratio": 0.35,
+        "centroid_shift_px": 4.0,
+        "palette_mismatch_ratio": 0.35,
+        "palette_distance": 48.0,
+        "loop_difference_ratio": 0.35,
+        "ground_y_tolerance_px": 2,
+        "rigid_translation_tolerance_px": 2,
+        "alpha_visible_threshold": 1
+      }
+    },
+    "dump_hash": "e575dfd0797ab1c46258b7ecfc27b4bf5010cd23941dc5032f40c464fa002298"
+  }
+}

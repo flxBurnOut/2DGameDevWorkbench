@@ -159,6 +159,14 @@ class ReferenceDifference(Contract):
 class HingeMeasurement(Contract):
     pivot_anchor_id: str
     endpoint_part_id: str
+    rotation_plane: Literal['in_plane', 'out_of_plane'] = 'in_plane'
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_hinge(self, handler):
+        data = handler(self)
+        if self.rotation_plane == 'in_plane':
+            data.pop('rotation_plane', None)
+        return data
 
 
 class InteractableMotion(Contract):

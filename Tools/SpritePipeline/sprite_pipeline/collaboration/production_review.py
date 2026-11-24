@@ -153,7 +153,8 @@ class ProductionReview:
                 lambda: self.native(self.s.store.load(self.job_id))['requests'],
                 visibility_version=job.request.open_plan.visibility_review_version)
             from .prop_measurements import guard_measurements
-            selected = guard_measurements(selected, tracked)
+            probe_cues = tracked or self.native(job).get('motion_evidence', {}).get('character_probes')
+            selected = guard_measurements(selected, probe_cues)
             if selected.get('requires_human_adjudication'):
                 self.persist(requires_human_adjudication=selected['requires_human_adjudication'])
             # Keep the flat native request ledger untouched for budgets/history.

@@ -1168,3 +1168,39 @@ def test_retrospective_handles_inherited_repairs_rejected_human_seconds_and_blin
     assert items[0]['loop'] is False
     html = (pack / 'index.html').read_text(encoding='utf8')
     assert '播完即停' in html and 'resize' in html
+
+
+def test_retrospective_and_legacy_export_compute_objective_drift_metrics(chain, tmp_path):
+    service, work, engine, provider, client = chain
+    finish(chain)
+    ws = OpenMotionWorkspace(service)
+    job_dir = service.store.job_dir(work.job_id)
+    export_dir = tmp_path / 'full-drift-export'
+    retrospective(job_dir, ws.load(work.id).model_dump(mode='json'), tmp_path / 'none', export_dir)
+    exported = json.loads((export_dir / 'retrospective.json').read_bytes())
+
+    assert all(stage['drift_source'] == 'accepted' and stage['drift'] is not None for stage in exported['stages'])
+    stage0_drift = exported['stages'][0]['drift']
+    # finish(chain) accepts stage 0 at anchor_frame=2, retaining 3 accepted frames in stage 0.
+    assert len(stage0_drift['frames']) == len(exported['stages'][0]['accepted']) == 3
+    assert all(
+        {'frame', 'ground_y_delta_px', 'area_change_ratio', 'silhouette_iou', 'palette_deviation_ratio'} <= set(row)
+        for row in stage0_drift['frames']
+    )
+    assert all(0.0 <= row['silhouette_iou'] <= 1.0 for row in stage0_drift['frames'])
+    assert stage0_drift['summary']['min_silhouette_iou'] <= stage0_drift['summary']['mean_silhouette_iou'] <= 1.0
+
+    clip_drift = exported['clips'][0]['drift']
+    assert clip_drift['frame_count'] == len(exported['clips'][0]['frames'])
+    assert clip_drift['summary']['end_silhouette_iou'] == clip_drift['frames'][-1]['silhouette_iou']
+
+    # Legacy export also attaches clip-level drift relative to input/reference.png.
+    legacy_dir = tmp_path / 'legacy-job'
+    shutil.copytree(job_dir, legacy_dir)
+    record = json.loads((legacy_dir / 'job.json').read_bytes())
+    record['request']['open_plan'] = None
+    (legacy_dir / 'job.json').write_text(json.dumps(record), encoding='utf8')
+    legacy_out = tmp_path / 'legacy-drift-export'
+    legacy_result = legacy_export(legacy_dir, legacy_out)
+    assert legacy_result['clips'][0]['drift']['frame_count'] == len(legacy_result['clips'][0]['frames'])
+    assert legacy_result['clips'][0]['drift']['summary']['mean_silhouette_iou'] is not None

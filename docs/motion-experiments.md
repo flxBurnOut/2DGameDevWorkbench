@@ -77,7 +77,7 @@ EXP model-only ROOT COPY_ID --authorize-paid-calls
 | 只允许整段重画 | `EXP clone … --repair-policy redraw_only`。副本上确定性编辑、受限生成和局部段内重画一律拒绝，只允许覆盖当前段最大合法偶数可编辑窗口的重画（首尾都锁时为全部 $N-2$ 帧；仅锁首帧时允许头/尾对齐的 $N-2$ 帧；存在内部 `state_checkpoint` 时取其前序可播放区间的最大合法偶数窗，且均需 $\ge 4$ 帧） | 是 |
 | 加 / 不加角色结构 | 规划作品时是否附带视觉结构，各建一个作品 | 是 |
 
-前四项由已保存的复核报告离线重新计算（并输出逐维 `checks_by_condition`，可直接输入支持角色与交互物双口径的 `review_evaluation.score_reviews`），不调用模型。其中 `without_probes` 只要报告含 `checks` 即可计算；`baseline_only`、`without_retention` 与 `final_review_wins` 仅在采用专家协议且复核完整结束时非 `null`。注意离线重算衡量的是段级决策敏感性，且 `without_probes` 仅撤回末端降级（未重跑去除 `tracked_parts` 上下文提示的 VLM 条件）。
+前四项由已保存的复核报告离线重新计算（并输出逐维 `checks_by_condition`，可直接输入支持角色与交互物双口径的 `review_evaluation.score_reviews` 与 `risk_coverage_curve`），不调用模型。其中 `without_probes` 与 `without_retention` 同时覆盖交互物 `tracked_parts` 与角色 `character_probes` 两类确定性探针覆写；只要报告含 `checks` 即可计算 `without_probes`，而 `baseline_only`、`without_retention` 与 `final_review_wins` 仅在采用专家协议且复核完整结束时非 `null`。角色侧 `character_probes` 不注入独立专家提示词，因此 `without_probes` 在角色上无额外提示词泄露；交互物侧则沿用原先说明（未重跑去除 `tracked_parts` 上下文提示的 VLM 条件）。
 
 ## 人工时间与回顾性导出
 
@@ -105,6 +105,7 @@ EXP export-legacy /absolute/jobs/JOB /absolute/new-export
 - 回顾读取原始轮询回执时，会核对正常响应以及旧 HTTP 错误回执所嵌套的响应中的作业编号。出现冲突会终止本次导出，错误详情给出请求编号和响应编号，供对照原始记录。
 - v3 模型组的 `drawing_frame_budget` 列出已请求帧数、待执行必需片段预留帧数与冻结上限。复查历史运行时，使用原作业和对应作品版本重新执行 `export` 到新目录，再从新导出构建盲评包。若两项帧数之和超限，或首审仅有技术失败却继续生成，导出的播放帧可供核查，盲评私钥将该运行纳入排除清单及可用率分母。历史回包中未归档的图像无法通过回顾导出恢复。
 - `cost` 的调用次数与原生预算账本同口径，另加关联的独立修改调用。每个提交、轮询和归档回执归入同一次尝试。被拒绝的修补与备选保留已确认的用量和通过格式校验的原始帧，重启后可从已保存的原始结果继续。美元和额度分别汇总。缺少美元价格的调用计入 `unpriced_calls`，此时 `total_usd` 为 null。未知人工用时单独计数，`known_human_seconds` 是已记录小计。
+- `stages[].drift`（`export` 开放动作各段，优先读取 `accepted` 帧并记 `drift_source='accepted'`，否则读取有效原始帧记 `'raw'`）与 `clips[].drift`（`export` 与 `export-legacy` 的播放候选）由 `sequence_drift_metrics` 本地离线计算，输出逐帧及汇总（最大/均值/末帧）相对于 `input/reference.png` 的地面基线偏移 `ground_y_delta_px`、前景面积变化率 `area_change_ratio`、轮廓交并比 `silhouette_iou` 与调色板偏离度 `palette_deviation_ratio`，不改变原作业文件也不调用任何模型。
 - 派生作业包含来源作业继承的预算记录，跨多个版本统计时需按来源请求去重。
 
 ## 匿名播放包

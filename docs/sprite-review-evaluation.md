@@ -5,6 +5,7 @@
 ## 正式流程与兼容性
 
 - 每次检查保留原两次观察/审核，再运行两个独立角色；存在争议才追加至多一次复核。各角色使用已配置的 `reviewer` 模型和受保护 Key，不必新增凭据，也不代表多个不同模型。
+- 角色分段与整段检查同步经 [character_measurements.py](../Tools/SpritePipeline/sprite_pipeline/collaboration/character_measurements.py) 复用 [frame_checks.py](../Tools/SpritePipeline/sprite_pipeline/processing/frame_checks.py) 的地面基线偏移（仅 `grounded=true`）、面积变化、调色板偏离及质心/位移跳变指标，以 `character_probes` 字段接入 `guard_measurements` 弃权守卫，而不注入独立专家提示词；交互物 `HingeMeasurement` 支持 `rotation_plane='in_plane' | 'out_of_plane'`（保持默认 `in_plane` 历史哈希不变，平面外旋转跳过 2D 半径守恒判定并保留固定部件检测）。
 - 新前端默认每候选 25 次视觉上限，预留 `5 ×（分段数 + 1）× 候选数`，最高 200；基础协议为每检查两次。实际费用按请求回执统计，有共识时省去争议调用。修复前的报告历史和修复后的再次检查都计入同一原生任务账本。
 - 新 MCP 请求未声明协议也未给视觉上限时采用增强默认值；未声明协议但显式给出旧视觉预算的兼容请求采用基础协议。旧任务缺省协议仍按旧两次行为读取、执行和计算哈希，不能在读取/恢复时升级；同一请求标识先找回原任务，不能因默认值改变重复收费。
 - 页面默认显示判断、当前检查阶段和次数；“查看判断依据与具体帧”“查看独立专家与争议复核过程”按需展开。报告通过既有 `get-motion` 的 `quality_review` 与 `get-motion-stage` 的 `stage.review` 返回，不新增 MCP operation。
@@ -16,7 +17,7 @@
 1. **基线**：同一组实际帧、顺序、FPS、任务合同和模型快照，先观察再审核，最多两次调用。`review_inputs.py` 保持正式提示词不变。
 2. **独立意见**：外观和运动两个角色各检查一次，初始输入不含另一位专家或基线的意见。两者复用配置中的 `reviewer` 模型与受保护 Key，不意味着使用两个不同模型。
 3. **保留原结论**：独立意见只补充证据和争议，不通过投票、平均置信度或一票否决改写基线。原始共识建议保留供比较，不能替代正式决定。
-4. **有界复核**：对分歧、证据不足或待核实缺陷，最多追加一次请求。保留全序列，另展示最多 12 张实际帧的放大图；使用共同源坐标裁切和缩放，保留原编号，不修改图片或把抽样缺口当作连续时间。
+4. **有界复核**：对分歧、证据不足或待核实缺陷，最多追加一次请求。保留全序列，另展示最多 12 张实际帧的放大图；使用共同源坐标裁切（联合包围盒不大于 `320×320` 时采用整数倍最近邻缩放并居中留白），保留原编号，不修改图片或把抽样缺口当作连续时间。
 5. **翻案确认**：复核建议取消原有缺陷或疑点时，最终该项保持待人工确认。报告同时保留原意见、复核建议及引用帧；正式采用仍在原流程中执行。
 
 ### 可见性核对（版本 4）
@@ -53,7 +54,7 @@ Tools/SpritePipeline/.venv/Scripts/python.exe -m sprite_pipeline.collaboration.r
 - `snapshot --job <真实作业ID> --candidate <候选号> --token <当前帧令牌> --output <新目录>`：复制完整动画。指定 `--stage <零基片段号>` 时使用该片段的证据令牌。可在子命令前指定 `--data-root <现有数据目录>`。
 - `inspect --evidence <快照目录>`：校验已有证据。
 - `combine --baseline <基线review.json> --independent <独立review.json> --output <新报告.json>`：保留基线，附加意见；证据与模型快照必须一致。
-- `score --labels <标签.json> --reports <路径映射.json>`：本地评分。路径映射为 `{ "caseId": "报告路径" }`；标签按样本 ID、维度、`status` 组织，状态为 `pass|fail|uncertain`。
+- `score --labels <标签.json> --reports <路径映射.json> [--risk-coverage]`：本地评分。路径映射为 `{ "caseId": "报告路径" }`；标签按样本 ID、维度、`status` 组织，状态为 `pass|fail|uncertain`。除既有防退步计数外，同步输出 3×3 `confusion_matrix` 与 `rates`（含 `coverage`、`abstention_rate`、`false_accept_rate_overall`、`false_accept_rate_selective` 等）；加 `--risk-coverage` 时另运行 `risk_coverage_curve` 按置信度阈值扫描绘制风险–覆盖率权衡（保留 `requires_human_adjudication` 等结构化弃权不随标量阈值下调）。
 
 收费子命令需要显式 `--authorize-review`：
 
@@ -61,15 +62,17 @@ Tools/SpritePipeline/.venv/Scripts/python.exe -m sprite_pipeline.collaboration.r
 baseline --evidence <快照目录> --output <独立结果目录> --authorize-review
 independent --evidence <同一快照目录> --output <另一结果目录> --model-snapshot <模型快照.json> --authorize-review
 resolve --evidence <同一快照目录> --parent <合并报告.json> --output <新结果目录> --authorize-review
+self-consistency --evidence <同一快照目录> --output <多数投票结果目录> [--calls 5] --authorize-review
+experts-no-guard --evidence <同一快照目录> --output <无守卫多视角目录> --authorize-review
 ```
 
-前两项最多两次请求，最后一项最多一次；无争议不调用。可将基线 `review.json` 中的 `model_snapshot` 对象另存为模型快照 JSON，以固定比较配置。报告目录必须与输入快照、正式作业、角色、配置及导出目录分开。只读浏览、下载和正常制作不会触发这些开发命令；正式增强任务直接通过现有制作流程运行检查。
+前两项最多两次请求，第三项最多一次（无争议不调用）；`self-consistency` 执行 $k$ 次（默认 5 次）彼此盲独立采样并按多数票裁决（平票转 `uncertain`，关闭自信度与帧数守卫）；`experts-no-guard` 执行等调用预算（至多 5 次）的基线+双专家+争议复核，关闭矛盾保留、可见性守卫、自信度/帧数门槛与确定性探针覆写。可将基线 `review.json` 中的 `model_snapshot` 对象另存为模型快照 JSON，以固定比较配置。报告目录必须与输入快照、正式作业、角色、配置及导出目录分开。只读浏览、下载和正常制作不会触发这些开发命令；正式增强任务直接通过现有制作流程运行检查。
 
 ## 验收门槛
 
 模型调用前冻结样本、判断依据、标签与来源。区分用户反馈、Agent 的实际画面判断和模型报告；Agent 标注不能冒充独立人工研究标签。同角色同动作的多个版本不能证明跨角色、跨动作泛化。
 
-每一步分别统计误报、明确漏报、未识别缺陷（包含不确定）、不必要拦截（包含不确定）、争议项过早定论、失败请求与全部调用成本。不确定不能自动算正确，不能从漏报中消失。争议项过早定论也不是已证实的误报或漏报。
+每一步分别统计误报、明确漏报、未识别缺陷（包含不确定）、不必要拦截（包含不确定）、争议项过早定论、失败请求与全部调用成本，以及 3×3 混淆矩阵与 Risk–Coverage 曲线。不确定不能自动算正确，不能从漏报中消失。争议项过早定论也不是已证实的误报或漏报。
 
 `comparison_gate` 要求标签、覆盖范围一致，源文件不变，不利指标不增加；还逐项保护原本正确的判断，防止用另一处改善掩盖新退步。发现副作用就停在当前步骤，保留失败、修正后重验。
 
@@ -77,6 +80,6 @@ resolve --evidence <同一快照目录> --parent <合并报告.json> --output <�
 
 ## 实现与回归
 
-共用提示词：`collaboration/review_inputs.py`；隔离快照与评分：`review_evaluation.py`、`review_sources.py`；独立意见：`independent_review.py`；有界复核：`dispute_review.py`；开发入口：`review_cli.py`。正式入口仍为 `visual_review.py` 与 `checkpoints.py`，经 `production_review.py` 使用原任务账本接续检查。
+共用提示词：`collaboration/review_inputs.py`；隔离快照、阈值扫描与评分：`review_evaluation.py`、`review_sources.py`；角色测量：`character_measurements.py`；物品测量与守卫：`prop_measurements.py`；独立意见：`independent_review.py`；有界复核：`dispute_review.py`；开发入口：`review_cli.py`。正式入口仍为 `visual_review.py` 与 `checkpoints.py`，经 `production_review.py` 使用原任务账本接续检查。
 
 运行 `tests/test_review_evaluation.py`、`tests/test_production_review.py`、现有开放动作质量/检查点/段末图/局部修复测试、完整 Python 回归、`test:open-motion`、隔离浏览器验收和受影响的 MCP/HTTP/Agent 检查。测试只用隔离数据与模拟服务；已保存真实响应的回放能验证正式接线与已验收意见一致，不能冒充新生成动画或新模型准确率。真实准确率必须另做上述对比。

@@ -35,7 +35,9 @@ def measure_parts(prop, structure, receipt, folder):
     source_masks = {p['id']: mask(p['mask_path']) for p in receipt['reference_parts']}
     fixed = {part: source_masks[part] for part in prop.fixed_parts if part in source_masks}
     pivot = radius = tolerance = None
-    if prop.motion_type == 'hinge_rotation' and prop.hinge:
+    rotation_plane = (getattr(prop.hinge, 'rotation_plane', 'in_plane')
+                      if (prop.motion_type == 'hinge_rotation' and prop.hinge) else None)
+    if rotation_plane == 'in_plane':
         pivot_anchor = next(a for a in structure['anchors'] if a['id'] == prop.hinge.pivot_anchor_id)
         pivot = (pivot_anchor['x'], pivot_anchor['y'])
         endpoint = center(source_masks[prop.hinge.endpoint_part_id])
@@ -80,7 +82,8 @@ def measure_parts(prop, structure, receipt, folder):
                 flags['transition'].append(number)
         series.append(row)
     return {'frames': series, 'flags': flags, 'reference_radius_px': radius, 'tolerance_px': tolerance,
-            'pivot_xy': pivot, 'fixed_threshold': 'channel delta >=64 on at least max(4 pixels, 10% of reference mask)'}
+            'pivot_xy': pivot, 'fixed_threshold': 'channel delta >=64 on at least max(4 pixels, 10% of reference mask)',
+            **({'rotation_plane': 'out_of_plane', 'radius_check_skipped': True} if rotation_plane == 'out_of_plane' else {})}
 
 
 def tracked_measurements(service, job, index, stage, token):
@@ -115,7 +118,13 @@ def guard_measurements(report, cues):
     """Preserve raw reviews. A later consensus cannot clear a measured concern."""
     if not cues or not report.get('checks'):
         return report
-    labels = {'fixed_parts': '固定部件', 'transition': '过渡'}
+    labels = {
+        'fixed_parts': '固定部件',
+        'transition': '过渡',
+        'completeness': '动作完整性',
+        'equipment': '外观与装备',
+        'rhythm': '运动节奏',
+    }
     checks = []
     conflicts = []
     for check in report['checks']:

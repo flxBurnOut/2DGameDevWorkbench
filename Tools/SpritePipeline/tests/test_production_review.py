@@ -184,3 +184,61 @@ def test_repair_reserves_enhanced_checks_and_retains_old_review_cost(setup):
     job=s.store.load(w.job_id);stage=job.candidates[0].plan_execution.stages[0]
     assert len(stage.review_history[0]['requests'])==5 and len(stage.review['requests'])==5
     assert review_call_count(job)==10 and len(p.requests)==2
+
+
+def test_character_probes_guard_checkpoints_and_populate_2x2_counterfactual(setup, tmp_path):
+    import io
+    from PIL import Image, ImageDraw
+    from sprite_pipeline.collaboration.experiment import counterfactual_verdicts
+
+    s, ws, p, w, _ = production(setup)
+    # Mark job grounded so ground_baseline_drift is evaluated alongside centroid/area/palette probes.
+    with s.store.locked_job(w.job_id) as job:
+        job.action.grounded = True
+    raw_poll = p.poll
+
+    def drifted_poll(job_id):
+        result = raw_poll(job_id)
+        images = []
+        for idx, raw_bytes in enumerate(result.images):
+            if idx != 2:
+                images.append(raw_bytes)
+                continue
+            # Shift character upward by 10px (ground_y drift > 4px) and add out-of-palette magenta block (area + palette drift).
+            im = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+            with Image.open(io.BytesIO(raw_bytes)).convert('RGBA') as src:
+                im.paste(src, (0, -10))
+            ImageDraw.Draw(im).rectangle((6, 6, 30, 32), fill=(255, 0, 255, 255))
+            buf = io.BytesIO()
+            im.save(buf, format='PNG')
+            images.append(buf.getvalue())
+        return replace(result, images=images)
+
+    class AllPassExperts(ExpertRegistry):
+        def send(self, role, content, schema, count, **kwargs):
+            text = content[0]['text']
+            self.calls.append((schema.__name__, text))
+            if schema is Observations:
+                value = {'reference_equipment': '一件原有物品', 'frames': [{'frame': i, 'pose': '连续姿势', 'equipment': '同一件物品', 'change': '连续'} for i in range(1, count + 1)]}
+            else:
+                value = {'summary': '模型误放通过', 'checks': [{'dimension': d, 'status': 'pass', 'confidence': .96, 'frames': [1, 2, count], 'evidence': '模型忽略了偏移与色偏'} for d in ('completeness', 'equipment', 'rhythm')]}
+            return schema.model_validate(value), {'requested_model': 'fixture-visual-model', 'usage': {'total_tokens': 10}}
+
+    p.poll = drifted_poll
+    registry = AllPassExperts()
+    s.open_motion_review_registry = registry
+    engine = PlanGeneration(s)
+    engine.advance(w.job_id, p, wait=True)
+    stage = s.store.load(w.job_id).candidates[0].plan_execution.stages[0]
+    review = stage.review
+    assert review['verdict'] == 'uncertain'
+    probes = review['motion_evidence']['character_probes']
+    assert 3 in probes['flags']['rhythm'] and 3 in probes['flags']['equipment']
+    sources = {item['dimension']: item for item in review['requires_human_adjudication']}
+    assert sources['rhythm']['source'] == 'deterministic_probe' and sources['equipment']['source'] == 'deterministic_probe'
+    # Character probes never inject into blind expert follow-up prompts.
+    assert all('character_probes' not in call_text for _, call_text in registry.calls[2:])
+    ablation = counterfactual_verdicts(review)
+    assert ablation['full'] == 'uncertain'
+    assert ablation['without_probes'] == 'pass'
+    assert ablation['probe_overrides'] == 2

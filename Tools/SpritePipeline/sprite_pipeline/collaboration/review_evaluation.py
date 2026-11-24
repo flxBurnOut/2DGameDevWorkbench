@@ -103,6 +103,27 @@ def validated_audit(result, count, dimensions=DIMENSIONS):
     return {'verdict': verdict, 'checks': checks, 'summary': summary, 'model_audit': result.model_dump(mode='json')}
 
 
+def raw_audit_verdict(checks):
+    statuses = [c.get('status') for c in checks]
+    if 'fail' in statuses:
+        return 'fail'
+    return 'pass' if statuses and all(s == 'pass' for s in statuses) else 'uncertain'
+
+
+def unguarded_audit(result, count, dimensions=DIMENSIONS):
+    """Validate structure and 1-based frame bounds without confidence or frame-floor guards."""
+    if {c.dimension for c in result.checks} != set(dimensions) or any(f < 1 or f > count for c in result.checks for f in c.frames):
+        raise ValidationHarnessError('视觉验收维度或帧证据无效')
+    checks = [item.model_dump(mode='json') for item in result.checks]
+    return {
+        'verdict': raw_audit_verdict(checks),
+        'checks': checks,
+        'summary': result.summary,
+        'model_audit': result.model_dump(mode='json'),
+        'unguarded': True,
+    }
+
+
 def criterion_status(check):
     """Report abstentions explicitly; confidence alone is never accuracy evidence."""
     threshold = .8 if check['status'] == 'fail' else .85
@@ -196,11 +217,20 @@ class ReviewExperiment:
     def run(self, *, mode='baseline', authorized=False):
         if not authorized:
             raise ValidationHarnessError('旁路视觉检查需要明确授权；未调用模型')
-        if mode not in ('baseline', 'independent') or self.max_calls != 2:
+        if mode in ('baseline', 'independent'):
+            if self.max_calls != 2:
+                raise ValidationHarnessError('不支持的旁路检查配置')
+        elif mode == 'self_consistency':
+            if self.max_calls < 2:
+                raise ValidationHarnessError('多数投票采样次数至少为 2')
+        elif mode == 'experts_no_guard':
+            if self.max_calls != 5:
+                raise ValidationHarnessError('无守卫多视角对照需要 5 次调用上限')
+        else:
             raise ValidationHarnessError('不支持的旁路检查配置')
         binding=getattr(self.evidence,'structure_binding',None)
-        if mode=='baseline' and binding:
-            raise ValidationHarnessError('结构补充不得改变冻结的两次基础检查')
+        if mode in ('baseline', 'self_consistency', 'experts_no_guard') and binding:
+            raise ValidationHarnessError('结构补充不得改变冻结的基础或等成本基线检查')
         self.directory.mkdir(parents=True, exist_ok=True)
         # The existing crash-safe OS lock is reused, but lives outside every job.
         with JobStore._file_lock(None, self.directory / '.lock', timeout_seconds=.1, operation='shadow review'):
@@ -209,6 +239,8 @@ class ReviewExperiment:
                 self.record = read_json(saved)
                 if self.record['evidence_token'] != self.evidence.token or self.record['mode'] != mode:
                     raise ConflictError('请求身份已用于另一组评估输入')
+                if mode == 'self_consistency' and self.record.get('max_calls') != self.max_calls:
+                    raise ConflictError('请求身份已用于不同的采样次数')
                 if self.record.get('structure_binding')!=binding:
                     raise ConflictError('复核所依据的结构版本已改变')
                 if self.record['state'] == 'running':
@@ -222,26 +254,121 @@ class ReviewExperiment:
             if binding:self.record['structure_binding']=copy.deepcopy(binding)
             self.save()
             try:
+                pictures = self.evidence.pictures()
+                segment = self.evidence.manifest['scope'] == 'segment'
+                dims = review_dimensions(self.evidence.manifest['context'])
+                count = len(self.evidence.paths)
                 if mode == 'baseline':
-                    pictures = self.evidence.pictures()
-                    segment = self.evidence.manifest['scope'] == 'segment'
                     observations = self.call('observe', observation_content(pictures, segment=segment, interactable=bool(self.evidence.manifest['context'].get('interactable'))), Observations)
-                    if [o.frame for o in observations.frames] != list(range(1, len(self.evidence.paths)+1)):
+                    if [o.frame for o in observations.frames] != list(range(1, count + 1)):
                         raise ValidationHarnessError('逐帧观察不完整或顺序错误')
                     self.record['observations'] = observations.model_dump(mode='json')
                     context = self.evidence.context()
                     context['observations'] = self.record['observations']
                     result = self.call('audit', audit_content(pictures, context, self.evidence.manifest['fps'], segment=segment), Audit)
-                    self.record.update(state='complete', **validated_audit(result, len(self.evidence.paths), review_dimensions(self.evidence.manifest['context'])))
-                else:
+                    self.record.update(state='complete', **validated_audit(result, count, dims))
+                elif mode == 'independent':
                     from .independent_review import EXPERTS, PROMPT_VERSION, expert_content, consensus
                     self.record.update(experts={}, prompt_version=PROMPT_VERSION)
                     for expert in EXPERTS:
                         # No previous opinion or observation is passed to the next expert.
                         result = self.call(expert, expert_content(self.evidence, expert), Audit)
-                        self.record['experts'][expert] = validated_audit(result, len(self.evidence.paths), review_dimensions(self.evidence.manifest['context']))
+                        self.record['experts'][expert] = validated_audit(result, count, dims)
                         self.save()
-                    self.record.update(state='complete', **consensus(self.record['experts'], len(self.evidence.paths)))
+                    self.record.update(state='complete', **consensus(self.record['experts'], count))
+                elif mode == 'self_consistency':
+                    self.record['samples'] = []
+                    context = self.evidence.context()
+                    content = audit_content(pictures, context, self.evidence.manifest['fps'], segment=segment)
+                    for idx in range(1, self.max_calls + 1):
+                        result = self.call(f'sample_{idx}', content, Audit)
+                        self.record['samples'].append(unguarded_audit(result, count, dims))
+                        self.save()
+                    checks = []
+                    for dim in dims:
+                        dim_checks = [next(c for c in s['checks'] if c['dimension'] == dim) for s in self.record['samples']]
+                        counts = {s: sum(1 for c in dim_checks if c['status'] == s) for s in ('pass', 'fail', 'uncertain')}
+                        ordered = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+                        if ordered[0][1] > ordered[1][1]:
+                            winner = ordered[0][0]
+                            voters = [c for c in dim_checks if c['status'] == winner]
+                            confidence = round(sum(float(c['confidence']) for c in voters) / len(voters), 4)
+                            frames = list(voters[0]['frames'])
+                            evidence = voters[0]['evidence']
+                        else:
+                            winner = 'uncertain'
+                            confidence = 0.0
+                            frames = sorted({f for c in dim_checks for f in c['frames']})
+                            evidence = dim_checks[0]['evidence']
+                        checks.append({
+                            'dimension': dim, 'status': winner, 'confidence': confidence,
+                            'frames': frames, 'evidence': evidence,
+                            'vote_counts': counts, 'vote_share': round(counts[winner] / self.max_calls, 4),
+                        })
+                    self.record.update(
+                        state='complete', unguarded=True, checks=checks, verdict=raw_audit_verdict(checks),
+                        summary=f'同模型 {self.max_calls} 次独立采样多数投票（无守卫）',
+                    )
+                else:
+                    from .independent_review import EXPERTS, PROMPT_VERSION, expert_content
+                    from .dispute_review import Resolution, resolution_content
+                    observations = self.call('observe', observation_content(pictures, segment=segment, interactable=bool(self.evidence.manifest['context'].get('interactable'))), Observations)
+                    if [o.frame for o in observations.frames] != list(range(1, count + 1)):
+                        raise ValidationHarnessError('逐帧观察不完整或顺序错误')
+                    self.record['observations'] = observations.model_dump(mode='json')
+                    context = self.evidence.context()
+                    context['observations'] = self.record['observations']
+                    baseline_res = self.call('audit', audit_content(pictures, context, self.evidence.manifest['fps'], segment=segment), Audit)
+                    baseline_raw = unguarded_audit(baseline_res, count, dims)
+                    self.record.update(baseline=baseline_raw, experts={}, prompt_version=PROMPT_VERSION)
+                    self.save()
+                    for expert in EXPERTS:
+                        exp_res = self.call(expert, expert_content(self.evidence, expert), Audit)
+                        self.record['experts'][expert] = unguarded_audit(exp_res, count, dims)
+                        self.save()
+                    disputes = []
+                    for dim in dims:
+                        prior = next(c for c in baseline_raw['checks'] if c['dimension'] == dim)
+                        peers = {exp: next(c for c in self.record['experts'][exp]['checks'] if c['dimension'] == dim) for exp in EXPERTS}
+                        states = [prior['status'], *(p['status'] for p in peers.values())]
+                        if len(set(states)) != 1 or states[0] == 'uncertain':
+                            disputes.append({
+                                'dimension': dim,
+                                'frames': sorted({f for c in (prior, *peers.values()) for f in c['frames']}),
+                                'baseline': copy.deepcopy(prior), 'opinions': copy.deepcopy(peers),
+                                'reason': 'evidence_or_opinion_disagreement',
+                            })
+                    self.record['disputes'] = disputes
+                    if not disputes:
+                        checks = copy.deepcopy(baseline_raw['checks'])
+                        self.record.update(
+                            state='complete', unguarded=True, checks=checks, verdict=raw_audit_verdict(checks),
+                            summary='多视角意见一致（无守卫）；未调用争议复核',
+                        )
+                    else:
+                        content, selection = resolution_content(self.evidence, {'disputes': disputes, 'checks': baseline_raw['checks']})
+                        self.record['focus'] = selection
+                        resolved = self.call('resolve', content, Resolution)
+                        if {c.dimension for c in resolved.checks} != set(dims) or any(f < 1 or f > count for c in resolved.checks for f in c.frames):
+                            raise ValidationHarnessError('争议复核维度或帧证据无效')
+                        status_map = {'satisfied': 'pass', 'material_defect': 'fail', 'preference': 'uncertain', 'insufficient_evidence': 'uncertain'}
+                        disputed_dims = {d['dimension'] for d in disputes}
+                        checks = copy.deepcopy(baseline_raw['checks'])
+                        for item in resolved.checks:
+                            if item.dimension in disputed_dims:
+                                idx = next(i for i, c in enumerate(checks) if c['dimension'] == item.dimension)
+                                checks[idx] = {
+                                    'dimension': item.dimension,
+                                    'status': status_map[item.classification],
+                                    'confidence': float(item.confidence),
+                                    'frames': list(item.frames),
+                                    'evidence': item.evidence,
+                                    'classification': item.classification,
+                                }
+                        self.record.update(
+                            state='complete', unguarded=True, checks=checks, verdict=raw_audit_verdict(checks),
+                            summary=resolved.summary, resolution=resolved.model_dump(mode='json'),
+                        )
             except Exception as exc:
                 self.record.update(state='failed', verdict='uncertain',
                     summary=str(exc) if isinstance(exc, (ValidationHarnessError, ConflictError)) else '旁路检查未完成；未重试，也未改变生产结果')
@@ -257,6 +384,24 @@ def _case_dimensions(expected, dimensions=None):
     return DIMENSIONS
 
 
+def _review_rates(totals, confusion):
+    criteria = totals['criteria']
+    decided = criteria - totals['abstentions']
+    fail_truth = sum(confusion['fail'].values())
+    pass_truth = sum(confusion['pass'].values())
+    return {
+        'coverage': round(decided / criteria, 6) if criteria else 0.0,
+        'abstention_rate': round(totals['abstentions'] / criteria, 6) if criteria else 0.0,
+        'false_accept_rate_overall': round(totals['false_negative'] / fail_truth, 6) if fail_truth else None,
+        'false_accept_rate_selective': round(totals['false_negative'] / decided, 6) if decided else None,
+        'false_reject_rate_overall': round(totals['false_positive'] / pass_truth, 6) if pass_truth else None,
+        'selective_error_rate': (
+            round((totals['false_positive'] + totals['false_negative'] + totals['disputed_overconfidence']) / decided, 6)
+            if decided else None
+        ),
+    }
+
+
 def score_reviews(labels, reports, *, dimensions=None):
     """Labels are local-only and never part of model inputs. No cherry-picking.
 
@@ -267,15 +412,21 @@ def score_reviews(labels, reports, *, dimensions=None):
     """
     totals = {k: 0 for k in ('criteria', 'correct', 'false_positive', 'false_negative',
         'abstentions', 'missed_defects', 'unnecessary_blocks', 'disputed_overconfidence', 'failed_reports')}
+    confusion = {t: {p: 0 for p in ('pass', 'fail', 'uncertain')} for t in ('pass', 'fail', 'uncertain')}
     rows = []
     for case, expected in labels.items():
         report = reports.get(case, {})
         if report.get('state') != 'complete':
             totals['failed_reports'] += 1
         checks = {c['dimension']: c for c in report.get('checks', [])} if report.get('state') == 'complete' else {}
+        unguarded = bool(report.get('unguarded'))
         for dimension in _case_dimensions(expected, dimensions):
             truth = expected[dimension]['status']
-            prediction = criterion_status(checks[dimension]) if dimension in checks else 'uncertain'
+            if dimension in checks:
+                check = checks[dimension]
+                prediction = check['status'] if (unguarded and check.get('status') in ('pass', 'fail', 'uncertain')) else criterion_status(check)
+            else:
+                prediction = 'uncertain'
             totals['criteria'] += 1
             totals['correct'] += truth == prediction
             totals['abstentions'] += prediction == 'uncertain'
@@ -284,8 +435,71 @@ def score_reviews(labels, reports, *, dimensions=None):
             totals['missed_defects'] += truth == 'fail' and prediction != 'fail'
             totals['unnecessary_blocks'] += truth == 'pass' and prediction != 'pass'
             totals['disputed_overconfidence'] += truth == 'uncertain' and prediction != 'uncertain'
+            confusion[truth][prediction] += 1
             rows.append({'case': case, 'dimension': dimension, 'expected': truth, 'actual': prediction})
-    return {'totals': totals, 'rows': rows, 'label_digest': digest(labels)}
+    return {'totals': totals, 'rows': rows, 'label_digest': digest(labels),
+            'confusion_matrix': confusion, 'rates': _review_rates(totals, confusion)}
+
+
+def _raw_check_signal(report, dimension):
+    if report.get('state') != 'complete':
+        return 'uncertain', 0.0, True
+    adjudicated = {
+        item.get('dimension')
+        for item in (report.get('requires_human_adjudication') or [])
+        if isinstance(item, dict)
+    }
+    if dimension in adjudicated:
+        return 'uncertain', 0.0, True
+    checks = {c['dimension']: c for c in report.get('checks', [])}
+    check = checks.get(dimension)
+    if check is None:
+        return 'uncertain', 0.0, True
+    status = check.get('status', 'uncertain')
+    confidence = float(check.get('confidence', 0.0))
+    return status, confidence, status == 'uncertain'
+
+
+def risk_coverage_curve(labels, reports, *, thresholds=None, dimensions=None):
+    """Sweep confidence thresholds over saved checks to measure risk vs coverage."""
+    sweep = (0.0, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95) if thresholds is None else tuple(thresholds)
+    points = []
+    for tau in sweep:
+        tau = float(tau)
+        totals = {k: 0 for k in ('criteria', 'correct', 'false_positive', 'false_negative',
+            'abstentions', 'missed_defects', 'unnecessary_blocks', 'disputed_overconfidence')}
+        confusion = {t: {p: 0 for p in ('pass', 'fail', 'uncertain')} for t in ('pass', 'fail', 'uncertain')}
+        for case, expected in labels.items():
+            report = reports.get(case, {})
+            for dimension in _case_dimensions(expected, dimensions):
+                truth = expected[dimension]['status']
+                raw_status, raw_conf, forced_abstain = _raw_check_signal(report, dimension)
+                prediction = raw_status if (not forced_abstain and raw_status in ('pass', 'fail') and raw_conf >= tau) else 'uncertain'
+                totals['criteria'] += 1
+                totals['correct'] += truth == prediction
+                totals['abstentions'] += prediction == 'uncertain'
+                totals['false_positive'] += truth == 'pass' and prediction == 'fail'
+                totals['false_negative'] += truth == 'fail' and prediction == 'pass'
+                totals['missed_defects'] += truth == 'fail' and prediction != 'fail'
+                totals['unnecessary_blocks'] += truth == 'pass' and prediction != 'pass'
+                totals['disputed_overconfidence'] += truth == 'uncertain' and prediction != 'uncertain'
+                confusion[truth][prediction] += 1
+        rates = _review_rates(totals, confusion)
+        decided = totals['criteria'] - totals['abstentions']
+        points.append({
+            'threshold': tau,
+            **rates,
+            'counts': {
+                'criteria': totals['criteria'],
+                'decided': decided,
+                'abstentions': totals['abstentions'],
+                'false_negative': totals['false_negative'],
+                'false_positive': totals['false_positive'],
+                'missed_defects': totals['missed_defects'],
+                'unnecessary_blocks': totals['unnecessary_blocks'],
+            },
+        })
+    return points
 
 
 def comparison_gate(baseline, proposed, *, sources_unchanged):

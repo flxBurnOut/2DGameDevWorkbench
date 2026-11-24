@@ -261,3 +261,154 @@ def test_score_reviews_supports_interactable_dimensions_and_counterfactual_check
     assert [r['dimension'] for r in full_score['rows']] == list(PROP_DIMENSIONS)
     assert full_score['totals']['false_negative'] == 0 and full_score['totals']['abstentions'] == 1
     assert no_probe_score['totals']['false_negative'] == 1 and no_probe_score['totals']['abstentions'] == 0
+    assert full_score['confusion_matrix']['fail'] == {'pass': 0, 'fail': 0, 'uncertain': 1}
+    assert no_probe_score['rates']['false_accept_rate_overall'] == 1.0
+
+
+def test_focus_panels_use_integer_scale_and_centered_tile(tmp_path):
+    import base64
+    import io
+    from PIL import Image, ImageDraw
+    from sprite_pipeline.collaboration.dispute_review import focus_panels
+
+    paths = []
+    for i in range(4):
+        im = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+        ImageDraw.Draw(im).rectangle((10, 10, 53, 53), fill=(40 + i * 20, 180, 220, 255))
+        path = tmp_path / f'src-{i}.png'
+        im.save(path)
+        paths.append(path)
+    ev = ReviewEvidence.create(tmp_path / 'ev', paths=paths, reference=paths[0], fps=12,
+                               context={'user_request': '测试居中整数倍放大'}, source={'kind': 'test'})
+    content, selection = focus_panels(ev, [1, 2, 3, 4])
+    # 44x44 bbox + 3px padding on all sides => 50x50 shared crop; integer 320 // 50 == 6 (not 6.4).
+    assert selection['shared_crop'] == [7, 7, 57, 57]
+    assert selection['scale'] == 6 and isinstance(selection['scale'], int)
+    raw_b64 = content[1]['image_url'].split(',', 1)[1]
+    with Image.open(io.BytesIO(base64.b64decode(raw_b64))) as panel:
+        assert panel.getpixel((9, 28 + 10)) == (25, 30, 40)
+        assert panel.getpixel((310, 28 + 309)) == (25, 30, 40)
+        # Centered 300x300 crop begins at x=10, y=28+10; 3px padding*6=18px transparent -> opaque at +18.
+        assert panel.getpixel((10 + 18, 28 + 10 + 18)) != (25, 30, 40)
+
+
+def test_equal_compute_self_consistency_and_experts_no_guard_cli(evidence, tmp_path):
+    from sprite_pipeline.collaboration.dispute_review import Resolution
+    from sprite_pipeline.collaboration.review_cli import main
+    from sprite_pipeline.collaboration.visual_review import Audit
+
+    class ScriptedRegistry:
+        def __init__(self, vote_pattern):
+            self.calls = []
+            self.vote_pattern = list(vote_pattern)
+
+        def profile(self, *_):
+            return ModelProfile()
+
+        def send(self, role, content, schema, count, **kwargs):
+            text = content[0]['text']
+            self.calls.append((role, schema.__name__, text))
+            if schema is Observations:
+                value = {'reference_equipment': '一顶帽子', 'frames': [{'frame': i, 'pose': '低头', 'equipment': '帽子', 'change': '连续'} for i in range(1, count + 1)]}
+            elif schema is Resolution:
+                # Only 1 frame cited: would fail grounded_audit if guarded, passes under experts_no_guard.
+                value = {'summary': '无守卫放行争议项', 'checks': [
+                    {'dimension': d, 'classification': 'satisfied', 'confidence': 0.72,
+                     'frames': [1], 'evidence': '无守卫模式直接采信低置信结论', 'observation': '单帧检查结果', 'prior_claim_correction': '忽略前序疑点'}
+                    for d in DIMENSIONS]}
+            else:
+                status = self.vote_pattern.pop(0) if self.vote_pattern else 'pass'
+                value = {'summary': 'VOTE_TAG_' + status, 'checks': [
+                    {'dimension': d, 'status': status if d == 'equipment' else 'pass',
+                     'confidence': 0.78, 'frames': [1, 2, 3], 'evidence': '投票测试实际证据'}
+                    for d in DIMENSIONS]}
+            return schema.model_validate(value), {'usage': {'total_tokens': 5}, 'response_id': f'r-{len(self.calls)}'}
+
+    sc_reg = ScriptedRegistry(['pass', 'fail', 'fail', 'pass', 'fail'])
+    sc_result = ReviewExperiment(sc_reg, evidence, tmp_path / 'sc', snapshot={}, max_calls=5).run(mode='self_consistency', authorized=True)
+    assert sc_result['state'] == 'complete' and sc_result['unguarded'] is True
+    assert len(sc_reg.calls) == 5 and all(len(c[2]) > 0 for c in sc_reg.calls)
+    # Blind independence: sample summaries never leak into subsequent sample requests.
+    assert all('VOTE_TAG_' not in c[2] for c in sc_reg.calls)
+    equip = next(c for c in sc_result['checks'] if c['dimension'] == 'equipment')
+    assert equip['status'] == 'fail' and equip['vote_counts'] == {'pass': 2, 'fail': 3, 'uncertain': 0}
+
+    # Tied 2v2 vote (with 4 calls) falls back to uncertain.
+    tie_reg = ScriptedRegistry(['pass', 'fail', 'pass', 'fail'])
+    tie_result = ReviewExperiment(tie_reg, evidence, tmp_path / 'tie', snapshot={}, max_calls=4).run(mode='self_consistency', authorized=True)
+    assert next(c for c in tie_result['checks'] if c['dimension'] == 'equipment')['status'] == 'uncertain'
+
+    # experts_no_guard: baseline fails equipment, independent passes -> dispute resolves to 'satisfied' even without No-Silent-Override or 0.85 threshold.
+    eng_reg = ScriptedRegistry(['fail', 'pass', 'pass'])
+    eng_result = ReviewExperiment(eng_reg, evidence, tmp_path / 'eng', snapshot={}, max_calls=5).run(mode='experts_no_guard', authorized=True)
+    assert eng_result['state'] == 'complete' and eng_result['unguarded'] is True
+    assert len(eng_reg.calls) == 5 and eng_result['verdict'] == 'pass'
+    assert not eng_result.get('requires_human_adjudication')
+    assert next(c for c in eng_result['checks'] if c['dimension'] == 'equipment')['status'] == 'pass'
+
+    # Unanimous agreement skips call #5 (dispute resolve).
+    agree_reg = ScriptedRegistry(['pass', 'pass', 'pass'])
+    agree_result = ReviewExperiment(agree_reg, evidence, tmp_path / 'agree', snapshot={}, max_calls=5).run(mode='experts_no_guard', authorized=True)
+    assert agree_result['state'] == 'complete' and len(agree_reg.calls) == 4 and not agree_result['disputes']
+
+    # CLI authorization gate covers new modes too.
+    with pytest.raises(ValidationHarnessError):
+        main(['self-consistency', '--evidence', str(evidence.folder), '--output', str(tmp_path / 'cli-sc')])
+    with pytest.raises(ValidationHarnessError):
+        main(['experts-no-guard', '--evidence', str(evidence.folder), '--output', str(tmp_path / 'cli-eng')])
+
+
+def test_confusion_matrix_and_risk_coverage_sweep_cli(tmp_path):
+    from sprite_pipeline.collaboration.review_cli import main
+    from sprite_pipeline.collaboration.review_evaluation import risk_coverage_curve
+
+    labels = {
+        'c1': {'completeness': {'status': 'pass'}, 'equipment': {'status': 'fail'}, 'rhythm': {'status': 'uncertain'}},
+        'c2': {'completeness': {'status': 'fail'}, 'equipment': {'status': 'pass'}, 'rhythm': {'status': 'pass'}},
+    }
+    reports = {
+        'c1': {
+            'state': 'complete',
+            'checks': [
+                {'dimension': 'completeness', 'status': 'pass', 'confidence': 0.92},
+                {'dimension': 'equipment', 'status': 'fail', 'confidence': 0.82},
+                # Structural probe/contradiction override stays abstained even at tau=0.0.
+                {'dimension': 'rhythm', 'status': 'uncertain', 'confidence': 0.0},
+            ],
+            'requires_human_adjudication': [{'dimension': 'rhythm', 'source': 'deterministic_probe'}],
+        },
+        'c2': {
+            'state': 'complete',
+            'checks': [
+                {'dimension': 'completeness', 'status': 'pass', 'confidence': 0.65},  # False accept below 0.85!
+                {'dimension': 'equipment', 'status': 'pass', 'confidence': 0.88},
+                {'dimension': 'rhythm', 'status': 'pass', 'confidence': 0.72},
+            ],
+        },
+    }
+    scored = score_reviews(labels, reports)
+    assert scored['confusion_matrix'] == {
+        'pass': {'pass': 2, 'fail': 0, 'uncertain': 1},
+        'fail': {'pass': 0, 'fail': 1, 'uncertain': 1},
+        'uncertain': {'pass': 0, 'fail': 0, 'uncertain': 1},
+    }
+    assert scored['rates']['coverage'] == pytest.approx(0.5)
+    assert scored['rates']['abstention_rate'] == pytest.approx(0.5)
+
+    curve = risk_coverage_curve(labels, reports, thresholds=[0.0, 0.70, 0.85, 0.95])
+    coverages = [p['coverage'] for p in curve]
+    assert coverages == sorted(coverages, reverse=True)
+    # At tau=0.0, c1.rhythm remains forced abstention (5/6 decided), while c2.completeness (0.65) false-accepts.
+    assert curve[0]['counts']['decided'] == 5 and curve[0]['counts']['false_negative'] == 1
+    # At tau=0.70, c2.completeness (0.65) is abstained, eliminating the false accept!
+    assert curve[1]['counts']['false_negative'] == 0 and curve[1]['false_accept_rate_overall'] == 0.0
+
+    labels_path = tmp_path / 'labels.json'
+    reports_map = tmp_path / 'reports.json'
+    c1_path, c2_path = tmp_path / 'c1.json', tmp_path / 'c2.json'
+    c1_path.write_text(json.dumps(reports['c1']), encoding='utf-8')
+    c2_path.write_text(json.dumps(reports['c2']), encoding='utf-8')
+    labels_path.write_text(json.dumps(labels), encoding='utf-8')
+    reports_map.write_text(json.dumps({'c1': str(c1_path), 'c2': str(c2_path)}), encoding='utf-8')
+    cli_out = main(['score', '--labels', str(labels_path), '--reports', str(reports_map), '--risk-coverage'])
+    assert 'confusion_matrix' in cli_out and 'rates' in cli_out and len(cli_out['risk_coverage']) == 9

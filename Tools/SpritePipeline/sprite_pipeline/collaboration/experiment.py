@@ -18,11 +18,12 @@ import secrets
 import uuid
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from ..errors import ConflictError, HarnessError, ValidationHarnessError
 from ..jsonio import atomic_write_json, inside, read_json
 from ..models import JobRecord
+from ..processing.frame_checks import run_frame_qa
 from ..providers.fixture import FixtureProvider
 from .checkpoints import review_call_count
 from .contracts import digest
@@ -430,9 +431,10 @@ def _infer_frame_count(report, checks, frame_count):
     obs = (report.get('observations') or {}).get('frames') or []
     if obs:
         return len(obs)
-    tracked = ((report.get('motion_evidence') or {}).get('tracked_parts') or {}).get('frames') or []
-    if tracked:
-        return len(tracked)
+    motion_ev = report.get('motion_evidence') or {}
+    probe_frames = (motion_ev.get('tracked_parts') or {}).get('frames') or (motion_ev.get('character_probes') or {}).get('frames') or []
+    if probe_frames:
+        return len(probe_frames)
     return max((f for c in checks for f in (c.get('frames') or [])), default=0)
 
 
@@ -507,10 +509,11 @@ def counterfactual_verdicts(report, *, frame_count=None):
                 ret_off_checks.append({**c, 'status': 'uncertain', 'confidence': 0})
             else:
                 ret_off_checks.append(dict(c))
-        tracked_cues = (report.get('motion_evidence') or {}).get('tracked_parts')
-        if tracked_cues:
+        motion_ev = report.get('motion_evidence') or {}
+        probe_cues = motion_ev.get('tracked_parts') or motion_ev.get('character_probes')
+        if probe_cues:
             from .prop_measurements import guard_measurements
-            guarded = guard_measurements({'checks': ret_off_checks, 'verdict': audit_verdict(ret_off_checks)}, tracked_cues)
+            guarded = guard_measurements({'checks': ret_off_checks, 'verdict': audit_verdict(ret_off_checks)}, probe_cues)
             ret_off_checks = [dict(c) for c in guarded['checks']]
         without_retention_checks = ret_off_checks
         if not proposals:
@@ -541,7 +544,78 @@ def counterfactual_verdicts(report, *, frame_count=None):
     }
 
 
+def sequence_drift_metrics(frame_paths, reference_path, *, job=None):
+    """Deterministic per-frame geometry & palette drift relative to ``reference_path``."""
+    paths = [Path(p) for p in frame_paths]
+    ref_path = Path(reference_path) if reference_path is not None else None
+    if not paths or ref_path is None or not ref_path.is_file():
+        return None
+    alpha_threshold = max(0, job.character.qa.alpha_visible_threshold - 1) if job is not None else 0
+    palette_distance = float(job.character.qa.palette_distance) if job is not None else 48.0
+    palette_candidates = sorted(ref_path.parent.glob('palette.*'))
+    palette_path = palette_candidates[0] if palette_candidates else ref_path
+    qa = run_frame_qa(
+        paths,
+        reference_frame=ref_path,
+        palette=palette_path,
+        grounded=True,
+        thresholds={'alpha_threshold': alpha_threshold, 'palette_color_distance': palette_distance},
+    )
+    with Image.open(ref_path) as ref_im:
+        ref_rgba = ref_im.convert('RGBA')
+        ref_size = ref_rgba.size
+        ref_mask = ref_rgba.getchannel('A').point(lambda a: 255 if a > alpha_threshold else 0, mode='1')
+
+    rows = []
+    for idx, path in enumerate(paths):
+        iou = None
+        try:
+            with Image.open(path) as frame_im:
+                frame_rgba = frame_im.convert('RGBA')
+                if frame_rgba.size == ref_size:
+                    frame_mask = frame_rgba.getchannel('A').point(lambda a: 255 if a > alpha_threshold else 0, mode='1')
+                    inter = ImageChops.logical_and(ref_mask, frame_mask).histogram()[255]
+                    union = ImageChops.logical_or(ref_mask, frame_mask).histogram()[255]
+                    iou = round(inter / union, 6) if union else None
+        except (OSError, ValueError, SyntaxError):
+            iou = None
+        metrics = qa['frames'][idx]['metrics'] if idx < len(qa.get('frames', [])) else {}
+        rows.append({
+            'frame': idx + 1,
+            'ground_y_delta_px': metrics.get('ground_delta'),
+            'area_change_ratio': metrics.get('area_change_ratio'),
+            'silhouette_iou': iou,
+            'palette_deviation_ratio': metrics.get('palette_deviation_ratio'),
+        })
+
+    abs_ground = [abs(r['ground_y_delta_px']) for r in rows if r['ground_y_delta_px'] is not None]
+    areas = [r['area_change_ratio'] for r in rows if r['area_change_ratio'] is not None]
+    ious = [r['silhouette_iou'] for r in rows if r['silhouette_iou'] is not None]
+    palettes = [r['palette_deviation_ratio'] for r in rows if r['palette_deviation_ratio'] is not None]
+    end = rows[-1]
+    return {
+        'reference_sha256': sha(ref_path.read_bytes()),
+        'frame_count': len(paths),
+        'frames': rows,
+        'summary': {
+            'max_abs_ground_y_delta_px': max(abs_ground) if abs_ground else None,
+            'mean_abs_ground_y_delta_px': round(sum(abs_ground) / len(abs_ground), 6) if abs_ground else None,
+            'max_area_change_ratio': max(areas) if areas else None,
+            'mean_area_change_ratio': round(sum(areas) / len(areas), 6) if areas else None,
+            'min_silhouette_iou': min(ious) if ious else None,
+            'mean_silhouette_iou': round(sum(ious) / len(ious), 6) if ious else None,
+            'max_palette_deviation_ratio': max(palettes) if palettes else None,
+            'mean_palette_deviation_ratio': round(sum(palettes) / len(palettes), 6) if palettes else None,
+            'end_ground_y_delta_px': end['ground_y_delta_px'],
+            'end_area_change_ratio': end['area_change_ratio'],
+            'end_silhouette_iou': end['silhouette_iou'],
+            'end_palette_deviation_ratio': end['palette_deviation_ratio'],
+        },
+    }
+
+
 def _playback(job, job_dir, out):
+    ref_path = job_dir / 'input' / 'reference.png'
     def copy(frame, name):
         data = inside(job_dir, job_dir / frame.active_path).read_bytes()
         if sha(data) != frame.sha256:
@@ -549,9 +623,16 @@ def _playback(job, job_dir, out):
         (out / name).parent.mkdir(parents=True, exist_ok=True)
         (out / name).write_bytes(data)
         return {'file': name, 'sha256': frame.sha256}
-    return [{'candidate': c.candidate_index, 'fps': job.action.fps, 'loop': job.action.loop, 'status': c.status.value,
-             'frames': [copy(f, f'candidate-{c.candidate_index}/playback/{n:03}.png') for n, f in enumerate(c.frames)]}
-            for c in job.candidates if c.frames]
+    clips = []
+    for c in job.candidates:
+        if not c.frames:
+            continue
+        frames = [copy(f, f'candidate-{c.candidate_index}/playback/{n:03}.png') for n, f in enumerate(c.frames)]
+        clips.append({
+            'candidate': c.candidate_index, 'fps': job.action.fps, 'loop': job.action.loop, 'status': c.status.value,
+            'frames': frames, 'drift': sequence_drift_metrics([out / f['file'] for f in frames], ref_path, job=job),
+        })
+    return clips
 
 
 def legacy_export(job_dir, out):
@@ -700,6 +781,12 @@ def retrospective(job_dir, work, adjustments, out):
                 originals = (returned or {}).get('frames', [])
             raw = [{**copy_png(f, f'{folder}/raw/{f["raw_index"]:03}.png', root=manifest.parent),
                     'raw_index': f['raw_index']} for f in originals]
+            accepted_frames = [{**copy_png(f, f'{folder}/accepted/{j:03}.png'), 'raw_index': f.get('raw_index')}
+                               for j, f in enumerate((run.accepted or {}).get('frames', []))]
+            invalid_raw = set((returned or {}).get('invalid_frames') or [])
+            valid_raw = [f for f in raw if f.get('raw_index') not in invalid_raw]
+            drift_frames = accepted_frames or valid_raw
+            ref_path = job_dir / 'input' / 'reference.png'
             rows.append({'candidate': c.candidate_index, 'stage': i, 'state': run.state,
                          'raw': raw,
                          **({'raw_count': returned['raw_count'], 'invalid_raw_indices': returned['invalid_frames']}
@@ -707,8 +794,9 @@ def retrospective(job_dir, work, adjustments, out):
                          'provider_job_id': run.provider_job_id, 'usage': stage_usage, 'drawing_error': run.error,
                          'submitted_attempts': run.submission_attempts,
                          'frame_normalization': (run.accepted or {}).get('frame_normalization'),
-                         'accepted': [{**copy_png(f, f'{folder}/accepted/{j:03}.png'), 'raw_index': f.get('raw_index')}
-                                      for j, f in enumerate((run.accepted or {}).get('frames', []))],
+                         'accepted': accepted_frames,
+                         'drift_source': 'accepted' if accepted_frames else ('raw' if valid_raw else None),
+                         'drift': sequence_drift_metrics([out / f['file'] for f in drift_frames], ref_path, job=job) if drift_frames else None,
                          'review_history': reports,
                          'review_ablation': [counterfactual_verdicts(r, frame_count=plan.plan.stages[i].frame_count) for r in reports],
                          'human_decisions': decisions, 'repairs': repairs, 'adjustment_history': run.adjustment_history})

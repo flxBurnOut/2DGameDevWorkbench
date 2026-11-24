@@ -206,3 +206,42 @@ def test_archived_native_tracking_masks(tmp_path, item, parts, expected):
         assert cues['frames'][5]['radius_px']==pytest.approx(16.38,abs=.02)
     else:
         assert not cues['flags']['fixed_parts']
+
+
+def test_hinge_rotation_plane_preserves_legacy_hash_and_skips_out_of_plane_radius(tmp_path):
+    from pathlib import Path
+    from PIL import Image
+    from sprite_pipeline.collaboration.contracts import HingeMeasurement
+    from sprite_pipeline.collaboration.prop_measurements import measure_parts
+
+    legacy_hinge = HingeMeasurement(pivot_anchor_id='pivot_pin', endpoint_part_id='red_knob')
+    assert legacy_hinge.rotation_plane == 'in_plane'
+    assert 'rotation_plane' not in legacy_hinge.model_dump(mode='json')
+
+    out_of_plane_hinge = HingeMeasurement(pivot_anchor_id='pivot_pin', endpoint_part_id='red_knob', rotation_plane='out_of_plane')
+    assert out_of_plane_hinge.model_dump(mode='json')['rotation_plane'] == 'out_of_plane'
+
+    parts = ['red_knob', 'lever_arm', 'diagonal_brace']
+    files = sorted((ARCHIVE.parent / 'n2-pilot-round2-20261111/lever-2202').glob('frame_*.png'))
+    with Image.open(Path(__file__).parent / 'fixtures/n2-tracking/lever.png') as atlas:
+        reference_parts, frames = [], []
+        for i, _ in enumerate(files):
+            regions = []
+            tile = atlas.crop((0, 128 * i, 128, 128 * (i + 1)))
+            for part, channel in zip(parts, tile.split()):
+                path = tmp_path / f'{i}-{part}.png'
+                channel.save(path)
+                if i == 0:
+                    reference_parts.append(dict(id=part, mask_path=path))
+                else:
+                    regions.append(dict(id=part, file=path.name, state='estimated'))
+            if i:
+                frames.append(dict(frame_index=i - 1, parts=regions))
+    receipt = dict(reference={'path': files[0]}, reference_parts=reference_parts,
+                   source_frames=[dict(path=p) for p in files[1:]], frames=frames)
+    prop = SimpleNamespace(motion_type='hinge_rotation', hinge=out_of_plane_hinge,
+                           fixed_parts=['diagonal_brace'], moving_parts=['red_knob', 'lever_arm'])
+    cues = measure_parts(prop, {'anchors': [dict(id='pivot_pin', x=63, y=41)]}, receipt, tmp_path)
+    assert cues['rotation_plane'] == 'out_of_plane' and cues['radius_check_skipped'] is True
+    assert cues['reference_radius_px'] is None and cues['flags']['transition'] == []
+    assert 6 in cues['flags']['fixed_parts']

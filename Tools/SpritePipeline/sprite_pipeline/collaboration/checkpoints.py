@@ -127,14 +127,19 @@ class Checkpoints:
             return
         if run.state != 'complete': return
         evidence = self.evidence(job,index,stage)
+        paths = [self.s.store.resolve_job_path(job_id, f['path']) for f in evidence['frames']]
+        reference = self.s.store.job_dir(job_id) / 'input/reference.png'
         from .motion_evidence import measurements
         prop_context = prop_review_context(job.request.open_plan, stage)
-        metrics = measurements([self.s.store.resolve_job_path(job_id,f['path']).read_bytes() for f in evidence['frames']],job.action.fps, prop_context.get('interactable'),
-            (self.s.store.job_dir(job_id) / 'input/reference.png'))
+        metrics = measurements([p.read_bytes() for p in paths], job.action.fps, prop_context.get('interactable'), reference)
         from .prop_measurements import tracked_measurements, guard_measurements
         cues = tracked_measurements(self.s, job, index, stage, evidence['token'])
         if cues:
             metrics['tracked_parts'] = cues
+        from .character_measurements import character_measurements
+        char_cues = None if (cues or prop_context) else character_measurements(self.s, job, paths, reference, stage=stage)
+        if char_cues:
+            metrics['character_probes'] = char_cues
         with self.s.store.locked_job(job_id) as current:
             r = self.run_record(current,index,stage)
             r.state = 'reviewing'
@@ -149,8 +154,6 @@ class Checkpoints:
                     from .production_review import diagnostic_report
                     report.update(diagnostic_report())
             else:
-                paths = [self.s.store.resolve_job_path(job_id,f['path']) for f in evidence['frames']]
-                reference = self.s.store.job_dir(job_id)/'input/reference.png'
                 pictures = evidence_panels(paths,reference,job.action.fps)
                 # Also show the accepted input. Original appearance is never replaced by a drifted input.
                 input_path = reference if not stage else self.s.store.resolve_job_path(job_id,self.run_record(job,index,stage-1).accepted['frames'][-1]['path'])
@@ -182,7 +185,7 @@ class Checkpoints:
                         lambda phase, content, schema, count: self.call(job_id,index,stage,phase,content,schema,count),
                         expected_token=evidence['token'], expected_fps=job.action.fps)
                 else:
-                    report = guard_measurements(report, cues)
+                    report = guard_measurements(report, cues or char_cues)
         except Exception as exc:
             report = {'state':'failed','verdict':'uncertain','summary':str(exc) if isinstance(exc,ValidationHarnessError) else '分段视觉检查未完成，未自动重试；请人工检查。'}
         with self.s.store.locked_job(job_id) as current:

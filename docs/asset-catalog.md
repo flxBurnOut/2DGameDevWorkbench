@@ -1,125 +1,51 @@
 # 资产目录与交接清单
 
-物品原图以 `kind=prop` 收录，独立于角色和已配置交互物。GPT Image 2.6 素材保留 `image:<task-id>` 身份，编辑链接为 `/tools/interactable-editor?imageTask=...`；旧 PixelLab 保留 `reference:<task-id>` 和 `?artTask=...`。下载提供真实 PNG，不会自动采用、创建行为或导出 Godot。
+资产目录（前端入口 `/assets`）汇总工作台内所有已落盘的可复用资产，提供按类型/名称检索、分页浏览、ZIP 打包下载、素材包导入与可恢复回收站。资产目录与任务执行历史相互独立：查询不建任务、不调模型，归档后台执行记录也不隐藏资产。
 
-MCP 0.8.0 增加三个只读工具，前端入口为“资产库”。资产与执行任务分开：查询不会 prepare/run，不会调用生图或检查模型，也不会修改源文件。游戏架构设计和脚本编写由[工程 Skill](game-engineering.md)承接。
+## 1. 资产类型与 ID 规则
 
-## 资产来源与身份
+扫描全部已登记产物的任务记录、SpritePipeline 原生作品库与本地导入包（不自动扫描浏览器 IndexedDB 未保存草稿或外部游戏目录；交互物经 `save-project` 保存后即被收录）：
 
-- 扫描 manifest 配置的全部任务记录，不局限于最近 200 条；只纳入有已登记产物的记录。纯准备记录、空任务和明确的 fixture 诊断任务不算资产。
-- 从 SpritePipeline 的 `/v1/artworks` 读取原生作品库。角色 preset 和每个有画面的动画候选分别有稳定 ID。
-- 角色原图生成与 transfer 用明确的 sourceTaskId / characterId 关系合并展示；不同角色或独立生成不会因为像素相同被擅自合并。
-- `image-assets` 的 `generate-prop` 和 `edit-image` 使用 GPT Image 2.6（模型 `gpt-image-2.6-sunburst`）。每个完成任务形成独立的 `image:<taskId>`；`kind=prop` 为透明物件。编辑不覆盖源图，也不因像素相同合并独立来源。候选仍标记 `requiresAdoption=true`，资产存在不代表已被任何交互物采用。
-- 动画 ID 为 `animation:<jobId>:<candidateIndex>`。创建、查询、检查和导出同一候选的多条任务不会增加资产数。旧的本地产物快照与当前原生资产区分标注。
-- N1 的现代动画记录可带 `objectId` / `objectType`，与兼容 characterId 表示同一来源。交互物动画仍为 kind=animation，不伪装成已配置行为的交互物；帧与精灵表表示不添加角色朝向。旧角色记录未带对象字段时保持原元数据。
-- 交互物状态链：确认的状态图为 `motion-state:<jobId>:<候选>:<序号>`（kind=prop，`motionSource=state`），已接受过渡为 `motion-transition:…`（kind=animation）。人工接受的派生素材（倒放、旋转草稿、色调派生、上传状态图）为 `motion-derived:<workId>:<派生ID>`，带 `derivation`，状态标签为“派生状态图 / 派生过渡”；待检查、已放弃和诊断任务的派生不收录。三者都可经 `import-motion-asset` 写回，文件读取时重新核对哈希。
-- 交互物以 projectId + definitionId 标识。完整保存更新当前对象集合；导出部分对象不删除其余对象。重新保存后不把旧导出包声称为当前版本。
-- 素材包导入使用独立的 `imported-package` 来源与 `imported:<内容身份>` 本机资产 ID，保存在 `workspace.importedAssetDirectory`。原始上传、素材文件、规范化元数据及来源身份一起持久保存；原服务离线时仍可查看详情、预览、下载、放入回收站及从编辑器选用。它不创建原生生成任务或伪造原作业。来源审核文字和已有 Godot 包只作未经本机验证的来源说明。
-
-目录清点复用小型任务与回执投影。新预览链接携带来源任务、导入批次或原生服务标记。原生作品按 ID 取图，文件读取失败时向调用方报告错误。旧动画链接缺少来源时，原生服务离线或对应文件缺失仍可读取同一候选已有的本地快照。
-
-归档只隐藏执行历史，不删除或隐藏资产。任务扫描忽略 `.archived.json` 等内部索引；原生作品库读取包含已归档作业的完整素材记录。动画快照保留原始作业创建时间（旧数据缺少时采用最早关联任务时间），交互物重新保存保留首次创建时间及来源任务。详情中的 `history` 可追溯已归档的制作/导出记录；当前下载只提供当前版本文件，不夹带旧导出包。
-
-浏览器 IndexedDB 草稿、浏览器下载和外部游戏目录没有自动扫描。仅在浏览器中保存的交互物需回原工具查看；不能把当前目录无匹配说成所有资产都不存在。浏览器交互物通过已有 save-project 保存到 runtime 后可被收录。
-
-“归档后台记录”只隐藏制作历史，不隐藏资产。归档前后的动画候选 ID、详情、预览、帧文件及已有 Godot 包保持可访问，重启服务后也相同；无需重新生成或导出。工作台在原生作品库和资产接口中读取完整持久摘要，不复用历史列表的归档过滤。
-
-## 工具与共享接口
-
-三个工具的输入校验由 [asset-contract.mjs](../lib/workbench/asset-contract.mjs) 共享。MCP、CLI `agent` 命令与 HTTP `POST /v1/agent/<operation>` 调用同一处理器。
-
-| MCP | CLI / HTTP operation | 输入 |
+| 类型（`kind`） | 典型 ID 格式 | 说明 |
 | --- | --- | --- |
-| workbench_list_assets | assets | query、kind、characterId、actionId、candidateCount、candidateIndex、status、availability、sortBy、limit、offset、snapshot，均可选 |
-| workbench_get_asset | asset | assetId |
-| workbench_get_asset_manifest | asset-manifest | assetIds，1–100 个；projectName 可选 |
+| `character` | `reference:<taskId>` / 角色预设 ID | 角色原图（原图任务与移送角色按 `sourceTaskId`/`characterId` 关联展示） |
+| `prop` | `image:<taskId>`、`reference:<taskId>`、`motion-state:<job>:<候选>:<序>`、`motion-derived:<work>:<id>` | GPT Image 物品、本地处理变体、PixelLab 物品图、已确认状态图及人工接受的派生状态图 |
+| `animation` | `animation:<jobId>:<candidateIndex>`、`motion-transition:...`、`motion-derived:...` | 角色与交互物动画候选（含 `objectId`/`objectType`）、已接受过渡及人工接受的派生过渡 |
+| `interactable` | `projectId` + `definitionId` | 已保存的交互物工程（部分导出不删其余物件） |
+| 导入资产 | `imported:<32hex>` | 通过素材包导入的本地资产，原服务离线仍可预览、下载与复用 |
 
-kind 为 character / prop / animation / interactable。sortBy 为 createdAt（默认）或 updatedAt；原生素材没有创建时间时保留未知，不把最近打开时间伪装成生成时间。limit 默认为 24，最高 100。返回 nextOffset 不为空时继续分页，并带回 snapshot；目录变化时从第一页重新查询，避免重复或漏项。`purposes` 可传 interactable / image / animation 数组（GET 允许逗号分隔），`target` 可传 manifest 中的目标工具身份；服务端按用途和目标筛选后分页，完整交互物项目不会被当作单张外观图片。
+- 同源不同候选独立列出；同一候选的多次查询、检查或导出不增加资产数；不同独立生成即使像素相同也不合并。
+- 详情 `history` 可追溯已归档的制作/导出记录；当前下载只打包当前版本文件。
 
-`query` 是名称关键词。让 Agent 将“最新一组三个候选中的第二个”映射为 candidateCount=3、candidateIndex=2、kind=animation、sortBy=createdAt、limit=1；不要把整句指令作为关键词搜索。
+## 2. 只读工具与筛选参数
 
-get_asset 返回尺寸、朝向/帧率（来源提供时）、文件存在性、SHA-256、版本指纹、来源任务和精确预览/编辑链接。清单保留所选资产与文件校验值；修改文件后重新盘点会产生不同 revision。文件存在不等于通过动作审查或游戏引擎验证。
+MCP、CLI `agent` 与 HTTP `POST /v1/agent/<operation>` 共用 [asset-contract.mjs](../lib/workbench/asset-contract.mjs)：
 
-GPT 图片任务保留 `provider-response.png` 原始字节，`image.png` 为可采用版本；蒙版保护或透明噪点清理后可能具有不同哈希，分别由 rawSha256 / sha256 标识。`processing-report.json` 记录处理与逐像素校验，其他输入、元数据、用量和诊断照常保留。不缩放图像来满足保护要求，尺寸不一致直接失败。本地 `process-image` 也收录为独立 image: 资产，provider=local；rawImage 是候选原始副本，不伪装成模型新输出或新增费用。下载/采用使用派生图的真实哈希，旧任务文件不改写。详见[物品图片](prop-art.md)。
-
-物品的编辑入口直达 `/tools/interactable-editor?imageTask=<taskId>`。打开预览与下载只读取产物。采用时重新读取完成任务及原始 PNG，校验 SHA-256 和目标身份 / 版本，并把 `generation.sourceTaskId` 与 `generation.sha256` 留在素材中。保存、采用与最终导出分别记录。
-
-运行中的图片任务先持久保存身份，再发出一次请求。MCP、HTTP 与 CLI 查询同一任务，不产生新素材或重发请求。连接中断、超时、服务商 5xx、进程退出或执行租约失效会将不确定结果标为 `attention_required`，这些未完成记录不冒充成功图片进入目录。重启后先检查既有产物与服务商记录，不自动恢复一次付费提交。
-
-孤儿执行的 `refresh` 只返回派生的 `attention_required`，不以观察者的旧快照覆盖真实执行进程可能提交的结果。未刷新读取可能仍看到持久的 `running`，这不证明仍有活跃 worker，也不会使该记录成为完成素材。后续真实完成状态优先，没有隐式重新提交。
-
-get_asset_manifest 返回 `manifest` 和 `markdown`，供 Agent 交接，不会写任务、复制文件或改动游戏工程。Agent 可在用户指定的位置保存返回内容，不能自动覆盖项目已有资产。
-
-前端“下载所选素材”和详情页“下载素材（ZIP）” / “下载编辑源文件（ZIP）”调用 `POST /api/workbench/assets/download`，由共享资产目录打包真实素材，再通过 `POST /v1/assets/download` 返回 `forge-assets.zip`。每件素材有独立文件夹：角色与物品原图提供图片；动画提供按顺序命名的 PNG 帧、已有 GIF、精灵图和 Godot SpriteFrames ZIP；交互物提供可重新打开的源工程及已有 Godot 包。包内附可读的尺寸、帧率和当前状态说明，不以描述清单替代素材。
-
-下载仅复制登记的当前文件字节到响应，不创建任务或重新执行审核、生成、引擎导出。未审核动画可以下载当前帧，审核状态保持原样。尚未导出的交互物只有源工程，不承诺已有引擎包。按来源及候选分别命名，避免同名覆盖；缺失文件或打包期间内容变化时明确报错。每次最多 100 件，素材源文件总量上限 128 MiB；超过限制时分批下载。超过时分批下载。
-
-下载包根目录含 `forge-assets.json`（`format=forge-asset-archive`、`version=1`）。每项保留来源身份和版本指纹、来源时间与状态说明，以及每个实际素材文件的相对路径、角色、字节数、MIME 和 SHA-256。动画记录确切帧序、FPS 与循环；未知参数为 null，不从 GIF 猜测循环。原始帧和已导出精灵表分别登记播放参数；只有实际候选和精灵表哈希匹配时才登记导出表示的关联。现有源 ZIP 和 Godot 附件保持原字节。
-
-动画 `frameDurations` 与帧序逐项对应，值表示相对于 `1 / fps` 秒的时长倍数；省略时每帧为一个单位。内部选用保留时长、锚点与朝向元数据，目标编辑器不支持的播放范围须明确报错；不会把源锚点自动应用为已有物件的变换。导入资产的 `readiness.godotPackageAvailable` 仅在已识别 Godot 清单对应的登记文件可读时为 true；只有名字带 Godot 的附件不具有交付资格。
-
-包格式、检查和提交 API、解包限制与恢复语义见 [Forge 素材包导入合同](asset-packages.md)。
-
-“导入 Forge 素材包”先检查上传包，再确认所选有效项入库。入口位于资产库顶部与空白状态，也可通过 `/assets?import=package` 打开。检查时展示源图或动画预览；旧动画缺少循环设置时需明确选择，交互物项目可选择要恢复的对象。部分条目入库后，未选条目保留，可继续补齐。已知源包、旧资产库 ZIP 和已知 Godot 包按内容识别；完整清单损坏时报告问题，不改用另一格式继续。检查原件位于 `workspace.packageImportDirectory` 的隔离暂存区；提交带稳定 commandId，整批原子发布，重试复用原结果。导入选择与补充参数由检查结果决定，缺失依赖不能冒充完整工程。
-
-导入资产的“打开编辑副本”复用已有内部选用接口并校验当前 revision。交互物只恢复用户选定的物件，项目依赖媒体保留；工程身份分配为本机新 ID，源文件与原身份保留在来源记录中。新副本发生编辑后，原随包 Godot 附件仍属于原素材快照，不成为新副本的导出。
-
-## 已有图片的局部调整（7A–7D）
-
-已交付的高层图像 API 可从交互物共享工程或独立图片任务中发现准确源图。读取返回稳定目标、源版本、真实文件 SHA-256、尺寸、格式、锁和可编辑状态；支持 PNG、JPEG、WebP，另提供解码 sRGB/RGBA8 的 `rgbaSha256`。资产卡缩略图和 Blob URL 不是编辑源。目录查询与目标读取不修改资产，本地候选完成也不等于已经采用。
-
-明确采用后，交互物只更新所选默认或状态静态槽；仅默认采用停止默认动画，行为、其他状态图片与动画片段保留。独立图片源任务保持原产物，采用结果是 `image:<候选任务ID>` 新变体，不改变旧资产及其引用。
-
-采用必须匹配源版本、哈希与命令 ID；共享状态槽还核对原槽位指纹。已有 Godot 导出不会自动更新。
-
-7B 已在可用、未回收的 `image:` 素材详情提供“局部调整图片”，进入与图片任务预览相同的本地工作区；采用后目录打开新 `image:<候选任务ID>` 变体，原资产及其引用保留。交互物先打开工程再点“局部调整默认图片”；宿主打开前等待持久保存，采用后读取准确版本并刷新保存基线。
-
-会话“原始图片”固定为该会话源图，“当前候选”可包含未保存笔划。候选须明确采用；恢复原图只生成并采用单图的新版本，不回滚其他工程编辑。浏览器笔划缓存不等于目录资产或服务端候选，也不跨浏览器恢复。
-
-7C 支持在同一工作区明确提交 AI 局部候选，冻结所选基准、蒙版、描述与参考。任务深链带 `imageEdit` / `imageCandidate` 返回准确候选；来源变化或 guard 不满足的历史只读，不代替当前资产。刷新、断连和 Bridge 重启不会自动重复模型。AI 可能使用额度；真实模型品质与像素保护需要分别验证。交互物静态状态槽使用明确版本和槽位指纹保护，动画状态槽只读。完整流程见[图像局部编辑](image-editing.md)。
-
-## 执行历史分页
-
-`workbench_list_tasks` / `agent tasks` 在全部未归档任务中搜索，再分页，不局限于最近 200 条。输入新增 offset、snapshot；每页 limit 上限仍为 200，返回 totalTasks、totalNativeJobs、searchedTasks、nextOffset、snapshot。两个来源各自按相同 offset 分页；nextOffset 为 null 才表示都已读完。目录变动时从第一页重新查询。
-
-Web 的 `/api/workbench/tasks` 代理 `/v1/tasks`，支持相同的本地任务搜索和分页，返回 tasks、total、nextOffset、snapshot。工作台会读完各页后更新制作历史与本地搜索，不以首屏替代全量。归档后的具体记录仍可由资产详情链接读取，不重新加入历史列表。
-
-## 前端与可用性
-
-- [资产库](../components/workbench/asset-library.tsx) 提供类型/名称过滤、分页、勾选素材下载和单件详情。
-- 点击动画原工具入口沿用阶段一的精确 job / candidate 跳转和自动展开详情。
-- 文件缺失保留记录和提示；服务离线返回本地可读记录，并标注 coverage 不完整。浏览器草稿范围始终明确展示。
-- 预览只通过真实资产 ID 定位登记文件，不能传任意路径读取文件；凭据不进入资产元数据、清单或前端。
-
-## 阶段二专项验收
-
-阶段一验收“找到作品并正确展示”；阶段二验收“把已有素材查全、分清版本、整理并交付”。候选跳转、自动打开前端、预览复用和提问工具继续作为开发回归检查，不再要求用户重复验收。
-
-使用现有素材即可，无需重新生成、修改原件或手动阅读 JSON。以下四项只需验收一次；无相应素材的项目标记“不适用”，不要为了测试临时生成。
-
-| 验收项 | 你做什么 / 对 WorkBuddy 说什么 | 通过条件 |
+| MCP 工具 | CLI / HTTP | 参数 |
 | --- | --- | --- |
-| 1. 资产盘点是否完整 | “把已经保存的素材按角色原图、物品原图、动画、交互物盘点，统计每类数量和待处理项，不要生成。”对照资产库，并抽查一件自己记得的较早作品。 | 数量对应已保存素材，分类之和与同一范围的总数一致；有分页时读取全部页，能找到较早作品。未纳入目录的浏览器草稿应明确说明；不能把任务数当资产数，也不能把首屏当全部。 |
-| 2. 版本与重复记录是否分清 | “把已有同名动作按制作批次整理，告诉我每批有几个候选，哪些是不同版本。”挑一个已有多个候选的批次核对。 | 同一批次的不同候选分别保留；同一候选的查询、检查、导出记录不增加素材数。名称相同的独立制作仍保留，不能仅凭同名合并。只有一个候选时如实说明。 |
-| 3. 下载包能否实际使用 | 在资产库勾选一张原图及两个动画版本，点击“下载所选素材”，解压到一个新文件夹。 | 收到一个 ZIP，三件素材分别存放；图片能打开、已有 GIF 能播放、动画 PNG 帧数与所选作品一致，没有同名覆盖。已有精灵图或引擎包一并提供；尚未导出的作品不冒称已经有引擎包。不能仅下载描述 JSON。 |
-| 4. 能否交给后续开发 | “用刚才这几件素材整理一份给开发使用的交接说明：尺寸、帧数、帧率、有哪些文件、还缺什么。先别写代码，也不要补生成。” | Agent 依据所选资产及文件证据，给出简明可读的素材表；未知信息标明未知，待修补、待检查、尚未导出分别说明。用户无需读原始 JSON；不能把‘文件存在’说成‘已通过质量或游戏引擎验收’。 |
+| `workbench_list_assets` | `assets` | `query`、`kind`、`characterId`、`actionId`、`candidateCount`、`candidateIndex`、`status`、`availability`、`purposes`、`target`、`scope`（`active`/`trashed`）、`sortBy`（`createdAt`/`updatedAt`）、`limit`（默认 24，上限 100）、`offset`、`snapshot` |
+| `workbench_get_asset` | `asset` | `assetId`（返回尺寸、帧率/朝向、文件存在性、SHA-256、版本指纹与精确页面链接） |
+| `workbench_get_asset_manifest` | `asset-manifest` | `assetIds`（1–100 个）、可选 `projectName`（返回 `manifest` 与 `markdown` 交接说明，不复制文件） |
 
-验收反馈只需按“第几项 / 实际出现什么 / 预期是什么”描述，例如：“第 3 项，选了两版动画，解压只有一版的帧。”
+- `query` 用于名称关键词搜索；按批次定位候选时使用 `candidateCount`、`candidateIndex` 与 `sortBy=createdAt` 等结构化参数。
+- 翻页时带回 `snapshot` 直至 `nextOffset` 为 `null`；目录变更时从第一页重查。任务历史分页规则见[连接器契约](connector-contract.md#任务历史分页)。
 
-## 内部素材联用
+## 3. 打包下载与素材包导入
 
-当前支持从资产库直接选择可复用源文件，并将图片、动画和完整项目导入交互物编辑器；无需下载后再上传。导入不生成、不增加后台任务，保留版本和源文件；具体入口、默认辅助显示和升级方式见 [内部素材导入](internal-imports.md)。
+- **ZIP 打包下载**：前端点击“下载所选素材”或详情页“下载素材（ZIP）”调用 `/api/workbench/assets/download` → `/v1/assets/download`，返回 `forge-assets.zip`（单次上限 100 件、源文件总计 128 MiB，超出分批下载）。包内每件资产独立建目录并附根目录清单 `forge-assets.json`（含路径、角色、SHA-256、帧序、FPS、循环、`frameDurations` 与已有 Godot 包）。下载仅复制当前文件，不触发审核或导出。
+- **导入 Forge 素材包**：入口在资产库顶部及 `/assets?import=package`，先上传检查再确认选中项入库；支持“打开编辑副本”分配新本机工程 ID。完整包格式、暂存与提交 API 见[Forge 素材包导入合同](asset-packages.md)。
 
-## 导出到游戏项目
+## 4. 关联工作流入口
 
-具体作品详情可将已有 Godot ZIP 交付到选定游戏。严格匹配 assetId/revision 与原文件 SHA；缺失导出包不会自动生成或审批。此操作创建独立的游戏交付记录，不新增美术资产或生产任务。源图不能当作可执行交互物；见 [Godot 交付](godot-delivery.md)。
+- **物品原图生成与本地处理**：GPT Image 与 `process-image` 详情直达 `/tools/interactable-editor?imageTask=<taskId>`，规则见[物品原图](prop-art.md)。
+- **图片局部调整**：可用、未回收的 `image:` 详情页提供 **局部调整图片** 按钮，完整操作与恢复见[图片局部调整](image-editing.md)。
+- **内部跨模块导入**：资产库中的图片、动画与工程可直接导入交互物编辑器，详见[内部素材导入](internal-imports.md)。
+- **交付到 Godot 游戏**：详情页可将已有 Godot ZIP 交付到目标项目，详见[Godot 交付](godot-delivery.md)与[游戏工程](game-engineering.md)。
 
-## 可恢复的资产回收站
+## 5. 可恢复回收站
 
-资产库中悬停素材，勾选右上角的选择框（键盘聚焦、已有选择或触屏时始终显示）后使用“移入回收站”，核对确认窗口中的名称、候选与数量；详情页也支持单件操作。在“回收站”中勾选后使用“恢复所选”。跨页选择保留，切换已保存素材/回收站会清空选择，每批最多 100 件。只处理明确选择，不自动清空筛选结果。
+资产库支持单选或批量勾选（单批上限 100 件）执行 **移入回收站** 或 **恢复所选**（经 `POST /api/workbench/assets/manage` → `/v1/assets/manage`）。
 
-此功能仅整理资产库，不释放磁盘空间：源文件、生成记录、导出包、原工具内容和已有引用均保留。稳定资产 ID 及角色别名一同标记，动画候选独立处理。回收站不能恢复用户在磁盘上另行删除的源文件。
-
-`list_assets` 默认 `scope=active`，传 `scope=trashed` 查询回收站；详情通过 `trashedAt` 标明状态。来源离线时保留回收站摘要并标记 unknown，可恢复但不能据此证明源文件可用。原有三个 MCP 工具仍为只读；前端使用 `POST /api/workbench/assets/manage` → `/v1/assets/manage`，严格输入 `{operation: "trash" | "restore", assetIds: string[]}`，不创建生产任务。
-
-索引位于 manifest 的 `workspace.assetTrashDirectory`（默认 `work/asset-trash/index.json`），测试随 `WORKBENCH_TEST_RUN` 隔离。跨进程目录锁及原子替换保护整批更新；索引损坏时拒绝读取/更新，避免素材意外重新出现。崩溃残留 `.lock` 时失败关闭：确认没有写入进程后由维护者处理锁，不能在服务仍写入时移除。备份工程时应保留此目录。
+- 回收站仅调整目录可见性，**不删除磁盘源文件、任务记录或已有工程引用**（也不能恢复已被用户手动从磁盘删除的文件）。
+- 索引位于 `work/asset-trash/index.json`，采用跨进程目录锁与原子替换保护；损坏或残锁时采用安全失败策略（确认无写入进程后再由维护者清理锁）。备份工作区数据时应保留此目录。
+- `workbench_list_assets` 传 `scope=trashed` 可查询回收站，三个资产 MCP 工具保持纯只读。

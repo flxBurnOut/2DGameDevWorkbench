@@ -1,73 +1,43 @@
 # 连接器与任务契约
 
-## 1. 范围
+本文说明 MCP、CLI、HTTP Bridge 与能力适配器共享的任务模型、接口路由与协议约束。机器权威 schema 见 `workbench/manifest.json`、`lib/workbench/document-contract.mjs` 与 `lib/workbench/image-edit-contract.mjs`。
 
-本文描述 MCP、CLI、Web HTTP bridge 与能力适配器共享的任务和文档语义。生产输入以 `workbench/manifest.json` 为机器权威；共享文档命令以 `lib/workbench/document-contract.mjs`、图片会话以 `lib/workbench/image-edit-contract.mjs` 及实际 MCP schema 为准。本文解释跨能力约束和协议转换，不复制完整 JSON Schema。
+## 1. 注册能力与适配器
 
-当前注册四项 `local-adapter`：image-assets、原图、序列帧和交互物。共享交互物编辑另走文档工具：
+当前注册 4 项 `local-adapter`，由 `lib/workbench/task-runtime.mjs` 统一执行输入校验、任务持久化、状态维护与输出核验；适配器只做协议转换：
 
-| 能力 | 适配器 | 是否依赖外部服务 |
+| 能力 | 适配器 | 依赖服务 |
 | --- | --- | --- |
-| `image-assets` | `image-assets` | GPT Image 2.6；透明 prop 与参考图/蒙版编辑 |
-| `reference-art` | `reference-art` | PixelLab，经 SpritePipeline 共享凭据 |
-| `sprite-generator` | `sprite-pipeline` | 连接本地或自管 SpritePipeline；其生成提供方由该工具配置 |
-| `interactable-editor` | `interactable-editor` | 完全本地导出 |
+| `image-assets` | `image-assets` | GPT Image 2.6（透明物品生成与蒙版编辑；`process-image` 纯本地） |
+| `reference-art` | `reference-art` | PixelLab（经 SpritePipeline 共享凭据；导入与 PixelProp 转换纯本地） |
+| `sprite-generator` | `sprite-pipeline` | 本地或自管 SpritePipeline 服务 |
+| `interactable-editor` | `interactable-editor` | 纯本地校验与 Godot 打包 |
 
-`lib/workbench/task-runtime.mjs` 负责统一校验、任务记录、调度、状态和输出验证；适配器只负责能力协议转换。
-
-CLI、HTTP、MCP 对共享操作校验完整对象。MCP 纯文本任务列表带续页位置、快照和覆盖信息。错误的分页或 JSON 返回 400，过期分页快照返回 409。任务精确查询支持已归档身份。
+CLI、HTTP 与 MCP 均校验完整 JSON 对象；无效分页或 JSON 返回 `400`，过期分页快照返回 `409`。
 
 ## 2. 公共任务模型
 
-准备或运行任务时，调用方提供：
+准备或运行任务的请求结构：
 
 ```json
 {
   "capabilityId": "reference-art",
   "commandId": "reference:take-1",
-  "input": {
-    "operation": "generate",
-    "prompt": "透明背景的侧视像素骑士"
-  }
+  "input": { "operation": "generate", "prompt": "透明背景的侧视像素骑士" }
 }
 ```
 
-持久化任务位于 `work/tasks/<task-id>.json`，核心字段为：
+持久化记录位于 `work/tasks/<task-id>.json`（含 `schemaVersion`、`id`、`capabilityId`、`status`、`createdAt`、`updatedAt`、`input`、`outputs`，执行后按需追加 `adapter`、`requiredEnvironment`、`error`）。对外摘要返回 `taskId`、`status`、`taskPath`、`outputs`、`adapter`，调用方应原样保留返回路径。
 
-```json
-{
-  "schemaVersion": 1,
-  "id": "reference-art-...",
-  "capabilityId": "reference-art",
-  "status": "prepared",
-  "createdAt": "ISO-8601",
-  "updatedAt": "ISO-8601",
-  "input": {},
-  "outputs": []
-}
-```
+- **幂等键（`commandId`）**：可选。提供时在调用适配器前落盘请求 SHA-256（忽略键顺序）与唯一 `taskId`；同 `commandId` 同载荷可推进 `prepared` 任务或返回原任务（摘要带 `replayed: true`），同 `commandId` 不同能力或入参返回 `COMMAND_ID_REUSED`。
+- **明细读取**：`workbench_get_task` 支持 `taskId` 或 `commandId`（CLI 支持 `--command-id`）。默认返回精简入参；传 `detail: true`（CLI `--detail` / HTTP `detail=true`）读取完整保存入参。后台租约与执行者令牌仅存内部恢复记录，不对外暴露。
 
-执行后可以增加 `adapter`、`requiredEnvironment` 或 `error`。任务摘要统一返回：
+### 任务历史分页
 
-```json
-{
-  "taskId": "reference-art-...",
-  "status": "completed",
-  "taskPath": "work/tasks/reference-art-....json",
-  "outputs": ["outputs/reference-art-.../result.json"],
-  "adapter": {}
-}
-```
+- **Agent `tasks` 分页**：支持 `query`、`capabilityId`、`status`、`limit`（1–200）、`offset`、`snapshot` 与 `detail`，搜索全部未归档任务（工作台任务与原生作业独立分页，返回 `totalTasks`、`totalNativeJobs`、`searchedTasks`、`nextOffset`、`snapshot`）。续页传回同一筛选条件、`snapshot` 与 `nextOffset` 直至 `null`；集合或顺序变动时返回 `409`。以 `detail: true` 翻页时若单条正文已被改写，返回 `detailChanged: true`。已归档记录仍可按原 ID 精确读取。
+- **Web `GET /v1/tasks`**：支持 `refresh` 与 `since`（传回上次 `revision`，未变时返回 `unchanged: true` 与空 `tasks`）。同时传 `refresh=true` 与 `status` 时，先刷新范围内活动任务再按有效状态过滤分页。
 
-字段只在有值时出现。调用方必须保留原始字符串，不自行推导文件名或把缺失输出补齐。
-
-`commandId` 可省略。提供时，工作台在调用适配器前保存请求的 SHA-256 与唯一任务身份。用相同 `commandId` 和相同请求可把已准备任务推进到运行状态，也可查询已开始的原任务。相同标识配不同能力或输入返回 `COMMAND_ID_REUSED`。摘要的 `replayed: true` 表示沿用原任务。输入对象的属性顺序不影响请求身份。
-
-MCP 的 `workbench_get_task` 支持 `taskId` 或 `commandId`。CLI 的 `prepare`、`run` 和 `status` 支持 `--command-id`。默认任务查询和列表返回精简输入与状态。MCP 的 `detail: true`、CLI 的 `status --detail` 或 HTTP 的 `detail=true` 可读取保存的完整输入。产物与审核证据通过 `workbench_get_result` 或登记的文件入口读取。
-
-执行者身份与后台租约令牌仅保存在工作台的恢复记录中。调用方可通过任务身份、请求指纹、执行阶段和适配器进度跟踪同一请求。运行时租约和发布日志属于内部文件。
-
-## 3. 状态机
+## 3. 状态机与输出约束
 
 ```text
 prepare ───────────────→ prepared
@@ -78,226 +48,97 @@ run ─→ running ────────→ completed
 get/status: running ───→ 刷新同一上游任务后保持或进入终态
 ```
 
-- `prepared`：输入通过 schema 校验，但没有调用适配器。
-- `running`：能力已开始，可能包含上游 job ID。
-- `awaiting_configuration`：缺少当前 operation 所需的环境或 provider key；不是成功。
-- `attention_required`：原生作业需要检查、审核或恢复，不能当作导出完成。
-- `completed`：本次操作完成，运行时已验证其输出文件；检查/保存完成与作品导出分别判断。
-- `failed`：运行或适配器结果失败；任务记录保存错误。
+- `prepared`：输入通过校验并保存，未调用适配器。
+- `running`：执行中（可含上游 `jobId`）；刷新遇短暂网络异常时保持 `running` 并附 `refreshError`，绝不重发计费请求。
+- `awaiting_configuration`：缺少所需环境或凭据。
+- `attention_required`：需人工或 Agent 检查、审核或恢复（例如后台进程退出或租约失效后的 Image 2.6 任务，原结果迟到仍可落入原记录）。
+- `completed`：本次操作成功且声明产物均通过核验。
+- `failed`：执行失败并保留错误信息。
 
-刷新运行中任务发生短暂异常时，原任务保持 `running`，读取结果可以附带 `refreshError`。轮询不得重新提交计费请求。
+**输出目录约束**：每次运行独占 `outputs/<task-id>/`。运行时写出 `result.json`，逐一校验声明文件位于该目录内且真实存在后写入 `outputs`；源素材不原地修改，UI 下载经受限 artifact 端点完成。
 
-Image 2.6 先持久化 running 任务和执行进程租约，再提交后台请求，前端可以先获得 taskId。执行进程退出或租约失效后，刷新返回 attention_required。这类记录仍可归档与按原标识查询，晚到的原执行结果仍能提交到原记录。
+## 4. Runtime HTTP Bridge 与付费配对
 
-## 4. 输出与路径约束
+默认监听 `http://127.0.0.1:8790`（`npm run workbench:http`），供本机 Web（经 `/api/workbench/**` 同源代理）、CLI 与 MCP 共用：
 
-每次执行使用 `outputs/<task-id>/`。运行时：
-
-1. 把适配器结构化结果写为 `result.json`；
-2. 解析每个声明的生成文件；
-3. 拒绝任务输出目录之外的路径；
-4. 确认路径指向真实文件；
-5. 去重后写入任务的 `outputs`。
-
-源素材不得原地修改。任务路径均以仓库相对路径报告，UI 下载通过受限 artifact endpoint 完成。
-
-## 5. Runtime HTTP bridge
-
-默认地址为 `http://127.0.0.1:8790`，由 `npm run workbench:http` 启动。它是 Web 服务端到 Node 文件系统运行时的回环桥，不是面向公网的公共 API。
-
-| 方法与路径 | 行为 |
+| 方法与路径 | 用途 |
 | --- | --- |
-| `GET /health` | 返回服务名称与协议版本 |
-| `GET /v1/tasks?limit=30&refresh=false` | 按更新时间列出任务。可用 `refresh=true` 更新本页运行与恢复中的任务 |
-| `GET /v1/tasks/<id>`、`GET /v1/tasks?commandId=...` | 读取任务。可用 `refresh=true` 更新状态，`detail=true` 返回完整输入 |
-| `POST /v1/tasks/prepare` | 接收 `{capabilityId,input,commandId?}` 并保存通过校验的请求 |
-| `POST /v1/tasks` | 接收 `{capabilityId,input,commandId?}` 并运行授权任务 |
-| `GET /v1/artifacts?path=outputs/...` | 下载 `outputs/` 内的真实文件 |
-| `GET/POST /v1/image-assets/settings` | Image 2.6 公开配置状态 / 专用受保护配置写入；共用 canonical provider 配置，不返回 key |
-| `GET /v1/interactable-assets?path=...` | 预览允许的本地交互物素材 |
-| `POST /v1/interactable-assets` | 上传交互物图像或音频到受控目录 |
-| `GET/POST /v1/documents` | 分页列共享工程 / 创建交互物文档 |
-| `GET /v1/documents/<id>` | 读取当前或 `revision=N` 版本；`metadataOnly=true` / `metadata=true` 仅返回摘要 |
-| `POST /v1/documents/<id>/apply|save|restore` | 类型化事务、人工完整快照保存、历史恢复；带 expectedRevision 与 commandId |
-| `POST /v1/documents/<id>/validate|simulate` | 保存版本的校验和事件模拟 |
-| `POST /v1/documents/<id>/adopt-image` | 校验已完成图片任务的 ID / SHA-256 后明确采用 |
-| `GET /v1/documents/<id>/motion-bindings` | 只读：按命令历史与当前内容列出各切换状态 / 序列条目绑定的动画资产与是否仍在使用；可带 `definitionId` |
-| `POST /v1/reference-art/convert-prop/preview` | PixelProp 转换预览，经 SpritePipeline 计算；不建任务、不写文件、不调用付费接口 |
-
-通用 JSON 请求上限为 50 MiB；任务提交为 120 MiB，以容纳最多 80 MiB 图片源及 base64 开销；文档请求为 350 MiB，文档媒体仍限制总计 256 MiB。交互物上传端点另按素材契约限制单文件 64 MiB；交互物项目导入由 Web 编辑器限制为 256 MiB。`/v1/artifacts` 只接受以 `outputs/` 开头、解析后仍位于真实输出根目录内的文件。
-
-`app/api/workbench/**` 是 Web 同源代理，转发到 `WORKBENCH_RUNTIME_URL`。
-
-浏览器提交付费任务前，先通过 `GET /api/workbench/paid-tasks` 取得 `workspaceId`，把它与原始载荷和 `commandId` 一起存入日志。这个 64 位十六进制值同时绑定 Bridge 工作区、任务目录和图片编辑目录。Bridge 首次处理付费身份查询时，在这两个数据目录中分别原子建立持久的随机标识 `.paid-workspace-id`。恢复整个数据目录时须连同标识一起恢复。无法建立或读取标识时，付费入口返回 503。
-
-提交和查询分别使用 `POST /api/workbench/paid-tasks` 和 `GET /api/workbench/paid-tasks?commandId=...`，均在 `x-forge-workspace` 头中携带浏览器保存的身份。Web 代理先通过 Bridge 的 `GET /v1/paid-workspace` 验证数据身份，再向 `/paired/v1/paid/v1` 下的实际端点同时发送公共工作区头和 `x-forge-paid-workspace`。接收任务的 Bridge 再次检查两项身份。同路径更换服务或替换数据目录后，旧记录保留，可切回原目录继续。旧浏览器通过通用任务入口提交带 `commandId` 的付费请求会收到 409。
-
-升级前缺少工作区身份或仅保存公共工作区身份的浏览器日志仅能通过查询核对现有回执。命令号与原载荷 SHA-256 均匹配且任务已开始时，可以恢复该记录。遇到 404、参数不符或任务仍为 `prepared` 时，日志保留待核验。已经收到回执的命令遇到任务记录缺失时同样保留原命令号。
-
-角色动画和交互物动画的规划草稿保存原生动画工作区身份，恢复时由 Python 服务核对。图片局调的 AI 修改、部件定位和成品复核命令绑定 Bridge 付费存储实例。升级前的规划草稿和 AI 修改日志只读取已有的匹配回执，缺少回执时保留原请求。
-
-## 6. SpritePipeline 适配器
-
-### 操作映射
-
-| Manifest operation | 上游行为 |
-| --- | --- |
-| `create` | `POST /v1/jobs`，只创建持久作业 |
-| `create-and-generate` | 创建后调用 `/v1/jobs/{job_id}/generate` |
-| `generate-existing` | 对给定 `jobId` 开始生成 |
-| `get` | 查询给定 `jobId` |
-| `export` | 导出给定作业与候选帧 |
-
-Manifest 使用 camelCase；适配器转换为 Python API 的 snake_case。创建请求示例：
-
-```json
-{
-  "schema_version": 1,
-  "character_id": "player_cyber",
-  "action_id": "idle",
-  "provider": "pixellab",
-  "candidate_count": 1,
-  "frame_count": 8,
-  "action_description": "保持轮廓一致的待机动作",
-  "loop": true,
-  "request_key": "sprite-generator-20260904000000-abcd"
-}
-```
-
-本地任务 ID 用作默认幂等键，避免不明确重试创建第二个可能计费的作业。`wait` 默认 false；生成异步返回时，任务保存上游 job ID，后续 `get`/`status` 刷新同一 job。
-
-对 `create-and-generate` 和 `generate-existing`，工作台在生成 POST 的 `request_key` 中传入本地任务 ID。原生服务先在对应 Job 中登记 `received`，并绑定候选选择和 `wait`。本命令写入候选或分段的提交次数、上游 Job ID 或用量时，`progress` 事件和对应 Job revision 一起落盘。调用正常返回时登记 `returned` 与当次结果版本。运行中断且已有本命令的执行证据时，`interrupted` 回执带原版本、候选、分段、上游 ID、已知用量与错误。只有确认提交前拒绝时才登记带 `submission_created: false` 的 `rejected`，缺少执行证据的异常登记为 `unknown`。同一 Job 内按相同参数重试原键会读取原回执，复用键时更改候选或 `wait` 返回 409。省略此可选键的原生客户端仍可按原方法调用生成。
-
-响应丢失时，工作台通过 `GET /v1/jobs/{job_id}/generation-requests/{request_key}` 查询原命令。工作台核对命令键、Job、候选、`wait` 和原结果 revision，再恢复 `returned` 的结果。`progress` 或 `interrupted` 的候选和用量还须与原快照中本命令写入的观察记录一致。工作台保存这些证据，未确认的产物仍待核验。`received`、尚未查到回执，以及仅记录了作业时间或候选进度的旧任务，均保留为待核验。同一候选在其他命令下的进展不能确认原命令。
-
-标准化输出类型为 `jobRecord`、`orderedFrames`、`spriteSheet`、`godotPackage`、`preview` 和 `metadata`。需要交付的帧与导出文件被复制到当前任务输出目录，不暴露上游私有路径。
-
-工作台先保存原生回执，再按原生作业版本读取帧、图集、预览和 Godot 包。所有原生回执中的产物哈希都参与校验。通过校验的完整文件集合才发布到任务输出路径。下载失败后，刷新原任务会从已保存的回执继续读取。对携带 `commandId` 的 `plan-motion`，工作台默认将任务标识用作原生请求键，丢失提交响应后可按该键查询原作品。
-
-默认 API 是 `http://127.0.0.1:7860`。仅连接另一个可信部署时设置 `SPRITE_PIPELINE_API_URL`；受保护部署可使用 `SPRITE_PIPELINE_API_TOKEN`。详细使用见 [序列帧生成](sprite-generator.md)。
-
-### 开放动作操作
-
-开放动作使用 `sprite-generator` 的 `plan-motion` / `revise-motion` / `get-motion` / `generate-motion` / `pause-motion` / `resume-motion`。`motionSpec` 含原始描述、对象身份、终态、播放设置和调用上限；嵌套字段在任务持久化前按 manifest 校验，不能夹带 Key 或未知控制字段。规划明确授权 `planningAuthorized`，异步轮询沿用原 taskId；结果含 `openWorkId`、`work` 及精确 `?work=` 链接。确认生成绑定 `expectedRevision` 和 `planSha256`，禁止执行旧方案。仅在初次 `plan-motion` 且用户授权直接制作时设置 `autoExecute=true`。`revise-motion` 省略或传 false，查看修改后的方案后使用新版本与哈希调用 `generate-motion`。
-
-本机页面的 `/api/workbench/open-motion` 仅代理列明的工作区、帧图及已保存导出路径；不能作任意 HTTP 代理。交互物动画面板另使用其中的 `edit-source/<帧>`（必须带 64 位 `token`，读取本地帧工具的精确来源）、`local-frame-edits`、`derived`（列表、创建、帧图、裁决）路由。`motionSpec.interactable_skeleton` 为可选的有序状态（2–5 个），规划必须按骨架分段，见[开放动作](../workbench/guides/motion.md)。
-
-规划、分段检查与修复操作：
-
-- **分段检查**：`get-motion-stage` 取指定候选与零基阶段的有序 PNG、目标和 token。`review-motion-stage` 绑定 `expectedRevision`、`stageToken`，携带 `stageDecision=accept|reject`、`reviewNote` 与必要的 `acknowledgeWarnings`；与 Web `POST /v1/open-motion/{work}/review-stage` 共用检查。接受冻结实际帧与末帧锚点，拒绝停止后续请求；重复接受不重新启用已暂停任务。只有已确认的真实快照可进入下一段。`pendingCheckpoints` 表示需要实际检查，不是生成失败。GET 不调用模型。
-- **段末目标与修复**：v4 增加 `target-motion-stage`（制作前本地绑定真实末图）、`repair-motion-stage`（已授权窗口修复）和 `review-motion-repair`（按预览 token 与人工依据采用/拒绝）。`get-motion-stage` 同时提供 `repairPreviews` 的完整有序图片。详情与索引约定见 [序列帧工作区](sprite-generator.md)。修复的源 token、请求编号、原始帧、失败回执和采用映射永久保留；未知提交不重发，生成预算为剩余正常分段预留调用，视觉预算包含历史复核与采用后的再次复核。
-- **质量合同**：开放动作质量合同使用 `motionSpec.timing_mode=auto|fixed` 和 `budget.max_review_calls`。v3 每候选需 `2 × 分段数 + 2` 次视觉调用，覆盖分段与最终动画，不得超过授权预算。新方案与模型配置冻结在原生 job 绑定中；v1/v2 方案验证旧哈希并使用旧语义。真实 API 请求使用编译后的完整提示词，原始帧与交付时间线各自有来源映射。最终视觉报告在 `plan_execution.quality_review`，分段报告与接受快照在各 `stages[].review/accepted`，保留回执、帧摘要和人工依据。模型报告不能自动采用。
-
-#### 对象身份
-
-`motionSpec.object_id` 指向已有对象预设，`motionSpec.object_type` 为 `character` 或 `interactable`，省略按 character。旧 `motionSpec.character_id` 仍接受；同时提供 object_id 与 character_id 时必须相等。对象类型须与预设一致。旧 character_id-only 请求、冻结 spec 和参考快照保持原序列化，读取不迁移旧作业。新对象身份仅用于开放动作与其内部作业绑定；旧 Native create/create-and-generate 继续使用顶层 characterId/actionId，交互物不能通过它绕过开放动作。
-
-`GET /v1/presets` 新增 objects 并保留 characters/actions；`GET /v1/open-motion/references` 新增 objects 并保留 characters；`GET /v1/open-motion/references/<id>` 返回已登记对象的真实 PNG。工作与作业的快照容器仍叫 character。交互物预设固定 128×128，不含 facing/weapon_hand；`/v1/open-motion/references` 上传仍仅创建角色参考；`reference-art transfer` 按源任务 subject 创建角色或交互物预设。物品移送接受三种已完成的 128×128 来源：PixelLab 生成、`import subject=prop` 与 `convert-prop`；后两者必须带 `confirmation.note`，转换来源按配方重算并以像素哈希比对。交互物对象清单行带 `provenance`。GPT 图片不直接缩放为参考。详见[对象身份与预设](sprite-generator.md#对象身份与预设n1)和[物品导入与转换](prop-art.md#导入与转换为动画原图)。
-
-## 7. 交互物适配器
-
-`interactable-editor` 接受：
-
-- `operation: "save-project"` 或 `"export-godot"`；
-- `project`：完整 `InteractableProject`；
-- 可选 `selectedDefinitionIds`：只导出选中定义；
-- 可选外层 `targetProfile` 只接受 `generic`，可省略。
-
-字段默认值和详细约束以 `features/interactable-editor/contract.mjs` 为编辑源，并同步到 manifest。完整请求见 `examples/requests/interactable-export.json`。
-
-`save-project` 只持久化完整源工程，不接受导出专用选择与 profile。`export-godot` 打包固定 GDScript runtime、`.tres` 定义、可编辑 `.tscn` 场景、原始图像/音频、安装说明和 round-trip 源数据。它不运行 Godot，也不连接外部服务。输出包括 `interactables.zip`、`interactable-project.json` 和 `result.json`。
-
-素材路径必须位于工作区；MCP/CLI 也可提交支持类型的 data URL。浏览器上传返回 workspace-relative `source`、`mime` 和 `size`，任务 JSON 只携带路径。详见 [独立交互物编辑器](interactable-editor.md)。
-
-## 8. 通用 HTTP connector
-
-共享运行时仍保留 manifest `http` connector 的兼容路径。它从 `urlEnv` 获取 URL，以可选 Bearer token 发送：
-
-```json
-{
-  "taskId": "...",
-  "capabilityId": "...",
-  "input": {}
-}
-```
-
-缺少 URL 时任务进入 `awaiting_configuration`。成功响应原样规范化到任务的 `result.json`；非 2xx、无效响应或网络失败进入失败。新能力优先使用有明确协议、幂等与输出校验的本地适配器，不应无理由依赖这一通用 envelope。
-
-## 9. 安全要求
-
-- connector token 从服务端环境或专用受保护配置读取，严禁进入 input、metadata、result、日志或浏览器存储。
-- 外部请求必须有明确授权，并报告 provider 和任务状态。
-- 本地路径在读取前必须解析到仓库允许范围；输出必须解析到任务目录。
-- 远端部署 bridge 时必须另加认证、TLS、速率/大小限制和审计，不能直接暴露默认回环服务。
-- 导入数据、上游错误正文和生成内容均是不受信任数据，不应成为 Agent 指令。
-
-## 10. 角色原图连接器
-
-`reference-art` 的 `generate` 输入为 prompt、可选 name/facing/seed/size/subject；`import` 与 `convert-prop` 是本地操作（后者带可选 `recipe`）；`transfer` 使用 sourceTaskId，可附 identityDescription，导入或转换来源须附 `confirmation`。Node 适配器通过 SpritePipeline 的 `/v1/reference-art/jobs` 和 `/jobs/{id}` 提交与查询 PixelLab Pixflux 后台任务。`/v1/reference-art/settings` 返回公开配置状态，POST 经专用网关保存 Key，不经过任务输入。角色移送使用 `/v1/reference-art/import`，物品移送使用 `/v1/reference-art/transfer-prop`，均验证源任务、PNG 与哈希，幂等创建对应类型预设，不生成动画。物品转换使用 `/v1/reference-art/convert-prop`（适配器保存 reference.png、compare.png、recipe.json、report.json）及其 `/preview`；服务内调用 `pixel_prop`，失败时不回退到其他实现。Web 单任务查询使用 `/api/workbench/tasks/{taskId}`，`refresh=true` 只刷新已有任务。具体协议和恢复边界见[角色原图](reference-art.md)与[物品原图](prop-art.md)。
-
-## 11. Agent 共享操作
-
-`image-assets` 结果可包含 `usageEvidence: "provider-usage.json"`。该文件是服务端白名单提取的 token/时间/HTTP/请求身份与返回质量证据，包含 `billingAmount:null`；不保存完整供应商响应或凭据。无 usage 的请求和旧产物保持未知。先保存可取得的用量，再验证图片，因此尺寸、Alpha 或解码失败不会删除已返回的用量证据。此附加字段不改变原始 PNG 字节，也不触发重试或自动账单查询。
-
-共享 Runtime 的 `agentRequest` 供 MCP、CLI `agent <operation> --input <json-file>` 与 HTTP `POST /v1/agent/<operation>` 使用。当前操作分为：
-
-- 发现与结果：guidance、environment、start、frontend、presets、interactable-template、tasks、assets、asset、asset-manifest、result、artifact。
-- 展示与项目交付：present、frontend-context、game-exports、game-export、export-to-game、install-game-export、complete-game-export。
-- 共享文档：documents、document-get、document-create、document-save、document-apply、document-restore、document-validate、document-simulate、document-adopt-image、document-motion-bindings（只读）。
-- 图片局部编辑：image-inspect、image-resolve、image-edit、image-apply、image-session-get；内部 image-session-create 复用同一会话服务，不单独注册 MCP 工具。
-- 部件与属性计划：image-part-context、image-part-suggest、image-part-get、image-plan-prepare、image-plan-get。
-- 图片判断与复核：image-review-record、image-critic-prepare、image-critic-run、image-critic-get。完整操作与保证边界见[属性计划与独立复核](../workbench/guides/image-attribute-editing.md#接口与恢复)。
-
-参数均通过 JSON 传递，未知字段和越界产物被拒绝。文档操作从 MCP / CLI 转发至长驻 Bridge，保持网页与 Agent 共用唯一写入端，不在各客户端进程直接写文档文件。artifact 在 HTTP/CLI 返回预览 base64，MCP 返回原生 image 内容。原始产物不被修改。具体工具名见 [Agent 客户端接入](agent-clients.md)。
-
-### 共享文档事务
-
-文档 kind 仅为 interactable，id 对应交互物 projectId。create/get/list 与 apply/save/restore 共用验证器；单个 apply 最多 100 条已声明命令，事务只作用于一个文档。写入要求 expectedRevision 与 commandId；版本冲突为 409 / REVISION_CONFLICT，相同命令重试返回原提交版本，currentRevision 另指出当前头版本。复用同一 commandId 提交不同请求会失败。快照内嵌媒体，历史版本不可变，restore 新增版本而不删除历史。
-
-`import-motion-asset` 把资产库中的状态图、已接受过渡或已接受派生素材写入切换状态或序列条目；过渡可带 `durations`（与过渡帧数相同的相对时长，0.01–100）和 `playback: ping_pong`，状态图不接受这两项。回执记录作品、版本、候选、段、检查点令牌、帧哈希、`motionSource`，以及派生方式与播放设置；`document-motion-bindings` 据此给出各槽绑定。
-
-validate 检查交互物模型和媒体；simulate 使用确定性交互模拟器，最多 200 个类型化输入事件，返回状态、顺序事件与 expectEvents/expectStates 检查。definitionId 作为单独交互物工程的模拟 instanceId。模拟不写文档，不代表真实音频、游戏存档或 Godot 引擎验证。导出使用 interactable-editor 的 export-godot。字段见[交互物](interactable-editor.md)。
-
-### Image 2.6 独立素材
-
-image-assets 的外部操作为 generate-prop、edit-image，使用gpt-image-2.6且prompt必填，最多12000字。edit-image带mask时，本地处理器仅在Alpha=0处采用候选，Alpha=1–255恢复源图RGBA8；尺寸改变在付费调用前拒绝。process-image为本地操作，image必填，preserveFrom/mask成对可选，不接受prompt/provider/references/width/height，不访问图片服务。alphaCleanupThreshold为0–16，prop默认1、background默认0；有蒙版只清理可编辑区。rawImage/rawSha256与image/sha256分别记录原始候选和交付图，processingEvidence保存处理及编码后保护区校验。local结果不包含虚构的model/usageEvidence。
-
-默认尺寸由适配器规划；显式 width/height 必须成对提供、为 16 的倍数且满足机器 schema 的尺寸、像素数和比例限制。图片源每张最多 40 MiB、总计最多 80 MiB。任务保存规范 PNG、原始返回图片、输入副本与来源哈希，结果 requiresAdoption=true；完成不修改任何编辑器。document-adopt-image 仅在 sourceTaskId 和 sha256 重校验后，按预期文档版本采用图片。
-
-### 已有图片会话（7A）
-
-核心会话工具为 `workbench_inspect_image_target`、`workbench_resolve_image_region`、`workbench_edit_image_region`、`workbench_apply_image_candidate` 和 `workbench_get_image_edit`。前四个是主流程，第五个读取会话、候选与原任务身份；部件定位、计划、判断记录与独立复核另有注册工具，见[工具索引](agent-client-tools.md#工具索引)。MCP/CLI 的全部 `image-*` 操作经 `POST /v1/agent/<operation>` 转发 canonical Bridge；刷新读取也可能保存候选状态，不能在另一个进程执行。Bridge 离线时明确失败，无直写 fallback；同一数据目录仅支持一个权威 Bridge。
-
-精确目标来自既有图片任务、共享交互物的 definitionId＋静态外观槽位，或 `motion-frame` 的 workId/workRevision/candidateIndex/stageIndex/frameIndex；省略 stageIndex 表示完整候选。resolve 不建立生成任务；显式命名区域需 commandId。edit 使用 expectedRevision、expectedSha256 和 regionRef；继续会话另需 expectedEditRevision 与明确的 baseCandidateVersion。候选完成不自动采用，apply 再检查目标版本、真实图片、尺寸和锁，并保留非目标源图与工程结构。动画帧 apply 只保存本地像素动画备选，回执为 `saved_variant`，不立即改动画；须返回完整播放对比后再采用备选。64/128 像素动画帧不进入 GPT Image 生成编辑，生成式帧修改沿用 PixelLab 流程。见[确定性帧编辑](motion-adjustments.md#确定性帧编辑)。
-
-同 commandId 同载荷读取持久记录，不同载荷报冲突。执行前保存提交意图，在适配器执行前记录 taskId；响应丢失或重启后先读取原会话与任务。未知提交不会自动新建任务，也不能改 commandId 掩盖未知状态。源 PNG/JPEG/WebP 的文件字节与 sha256 保留；规范 sRGB/RGBA8 straight-alpha 字节另有 rgbaSha256，二者不能互换。手工 pixel-patch 另校验其基准 RGBA 哈希及 before 字节。内部选区 1 可改、0 保护；图片编辑 PNG 蒙版则 Alpha=0 可改，其余保护，二者不可混用。
-
-高层本地操作包括清理、精确替色、填充、擦除、矩形移动、pixel-patch 和 restore-region，不调用模型。7B 的 apply candidateVersion=source 以当前 guard 和已知绑定恢复单图为新版本；宿主持久保存与准确采用版本协调保留其他内容。
-
-7C 支持显式 `{type:"ai-edit",prompt,references?}`；`references` 最多 8 项，区域可用 `mask-runs` 的有序不重叠 `{startPixel,length}` spans，最多 65,536 段。基准、区域、描述和参考字节冻结后走 `image-assets/edit-image`，原 taskId / commandId 用于断连重试，不自动重复模型。AI 要求合法原尺寸；constraints.preserveAlpha=true 会在本地将所选编辑基准的全部 Alpha 复制到输出、跳过低 Alpha 清理，并验证最终 PNG 的 Alpha 哈希。未提供时默认 false。image-assets/edit-image 同时接受 preserveAlpha 布尔字段；其他操作不接受该字段。processingEvidence.alphaPreservation 返回基准哈希、预期/实际 Alpha 哈希及 changedAlphaPixels；本步保护区 RGBA 仍独立校验。透明度保持不等于纹理或语义正确。`workbench_present({editId,candidateVersion})` 或任务 presentation 使用准确会话 / 候选深链，不把不可写历史当成新来源。交互物静态槽采用绑定当前文档版本和槽位指纹；动画外观不以播放帧替代静态源。独立 image-assets/edit-image 不能当作本地失败后的自动付费替代。详情见[图片局部编辑](image-editing.md)；mock 和像素保护证据不等于真实模型品质或引擎通过。
-
-### 只读作品结果与展示
-
-`POST /v1/agent/result` 使用 `{ taskId }` 或 `{ jobId }`，可用 `candidateIndex` 指定已有动画候选。工作台任务读取保存的结果快照，原生 `jobId` 直接查询服务。该操作只读。
-
-前端代理为 `GET /api/workbench/result?taskId=...`，支持 `jobId`、`candidateIndex`、`detail`、`section`、`offset` 和 `snapshot`。共享返回的 `presentation` 含标题、当前阶段、精确编辑链接、预览与导航操作。开放动作提供 `reviewProgress`，从该片段或整段的持久复核账本读取当前项、调用次数及决定状态。`workbench_get_task` 可继续查询同一开放动作版本直至实际检查可提交。序列帧结果在 MCP 文本、结构数据和共享接口默认使用相同摘要，详细字段需 `detail:true` 后分页读取。分页协议及示例见[结果与展示数据](agent-client-tools.md#结果与展示数据)。
-
-## 12. 资产目录（MCP 0.8.0）
-
-新增 list_assets / get_asset / get_asset_manifest，分别对应共享 agent 操作 assets / asset / asset-manifest。详见 [资产目录、范围与验收](asset-catalog.md)。查询不产生任务；运行 `npm run test:assets` 验证分页、候选、去重、文件校验和 MCP/HTTP 一致性。
-
-资产 kind 包含 character、prop、animation、interactable。共享保存、读取和资产查询不触发生图；浏览器独有草稿不自动收录。图片或动画的来源、候选、采用与导出分别记录。
-
-### 任务历史分页
-
-`tasks` 支持 query、capabilityId、status、limit（1–200）、offset（非负整数）、snapshot 和 detail。搜索范围是全部未归档任务。两类来源独立分页，返回 totalTasks、totalNativeJobs、searchedTasks、nextOffset 和 snapshot。续页保持筛选条件与 detail 模式，并传回 snapshot 和 nextOffset，直到 nextOffset 为 null。已归档的记录及其产物仍可按原身份读取。
-
-精简页的快照核对记录版本。以 `detail: true` 开始的查询按匹配记录的身份和顺序翻页，同一任务写入进度后可继续查询并读取新正文。若工作台选中该行后、读取正文前发生改写，返回的最新明细带 `detailChanged: true`。匹配集合、顺序或来源覆盖发生变化时，旧快照返回 409，需从第一页重新查询。
-
-Web `GET /v1/tasks` 分页返回本地记录，另支持 refresh 与 since。revision 跟踪正文版本与临时 refreshError。第一页将上次的 revision 作为 since 传回，内容相同时返回 `unchanged: true`、空 tasks 及当前 revision、snapshot、total。不了解 since 的旧 runtime 照常返回完整页。
-
-同时指定 `refresh=true` 和 `status` 时，会先刷新搜索范围内的活动任务，再按有效状态筛选。总数、游标和分页都从这一次筛选的有序集合计算。两页之间记录进出该集合或顺序改变时，续页返回 409，客户端从第一页重查。省略状态筛选时，单次刷新仍受页大小限制。
+| `GET /health` | 返回服务名、协议版本与工作区指纹 |
+| `GET /v1/tasks` / `GET /v1/tasks/<id>` | 任务列表与单条查询（支持 `refresh`、`detail`、`commandId`、`since`） |
+| `POST /v1/tasks/prepare` / `POST /v1/tasks` | 准备或运行任务 |
+| `GET /v1/artifacts?path=outputs/...` | 下载 `outputs/` 内的受控文件 |
+| `GET/POST /v1/image-assets/settings` | 查询图片服务公开状态 / 写入本机受保护凭据 |
+| `GET/POST /v1/interactable-assets` | 预览或上传交互物本地图像/音频（单文件上限 64 MiB） |
+| `GET/POST /v1/documents` / `/v1/documents/<id>` | 列出、创建或读取共享交互物文档（支持 `revision`、`metadataOnly`） |
+| `POST /v1/documents/<id>/apply\|save\|restore` | 类型化事务、快照保存与历史恢复 |
+| `POST /v1/documents/<id>/validate\|simulate\|adopt-image` | 文档校验、事件模拟与图片采用 |
+| `GET /v1/documents/<id>/motion-bindings` | 只读查询切换状态/序列条目的动画资产绑定 |
+| `POST /v1/reference-art/convert-prop/preview` | 经 SpritePipeline 计算 PixelProp 转换预览（不建任务、不写文件） |
+
+请求体上限：通用 JSON 50 MiB、任务提交 120 MiB（容纳 80 MiB 源图及 base64）、文档请求 350 MiB（媒体总计 256 MiB）、Web 交互物项目导入 256 MiB。
+
+### 浏览器付费工作区配对
+
+- 浏览器提交付费任务前先调 `GET /api/workbench/paid-tasks` 获取 64 位十六进制 `workspaceId`（同时绑定 Bridge 工作区、任务目录与图片编辑目录中的 `.paid-workspace-id`），连同原载荷与 `commandId` 存入本地日志；恢复数据目录时须连同该标识一并恢复。
+- 提交与查询（`POST/GET /api/workbench/paid-tasks`）在 `x-forge-workspace` 头携带该标识；Web 代理经 `GET /v1/paid-workspace` 校验后，向 `/paired/v1/paid/v1/...` 同时发送公共工作区头与 `x-forge-paid-workspace` 二次校验。旧浏览器经通用任务入口提交带 `commandId` 的付费请求返回 `409`。
+- 升级前缺少工作区标识的旧日志仅做只读回执核对（`commandId` 与载荷 SHA-256 匹配且已启动才恢复），动画规划草稿另绑定原生工作区 ID。
+
+## 5. SpritePipeline 适配器
+
+默认连接 `http://127.0.0.1:7860`（可通过 `SPRITE_PIPELINE_API_URL` 与 `SPRITE_PIPELINE_API_TOKEN` 连接受保护部署）。适配器将 manifest 的 camelCase 转换为 Python API 的 snake_case。
+
+### 基础作业操作与 `request_key` 恢复
+
+- `create`（建作业）、`create-and-generate`（建作业并生成）、`generate-existing`（按 `jobId` 生成）、`get`（查询）、`export`（导出候选帧与 Godot 包）。
+- 标准化输出键：`jobRecord`、`orderedFrames`、`spriteSheet`、`godotPackage`、`preview`、`metadata`，均复制校验到 `outputs/<task-id>/` 后发布。
+- **生成命令幂等恢复**：`create-and-generate` 与 `generate-existing` 默认把本地 `taskId` 传入 `request_key`。原生服务依次落盘 `received` → `progress`（写入提交次数/上游 ID/用量与 job revision）→ `returned` / `interrupted` / `rejected`（`submission_created: false`）/ `unknown`。同参数重试返回原回执，改候选或 `wait` 返回 `409`。响应丢失时经 `GET /v1/jobs/{job_id}/generation-requests/{request_key}` 核对参数与快照恢复。
+- `plan-motion` 带 `commandId` 时默认以本地任务 ID 作为原生请求键，断连后可按该键找回原作品。
+
+### 开放动作与对象模型
+
+- **核心操作**：`plan-motion`、`revise-motion`、`get-motion`、`generate-motion`（绑定 `expectedRevision` 与 `planSha256`）、`pause-motion`、`resume-motion`、`get-motion-stage`、`review-motion-stage`（绑定 `stageToken` 与 `expectedRevision`）、`target-motion-stage`、`repair-motion-stage`、`review-motion-repair`。仅首次 `plan-motion` 且获连续授权时可设 `autoExecute=true`；`revise-motion` 不得自动执行。
+- **对象标识**：新请求使用 `motionSpec.object_id` 与 `object_type`（`character` / `interactable`，省略按 `character`；兼容旧 `character_id`，同传须相等）。`GET /v1/presets` 与 `/v1/open-motion/references` 均提供 `objects` 并保留旧 `characters` 兼容；交互物固定 128×128，不带 `facing`/`weapon_hand`，清单行含 `provenance`。详见[序列帧对象与预设](sprite-generator.md#对象与预设)。
+- **Web 代理白名单**：`/api/workbench/open-motion` 仅转发列明的工作区、帧图、导出以及交互物动画面板专用的 `edit-source/<帧>`（须带 64 位 `token`）、`local-frame-edits`、`derived` 路由。
+- **质量与冻结兼容**：新方案与模型配置随 Work/Job 冻结；`motionSpec.timing_mode`（`auto`/`fixed`）与 `budget.max_review_calls` 控制复核额度（历史旧版本任务按原冻结版本与哈希读取）。
 
 ### 序列帧 Godot 交付
 
-SpritePipeline `export` 沿用原有输入和审批契约，同时生成 Godot ZIP。结果 `godotPackage` 指向本次任务目录的 `sprite-frames.godot.zip`；原生服务以 `job.export.godot_package_path` 标记可用包。适配器只有收到该字段时才请求 `/v1/jobs/{job_id}/exports/godot`，保留旧服务/旧记录兼容。资产库只下载已有包，不为了下载触发新导出。具体导入方法见[序列帧功能](sprite-generator.md#godot-spriteframes-包导出)。
+`export` 同步产出单动作 Godot 包，工作台结果以 `godotPackage` 指向 `sprite-frames.godot.zip`（原生字段 `job.export.godot_package_path`，仅存在时拉取 `/v1/jobs/{job_id}/exports/godot` 以兼容旧记录）。详见[Godot SpriteFrames 包导出](sprite-generator.md#godot-spriteframes-包导出)。
+
+## 6. 原图连接器（角色与物品）
+
+`reference-art` 支持四种操作：
+- `generate`：调 SpritePipeline `/v1/reference-art/jobs` 异步生成 PixelLab Pixflux 角色（64/128 px）或物品（128 px）透明原图；`/v1/reference-art/settings` 查公开状态并写入受保护 Key。
+- `import`：本地导入角色 PNG 或 128×128 物品 PNG（`subject=prop`）。
+- `convert-prop`：调 `/v1/reference-art/convert-prop`（及其 `/preview`）经 `pixel_prop` 确定性转换物品大图，产出 `reference.png`、`compare.png`、`recipe.json`、`report.json`。
+- `transfer`：按源任务 `subject` 分别调 `/v1/reference-art/import`（角色）或 `/transfer-prop`（物品）幂等创建动画预设；导入与转换来源必须附 `confirmation.note`，转换来源按配方重算并以解码像素哈希比对。
+
+详见[角色原图](reference-art.md)与[物品原图](prop-art.md#导入与转换为动画原图)。
+
+## 7. `image-assets` 与用量证据
+
+- **外部操作**：`generate-prop` 与 `edit-image` 使用 `gpt-image-2.6`（`prompt` 必填，上限 12,000 字）。`edit-image` 带蒙版时仅 `Alpha=0` 区域采用生成结果、`Alpha=1–255` 恢复源图 RGBA8，且支持可选布尔项 `preserveAlpha`；尺寸变动在付费前拦截。显式 `width`/`height` 须成对提供且为 16 的倍数；单张源图上限 40 MiB、总计 80 MiB。
+- **本地操作**：`process-image` 必填 `image`（可选成对 `preserveFrom`/`mask`、`alphaCleanupThreshold` 0–16，prop 默认 1、background 默认 0），不联网、不接受 `prompt`/`provider`。
+- **产物与用量**：同时保留 `rawImage`/`rawSha256`、`image`/`sha256` 与 `processingEvidence`，结果带 `requiresAdoption=true`。外部调用先落盘白名单用量文件 `provider-usage.json`（含 token/耗时/HTTP/请求 ID/返回档位，`billingAmount: null`）再校验图片，避免校验失败丢掉用量证据。
+
+## 8. 交互物适配器与共享文档
+
+- **离线导出适配器（`interactable-editor`）**：支持 `save-project`（保存完整 `InteractableProject`）与 `export-godot`（支持 `selectedDefinitionIds` 与 `targetProfile: "generic"`，纯本地打包 GDScript runtime、`.tres`、`.tscn`、素材与源码为 `interactables.zip`）。素材路径须在工作区内（MCP/CLI 也支持 data URL）。
+- **共享文档事务（Bridge）**：文档 `kind` 为 `interactable`（`id` 即 `projectId`）。单次 `apply` 最多 100 条类型化命令，写入必填 `expectedRevision` 与 `commandId`（冲突返回 `409 / REVISION_CONFLICT`，同命令重试返回原提交版本并附 `currentRevision`）。历史快照不可变，`restore` 产生新版本。
+- **动作资产写回**：`import-motion-asset` 将状态图、已接受过渡或派生素材写入切换状态/序列条目（过渡支持 `durations` 与 `playback: ping_pong`），`document-motion-bindings` 据此只读汇总绑定。
+- **校验与模拟**：`validate` 检查模型与媒体；`simulate` 确定性回放最多 200 个类型化事件并核对 `expectEvents`/`expectStates`（只读）。详见[交互物编辑器](interactable-editor.md)。
+
+## 9. 图片编辑会话与局部修改
+
+- **统一入口**：全部 `image-*` 操作（含刷新候选读取）由 MCP/CLI 经 `POST /v1/agent/<operation>` 转发至唯一写入 Bridge；支持 `interactable`（文档+物件+静态槽）、`image-task` 与 `motion-frame`（`workId`/`workRevision`/`candidateIndex`/可选 `stageIndex`/`frameIndex`）三类目标。
+- **版本与哈希边界**：源文件字节用 `sha256`，规范解码后的 straight-alpha sRGB/RGBA8 用 `rgbaSha256`（两者不可互换）。写入要求 `expectedRevision`、`expectedSha256`、`commandId`（续会话另需 `expectedEditRevision` 与 `baseCandidateVersion`）。内部选区 `1` 可改、`0` 保护；PNG 蒙版 `Alpha=0` 可改、其余保护。
+- **本地与 AI 编辑**：
+  - 本地工具含 Alpha 清理、精确替色、填充、擦除、矩形移动、`pixel-patch`、`restore-region` 与 `apply candidateVersion="source"`（按当前锁与绑定恢复单图为新版本）；`motion-frame` 采用返回 `saved_variant`，在动画页播放后再正式采用，详见[确定性帧编辑](motion-adjustments.md#确定性帧编辑)。
+  - 显式 `ai-edit` 冻结基准、描述、最多 8 张参考图与 `mask-runs` 硬边蒙版（最多 65,536 段）后走 `image-assets/edit-image`，支持 `constraints.preserveAlpha`（未传默认 `false`），输出经本地合成与编码后像素校验。
+  - 部件定位、属性计划与独立复核接口见[部件属性计划与复核](../workbench/guides/image-attribute-editing.md#5-接口与恢复)，完整功能见[图片局部调整](image-editing.md)。
+
+## 10. Agent 共享操作、通用 HTTP 与安全
+
+- **`agentRequest` 操作分组**：覆盖发现/结果、展示/交付、共享文档、图片局部编辑、部件计划与复核以及资产目录（`assets` / `asset` / `asset-manifest`，涵盖 `character`、`prop`、`animation`、`interactable` 四类）。完整 MCP 工具名与结果分页协议见[工具索引](agent-client-tools.md#工具索引)和[结果与展示数据](agent-client-tools.md#结果与展示数据)。
+- **兼容通用 HTTP Connector**：运行时保留 manifest `http` 兼容路径（从 `urlEnv` 读地址、以可选 Bearer token 发 `{taskId, capabilityId, input}`，缺地址入 `awaiting_configuration`）；新能力优先实现本地适配器。
+- **安全约束**：凭据仅从服务端环境或受保护配置读取，严禁写入入参、日志或浏览器存储；本地输入输出路径须解析至受控目录；远程部署 Bridge 须独立加认证、TLS、限流与审计；导入数据与上游错误一律视为不可信数据。

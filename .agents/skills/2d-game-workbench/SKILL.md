@@ -5,47 +5,49 @@ description: Create, edit, inspect and deliver Forge artwork, animations and int
 
 # Forge asset production
 
-Complete the user's requested asset workflow using the shared workbench runtime. Choose the relevant topic below; other topics can stay unloaded. [Conversation guidance](../../../workbench/conversation-guide.md) covers ambiguous requests and delegated choices.
+Complete the requested asset workflow through the shared workbench runtime. Load only the topic needed for the current task. For ambiguous requests and delegation rules, see [conversation guidance](../../../workbench/conversation-guide.md).
 
 ## Choose an entry
 
-| Task | Route | Read when needed / MCP guidance topic |
+| Task | Route | Topic / Guide |
 | --- | --- | --- |
-| Character image or existing PNG import | reference-art generate / import, then transfer when an animation reference is needed | [Reference art](../../../docs/reference-art.md) · reference-art |
-| New or continuing animation | sprite-generator plan-motion and its saved work/checkpoints | [Motion workflow](../../../workbench/guides/motion.md) · motion |
-| Interactable state animation (A → B states, then bind to the object) | 128 px prop reference (PixelLab generate, import or convert-prop) → transfer (confirmation for import/convert) → plan-motion with the interactable object (optional interactable_skeleton) → review-motion-stage (accept_state / accept) → import-motion-asset on the shared document (optional durations / ping_pong); get_motion_bindings to read slots; web panel /tools/interactable-motion. Derived assets (reverse, rotation draft, palette, uploaded state) are created and accepted in the web panel only | [Motion workflow](../../../workbench/guides/motion.md) · motion; [Interactables](../../../docs/interactable-editor.md) · interactables |
-| Change selected animation frames | get-motion-adjustment → create-motion-adjustment → inspect → review-motion-adjustment | [Alternatives](../../../docs/motion-adjustments.md) · adjustments |
-| Transparent prop generation or whole-image editing | image-assets; PixelLab props can use reference-art subject=prop | [Image assets](../../../docs/prop-art.md) · image-generation |
-| Imported 128 px prop or GPT Image prop for animation | reference-art import subject=prop / convert-prop → inspect original and compare.png → transfer with confirmation → interactable motion | [Prop import and conversion](../../../docs/prop-art.md#导入与转换为动画原图) · image-generation; [Motion workflow](../../../workbench/guides/motion.md) · motion |
-| Local or AI changes to an existing saved image | inspect_image_target → resolve_image_region → edit_image_region → inspect → apply_image_candidate | [Image editing](../../../docs/image-editing.md) · image-editing |
-| Interactable behavior or shared project | template / saved document → typed commands → inspect → requested save/export | [Interactables](../../../docs/interactable-editor.md) · interactables |
-| Existing artwork, downloads or handoff | list_assets → exact get_asset/get_result; list_tasks for execution history | [Asset catalog](../../../docs/asset-catalog.md) · assets |
-| Delivery to a game | Exact existing export and selected project, then the engineering Skill | [Delivery](../../../docs/godot-delivery.md) · delivery |
+| Character image or PNG import | `reference-art` generate / import → transfer for animation | `reference-art` · [Reference art](../../../docs/reference-art.md) |
+| New or continuing animation | `sprite-generator` `plan-motion` and saved work/checkpoints | `motion` · [Motion workflow](../../../workbench/guides/motion.md) |
+| Interactable state animation | 128 px prop reference → transfer → `plan-motion` (optional `interactable_skeleton`) → `review-motion-stage` → `import-motion-asset`; use `/tools/interactable-motion` for derived assets | `motion` · [Motion workflow](../../../workbench/guides/motion.md); `interactables` · [Interactables](../../../docs/interactable-editor.md) |
+| Edit selected animation frames | `get-motion-adjustment` → `create-motion-adjustment` → inspect → `review-motion-adjustment` | `adjustments` · [Adjustments](../../../docs/motion-adjustments.md) |
+| Transparent prop or whole-image edit | `image-assets` (or `reference-art` `subject=prop` for PixelLab props) | `image-generation` · [Prop art](../../../docs/prop-art.md) |
+| Convert 128 px or GPT Image prop for animation | `reference-art` `import` (`subject=prop`) / `convert-prop` → inspect `compare.png` → transfer with confirmation | `image-generation` · [Prop conversion](../../../docs/prop-art.md#导入与转换为动画原图) |
+| Local or AI edit on a saved image | `inspect_image_target` → `resolve_image_region` → `edit_image_region` → inspect → `apply_image_candidate` | `image-editing` · [Image editing](../../../docs/image-editing.md) |
+| Interactable behavior or shared project | template / saved document → typed commands → inspect → save/export | `interactables` · [Interactables](../../../docs/interactable-editor.md) |
+| Find, download or hand off existing assets | `list_assets` → `get_asset` / `get_result`; `list_tasks` for execution history | `assets` · [Asset catalog](../../../docs/asset-catalog.md) |
+| Deliver to a Godot game | Match existing export and target project, then switch to the engineering Skill | `delivery` · [Delivery](../../../docs/godot-delivery.md) |
 
-The server exposes workbench_get_guidance({topic}) for these documents, including clients without repository file access. Tool names in the table are abbreviated; discover their current names and schema before using an unfamiliar operation.
+Use `workbench_get_guidance({topic})` when repository files are not directly accessible. Discover exact tool names and schemas before calling an unfamiliar operation.
 
-## Execute the selected workflow
+## Execute the workflow
 
-Prefer the project's MCP tools. Reuse discovered schemas during the session; refresh them when the service version or operation changes. If MCP is unavailable, the equivalent repository CLI is available:
+Prefer the project MCP tools and reuse discovered schemas within the session (refresh if the service version changes). When MCP is unavailable, use the equivalent CLI from the repository root:
 
-| MCP | CLI from the repository root |
+| MCP | CLI |
 | --- | --- |
-| list_capabilities / describe_capability | npm run workbench -- list / describe <capability-id> --json |
-| run_task / get_task | npm run workbench -- run <capability-id> --input <json-file> / status <task-id> --json |
-| get_guidance and other shared operations | npm run workbench -- agent guidance --input <json-file> --json; other operations use their discovered names |
+| `list_capabilities` / `describe_capability` | `npm run workbench -- list` / `describe <capability-id> --json` |
+| `run_task` / `get_task` | `npm run workbench -- run <capability-id> --input <json-file>` / `status <task-id> --json` |
+| `get_guidance` and other agent operations | `npm run workbench -- agent guidance --input <json-file> --json` |
 
-Resolve character, asset and task IDs from context or discovery instead of asking for them. Check only the services this task needs: start an installed offline service that is down, and diagnose a port or version conflict instead of starting it again. The selected capability's schema defines what MCP/CLI supports; prepare_task is an optional validation step for authorized production work.
+- Resolve character, asset, and task IDs from context or discovery tools instead of asking the user.
+- Check only the services required for this task: start an offline installed service, and diagnose port or version conflicts rather than spawning duplicates.
+- `prepare_task` is optional for input validation during authorized production work.
 
 ## Keep work recoverable
 
-- **Paid or async tasks:** poll the original task/job. When a paid submission's outcome is unknown, find the existing request through its saved receipt and provider ID; submit again only within the agreed scope and budget.
-- **Shared documents and images:** write through the canonical Bridge with the current revision/hash and a stable commandId. Reuse the ID when retrying the same request and re-read on conflict. Editing storage files directly bypasses concurrent users and recovery.
-- **Candidates:** bind edits and adoption to the selected source, candidate and allowed range. Creating a candidate does not adopt it; adopt when the user asked for the adopted result.
-- **Review:** view animations as a sequence at their FPS. Technical hard errors block; record other warnings with the observed reason. [Visual criteria](../../../workbench/experts/2d-production-expert.md) supplies review guidance.
-- **Report:** state which of task completion, adoption, export and engine validation actually happened.
+- **Paid or async jobs:** poll the original task/job. If a paid submission's status is unknown, recover it via its saved receipt and provider ID before submitting again within the agreed budget.
+- **Shared documents and images:** always write through the Bridge with current `revision`/`hash` and a stable `commandId` (reuse on retry, re-read on conflict); never edit storage files directly.
+- **Candidates:** bind edits and adoption to the exact source, candidate, and allowed range. Creating a candidate does not adopt it.
+- **Visual review:** inspect animations as ordered sequences at their real FPS. Resolve technical hard errors first; record observed reasons for other warnings. See [visual criteria](../../../workbench/experts/2d-production-expert.md).
+- **Reporting:** state clearly which steps actually completed (task run, adoption, export, engine validation).
 
 ## Show and deliver
 
-Show results with the exact asset/work/candidate links the tools return. Preview behavior for each host, including WorkBuddy and preview_required, is in the [presentation guide](../../../docs/agent-preview-follow.md) (topic presentation).
+Present results with the exact asset, work, or candidate links returned by the tools. Host preview rules (including WorkBuddy and `preview_required`) live in the [presentation guide](../../../docs/agent-preview-follow.md) (`presentation`).
 
-Deliver the actual downloaded files; a manifest describes textures without containing them. For game code or integration continue with [forge-game-engineering](../forge-game-engineering/SKILL.md). For service or configuration failures, read the relevant section of the [operations manual](../../../docs/operations-manual.md).
+Deliver the actual downloaded files rather than a manifest alone. Continue with [forge-game-engineering](../forge-game-engineering/SKILL.md) for Godot integration, or check the [operations manual](../../../docs/operations-manual.md) for service and setup troubleshooting.

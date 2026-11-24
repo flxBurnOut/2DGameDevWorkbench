@@ -1,41 +1,53 @@
-# 使用文档
+# Forge 文档中心
 
-Forge 的公开文档面向安装、制作资产、MCP 接入与游戏项目交付。开发导航和指导维护说明随源码维护；本机工作记录与私人作品不随源码分发。
+本目录收录 Forge 论文分支（`paper-vbyc`）的安装运维、功能模块、Agent 接入、系统架构与论文文档；开发测试路由见[开发导航](../workbench/guides/development.md)，Agent 入口导航见[根 AGENTS](../AGENTS.md)。
+
+## 入门、运维与界面
 
 | 文档 | 内容 |
 | --- | --- |
-| [使用与操作手册](operations-manual.md) | 安装、制作、导出、备份与排错 |
-| [Agent 任务导航](../AGENTS.md) | 按任务选择 Skill、开发和维护入口 |
-| [Agent 客户端接入](agent-clients.md) | MCP 配置、按需指导与宿主排错 |
-| [工具与任务语义](agent-client-tools.md) | 工具索引、状态和结果数据 |
-| [客户端验收](agent-client-validation.md) | 宿主行为场景与历史验证记录 |
-| [角色原图](reference-art.md) | 原图生成、导入与动画参考移送 |
-| [序列帧生成](sprite-generator.md) | 候选、检查、修补与导出；交互物作品默认进入交互物动画面板 |
-| [视觉专家与争议复核](sprite-review-evaluation.md) | 独立意见、争议复核、实际画面对比与调用边界 |
-| [选帧修改与备选版本](motion-adjustments.md) | 用户范围与意图、独立额度、对比采用与原版保护 |
-| [角色视觉结构](visual-structures.md) | 原图部件、时序追踪、结构辅助复核、独立分割环境与版本化纠正 |
-| [交互物编辑器](interactable-editor.md) | 外观、交互行为与 Godot 资源 |
-| [交互物原图](prop-art.md) | 物品原图生成与采用；128 px 物品原图导入与 PixelProp 转换后移送为动画参考 |
-| [图片局部调整](image-editing.md) | 精确源图、区域配方、本地候选与版本保护 |
-| [资产目录](asset-catalog.md) | 查找、下载、回收站与恢复 |
-| [Forge 素材包导入](asset-packages.md) | 下载包、源工程、检查确认与恢复合同 |
-| [内部素材导入](internal-imports.md) | 已有素材在编辑器之间复用 |
-| [页面跟随](agent-preview-follow.md) | Agent 执行时的页面展示 |
-| [Godot 交付](godot-delivery.md) | 选择目标游戏项目与资源接入 |
-| [游戏工程 Skill](game-engineering.md) | SpriteFrames、交互物和脚本接入 |
-| [桌面兼容性](desktop-compatibility.md) | Windows/macOS 配置与操作 |
-| [系统架构](architecture.md) | 工作台各组件及数据流 |
-| [连接器契约](connector-contract.md) | 任务协议、文件与服务接口 |
-| [界面说明](workbench-interface.md) | 页面入口与数据范围 |
-| [前端优化方案](前端优化方案.md) | 前端性能、排版与视觉一致性的评估结果和分步方案，已实施 |
-| [交互物动画独立面板方案](交互物动画独立面板方案.md) | 当前交互物动画的界面逻辑与已实现工具汇总，以状态图为中心的独立面板、交互物专用编辑工具与实施记录（已实施） |
-| [物品原图导入与像素化转换方案](物品原图导入与像素化转换方案.md) | 导入 128 px 物品原图，以及把 GPT Image 物品图确定性转换为 128 px 的独立工具 PixelProp，已实施（含实施后修复） |
-| [前端界面与交互优化方案](前端界面与交互优化方案.md) | 首页布局、导航菜单、图标、按钮状态与操作反馈的走查结果、分步方案与实施记录，已实施 |
-| [论文方向与方法](论文方向与方法.md) | 论文方向、已定决策、进度与后续素材 |
-| [论文：先验证，再接续](论文-序列帧长动作生成.md) | 论文主张、方法、研究问题与实验草案 |
-| [论文分支执行计划](论文分支执行计划.md) | 面向论文的新分支：合并与未实现清单、删除范围、执行顺序与当前验证状态 |
-| [工程问题清单与工作记录](问题清单/README.md) | 问题索引与按日期、主题划分的记录目录，含 N2 小测报告、解决方案与复测证据 |
-| [安全策略](../SECURITY.md) | 凭据、文件与本机服务边界 |
-| [第三方声明](../THIRD_PARTY_NOTICES.md) | 代码来源与许可 |
+| [使用与操作手册](operations-manual.md) | 安装启动、密钥配置、日常制作、备份与排错 |
+| [工作台界面说明](workbench-interface.md) | 页面入口、顶栏导航、制作记录与本地草稿 |
+| [桌面兼容性](desktop-compatibility.md) | Windows / macOS 凭据、启动与跨平台注意项 |
+| [安全策略](../SECURITY.md) | 凭据隔离、本地文件与服务安全边界 |
+| [第三方声明](../THIRD_PARTY_NOTICES.md) | 代码来源、上游同步基线与许可说明 |
 
-产品 Skills 保留在 `.agents/skills/`，由 `workbench/manifest.json` 登记。它们用于实际资产生产与工程交付，不依赖开发者本机的规则或工作记录。
+## 资产制作与模块参考
+
+| 文档 | 内容 |
+| --- | --- |
+| [角色原图](reference-art.md) | PixelLab 角色原图生成、本地导入与动画移送 |
+| [序列帧生成](sprite-generator.md) | 五阶段开放动作、对象预设、MCP 操作与 Godot 导出 |
+| [交互物动画面板](交互物动画独立面板方案.md) | 状态图独立面板、专用帧工具（T1–T10）、派生素材与槽位写回 |
+| [选帧修改与备选版本](motion-adjustments.md) | 局部选帧调整、区域保护、帧数与额度限制、确定性帧编辑 |
+| [视觉复核与离线评估](sprite-review-evaluation.md) | 独立多视角复核、可见性核对、确定性探针守卫与离线评测 CLI |
+| [角色视觉结构与规划策略](visual-structures.md) | 原图结构解析、SAM 2.1 追踪、结构辅助制作与策略 6 规划规则 |
+| [交互物编辑器](interactable-editor.md) | 行为与触发配置、共享文档事务、模拟与 Godot 资源包导出 |
+| [交互物品原图与转换](prop-art.md) | GPT Image 透明物品生成、本地处理、128 px 导入与 PixelProp 转换 |
+| [物品原图导入与像素化转换方案](物品原图导入与像素化转换方案.md) | PixelProp 转换算法设计、配方核验与实施说明 |
+| [图片局部调整](image-editing.md) | 共用画布工作区、本地像素工具、AI 局部修改与版本恢复 |
+| [资产目录与交接清单](asset-catalog.md) | 资产检索、打包下载、交接清单与可恢复回收站 |
+| [Forge 素材包导入合同](asset-packages.md) | 素材包格式、安全解包与原子提交 API |
+| [内部素材导入与联用](internal-imports.md) | 资产库跨模块复用与状态链写回协议 |
+| [Godot 交付](godot-delivery.md) | 项目选择、交付包安装、并发锁与 WorkBuddy 接入流程 |
+| [游戏工程 Skill 说明](game-engineering.md) | SpriteFrames 合并、交互物接入与工程 helper 验证 |
+
+## Agent 接入、架构与契约
+
+| 文档 | 内容 |
+| --- | --- |
+| [Agent 客户端接入](agent-clients.md) | MCP / CLI 配置、按需指导读取与 WorkBuddy 重信任 |
+| [Agent 工具与任务语义](agent-client-tools.md) | 分组 MCP 工具索引、任务状态与结果分页协议 |
+| [Agent 预览与页面跟随](agent-preview-follow.md) | WorkBuddy 首次开页、预览策略与页面跟随协议 |
+| [Agent 客户端验收](agent-client-validation.md) | 对话范围、开页与页面跟随回归场景 |
+| [系统架构](architecture.md) | 服务拓扑、模块分层、数据持久化与核心数据流 |
+| [连接器与任务契约](connector-contract.md) | 任务模型、状态机、HTTP Bridge 与各适配器协议 |
+
+## 论文与工程追踪
+
+| 文档 | 内容 |
+| --- | --- |
+| [论文方向与方法](论文方向与方法.md) | v8 定位边界、已定决策、方向演变、模块归属与当前进度路线图 |
+| [论文：先验证，再接续](论文-序列帧长动作生成.md) | 8 页 IEEE CoG 论文主大纲、VBYC 方法与三层实验设计 |
+| [序列帧实验支撑](motion-experiments.md) | 冻结协议、五组对照回放、2×2 消融、回顾导出与匿名盲评包 |
+| [工程问题清单](问题清单/README.md) | 待处理与已关闭问题总索引及按日期划分的批次记录 |

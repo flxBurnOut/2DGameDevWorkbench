@@ -1,70 +1,49 @@
-# 2026-11-24 角色探针接线与离线评测脚本实现
+# 角色探针接线与离线评测脚本实现
+
+> 返回[问题清单索引](../README.md)。
 
 | 项目 | 内容 |
 | --- | --- |
 | 记录时间 | `2026-11-24T01:08:46-05:00` |
 | 基准提交 | `078b12abf6d6` |
-| 归档提交 | `fe37d69135f7`（代码、单测与文档归档提交） |
+| 归档提交 | `fe37d69135f7` |
 | 登记问题 | — |
 | 跟进问题 | `PAPER-11`、`PAPER-12` |
 
-## 1. 本批目标与执行边界
+## 记录
 
-根据用户指令执行两项零绘图生成费代码/脚本工作：
-1. 增量补齐 **`PAPER-11`**（角色侧确定性探针守卫接线、交互物铰接平面 `rotation_plane` 显式声明、争议聚焦图整数倍最近邻缩放居中）。
-2. 完成 **`PAPER-12`** 的离线评测基线、Risk–Coverage 阈值扫描及回顾导出客观漂移计算脚本与隔离单元测试；**严格遵守“素材拿来前不进行运行”边界**，未接触任何 `work/` / `outputs/` / `games/` 真实素材，亦未发起任何真实 VLM 或 PixelLab 调用。
-
-## 2. 问题跟进与实现详情
-
-### 2.1 关闭 `PAPER-11`（已修复并复验）
+### 关闭 `PAPER-11`（已修复并复验）
 
 1. **角色确定性探针接入分段与整段检查守卫**：
-   - 新增 [character_measurements.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/character_measurements.py)，复用 [frame_checks.py](../../../Tools/SpritePipeline/sprite_pipeline/processing/frame_checks.py) 中的 `run_qa` 确定性检测，在不修改原有角色盲审提示词的前提下计算并映射问题标志：
-     - `rhythm`：`frame_position_jump`、`centroid_jump`、`centroid_velocity_jump`、`ground_baseline_drift`（按实际 `job.action.grounded` 与参考图自身 `ground_y` 基线校验）；
-     - `equipment`：`area_change`、`palette_deviation`、`blank_frame`、`missing_alpha`、`corrupt_frame`、`frame_size_mismatch`；
-     - `completeness`：`loop_endpoint_difference`（有意排除 `consecutive_duplicate_frames` 与 `safe_margin_violation`，避免误杀刻意定帧或宽武器边缘动作）。
-   - 在 [checkpoints.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/checkpoints.py)、[visual_review.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/visual_review.py) 与 [production_review.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/production_review.py) 中记录 `motion_evidence['character_probes']`（与交互物 `tracked_parts` 分离保存，确保盲审提示词及 `without_probes` 无文本泄露），并经扩展了角色标签映射的 [prop_measurements.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/prop_measurements.py) `guard_measurements` 触发确定性退回与人审留痕。
-   - 在 [experiment.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/experiment.py) `counterfactual_verdicts` 与 `_infer_frame_count` 中补充识别 `character_probes`，使角色主域同样完整输出 2×2 反事实矩阵（`without_probes`、`without_retention`、`final_review_wins` 与 `probe_overrides`）。
-2. **交互物 `HingeMeasurement.rotation_plane` 与平面外旋转跳过**：
-   - 在 [contracts.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/contracts.py) 的 `HingeMeasurement` 新增 `rotation_plane: Literal['in_plane', 'out_of_plane'] = 'in_plane'`，并通过 `@model_serializer(mode='wrap') preserve_legacy_hinge` 在值为默认 `'in_plane'` 时省略键名，保证历史计划 `plan_sha256` 100% 不变。
-   - 在 [prop_measurements.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/prop_measurements.py) `measure_parts` 中，当 `rotation_plane == 'out_of_plane'` 时跳过 2D 半径守恒检测（标记 `'rotation_plane': 'out_of_plane'` 与 `'radius_check_skipped': True`），仍照常执行 `fixed_parts` 像素检测。
-3. **争议聚焦图整数倍最近邻缩放居中**：
-   - 在 [dispute_review.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/dispute_review.py) `focus_panels` 中，当联合包围盒宽、高均不大于 320px 时，使用 `scale = max(1, min(320 // bw, 320 // bh))` 计算整数倍最近邻缩放尺寸 `(bw * scale, bh * scale)`，在每个 320×320 网格区域（header 下方 `y+28` 起）水平垂直居中贴图，并在 `selection` 中记录 `'scale': scale`。
+   - 新增 [character_measurements.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/character_measurements.py)，复用 [frame_checks.py](../../../Tools/SpritePipeline/sprite_pipeline/processing/frame_checks.py) 的确定性检测（不改动盲审提示词），将问题映射到三个维度：
+     - **节奏（`rhythm`）**：位置跳变、质心/速度跳变与接地动作的地面基线偏移（按参考图自身基线校验）；
+     - **装备/外观（`equipment`）**：前景面积变化、调色板偏离及空白/缺 Alpha/损坏/异尺寸帧；
+     - **完整性（`completeness`）**：循环首尾差异（刻意排除连续重复帧与安全边距提醒，避免误伤定帧或宽武器动作）。
+   - 在 `checkpoints.py`、`visual_review.py` 与 `production_review.py` 中独立写入 `motion_evidence['character_probes']`（不注入专家提示词），经 `prop_measurements.py` 的 `guard_measurements` 触发退回与人工留痕；同时扩展 `experiment.py` 的 `counterfactual_verdicts`，使角色主域完整输出 2×2 反事实矩阵。
+2. **交互物旋转平面标记**：
+   - [contracts.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/contracts.py) 的 `HingeMeasurement` 新增 `rotation_plane`（`in_plane` / `out_of_plane`，默认 `in_plane` 且序列化时省略默认值，保持历史 `plan_sha256` 不变）。
+   - [prop_measurements.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/prop_measurements.py) 在 `out_of_plane` 时跳过 2D 半径守恒检测（标记 `radius_check_skipped: True`），仍照常执行固定区像素检测。
+3. **争议聚焦图整数倍缩放居中**：
+   - [dispute_review.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/dispute_review.py) 在联合包围盒不超过 320×320 时按 `max(1, min(320 // bw, 320 // bh))` 做整数倍最近邻缩放，在 320×320 网格内居中贴图并记录 `scale`。
 
-### 2.2 跟进 `PAPER-12`（脚本已就绪并复验；待真实素材/语料后运行）
+### 跟进 `PAPER-12`（脚本已就绪，待素材与标注到位后运行）
 
-1. **等调用次数无守卫离线投票与多视角基线**：
-   - 在 [review_evaluation.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/review_evaluation.py) 新增 `raw_audit_verdict` 与 `unguarded_audit`，并扩展 `ReviewExperiment.run` 与 [review_cli.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/review_cli.py)：
-     - `self-consistency [--calls 5]`（默认 5 次）：连续执行 $k$ 次彼此独立的盲 `Audit` 采样（关闭 0.80/0.85 置信度及最小帧数守卫），按各维度多数票裁决（平票退回 `uncertain`），保留投票计数与 `unguarded=True` 标记。
-     - `experts-no-guard`（预算 5 次）：执行 `observe + audit + appearance + motion`，若三方就通过/失败未达成一致则再调一次 `resolve`，直接按分类映射并关闭 `No-Silent-Override`、可见性守卫、置信度/最小帧数门槛及确定性探针。
-2. **3×3 混淆矩阵与 Risk–Coverage 曲线**：
-   - `score_reviews` 在完整保留原有 `totals`、`rows`、`label_digest`（以及 `comparison_gate` 兼容性）的同时，新增 `confusion_matrix`（`pass` / `fail` / `uncertain` 3×3 矩阵）与 `rates`（`coverage`、`abstention_rate`、`false_accept_rate_overall`、`false_accept_rate_selective`、`false_reject_rate_overall`、`selective_error_rate`）；对 `unguarded=True` 报告直接使用其原始裁决而不重套 0.80/0.85 守卫。
-   - 新增 `risk_coverage_curve` 与 CLI `--risk-coverage` 参数，沿标量置信度阈值扫描风险与覆盖率，同时固定保留 `requires_human_adjudication` 等结构化弃权（不随阈值降低而放行）。
-3. **回顾性导出客观逐段/逐剪辑漂移指标**：
-   - 在 [experiment.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/experiment.py) 新增 `sequence_drift_metrics`，计算相对于 `input/reference.png` 的逐帧与汇总（最大/均值/末帧）`ground_y_delta_px`、`area_change_ratio`、`silhouette_iou` 与 `palette_deviation_ratio`，同步接入 `retrospective`（各段记入 `stages[].drift` 与 `drift_source`，完整播放记入 `clips[].drift`）与 `legacy_export`（记入 `clips[].drift`）。
+1. **等调用次数无守卫离线基线**：在 [review_evaluation.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/review_evaluation.py) 与 [review_cli.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/review_cli.py) 新增两项子命令：
+   - `self-consistency [--calls 5]`：连续执行 $k$ 次（默认 5 次）独立盲审采样，关闭置信度与最小帧数守卫，按维度多数票裁决（平票转 `uncertain`）；
+   - `experts-no-guard`：预算 5 次的多视角+争议流程，关闭不沉默覆盖、可见性守卫、置信度/帧数门槛与确定性探针。
+2. **3×3 混淆矩阵与 Risk–Coverage 扫描**：
+   - `score_reviews` 在兼容旧输出的同时新增三态混淆矩阵与六项比率（自动覆盖率、弃权率、总体/选择性错误放行率、总体错误拒绝率、选择性错误率）；对 `unguarded=True` 报告直接使用原始裁决。
+   - 新增 `risk_coverage_curve` 与 CLI `--risk-coverage`，沿置信度阈值扫描风险–覆盖率权衡，同时保留结构化人工升级项不随阈值下调。
+3. **回顾导出逐段客观漂移指标**：在 [experiment.py](../../../Tools/SpritePipeline/sprite_pipeline/collaboration/experiment.py) 新增 `sequence_drift_metrics`，计算相对参考图的逐帧及汇总地面基线偏移、面积变化率、轮廓 IoU 与调色板偏离度，接入 `retrospective`（`stages[].drift`、`clips[].drift`）与 `legacy_export`（`clips[].drift`）。
 
-## 3. 隔离验证证据（未接触真实素材与付费接口）
+### 隔离验证
 
-所有测试仅使用本地合成 PNG、Fixture 模拟提供方与临时目录执行：
-1. **新增与关联专项回归**：
-   ```sh
-   PYTHONPATH=Tools/SpritePipeline Tools/SpritePipeline/.venv/bin/python -m pytest -q \
-     Tools/SpritePipeline/tests/test_prop_planning_limits.py \
-     Tools/SpritePipeline/tests/test_production_review.py \
-     Tools/SpritePipeline/tests/test_review_evaluation.py \
-     Tools/SpritePipeline/tests/test_paper_experiment.py
-   ```
-   结果：**89 passed in 15.06s**（含新增的 `test_hinge_rotation_plane_preserves_legacy_hash_and_skips_out_of_plane_radius`、`test_character_probes_guard_checkpoints_and_populate_2x2_counterfactual`、`test_focus_panels_use_integer_scale_and_centered_tile`、`test_equal_compute_self_consistency_and_experts_no_guard_cli`、`test_confusion_matrix_and_risk_coverage_sweep_cli`、`test_retrospective_and_legacy_export_compute_objective_drift_metrics`）。
-2. **全量沙箱 Python 回归**：
-   ```sh
-   PYTHONPATH=Tools/SpritePipeline Tools/SpritePipeline/.venv/bin/python -m pytest -q Tools/SpritePipeline/tests \
-     -k "not keychain and not test_archive_writeback_to_shared_document"
-   ```
-   结果：**884 passed, 57 subtests passed, 2 skipped, 4 deselected**（仅 9 项已知受限沙箱阻断的 macOS `SecKeychainAddGenericPassword` 凭据测试失败：`test_backend_capabilities.py` 1 项、`test_motion_correction.py` 1 项、`test_quota_result_safety.py` 5 项、`test_workbench_credentials.py` 2 项）。
-3. **Node 交互物套件**：
-   ```sh
-   node tests/interactable-motion/run.mjs
-   ```
-   结果：**9/9 ok**。
+本批验证均使用本地合成 PNG、模拟夹具与临时目录执行，未触碰真实素材或外部付费接口：
 
-后续仅余待真实素材与冻结语料到位后的数据采集与正式运行（`PAPER-01` 清点导出、`PAPER-12` 双人独立标注与离线对比测试）。
+- 专项测试（`test_prop_planning_limits.py`、`test_production_review.py`、`test_review_evaluation.py`、`test_paper_experiment.py`）：**89 passed**；
+- 全量沙箱 Python 回归（排除 keychain 与跨服务写回）：**884 passed, 57 subtests passed, 2 skipped**（仅 9 项已知沙箱阻断的 macOS Keychain 凭据用例失败）；
+- Node 交互物套件（`node tests/interactable-motion/run.mjs`）：**9/9 ok**。
+
+### 下一步
+
+待真实素材与双人独立标注到位后，按阶段推进 `PAPER-01`（历史作业盘点导出）与 `PAPER-12`（离线基准实测）；付费主实验前另需闭环 `PAPER-02/03/07/08/09`。

@@ -5,7 +5,9 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
+from pydantic import ValidationInfo, BaseModel, ConfigDict, Field, model_validator, model_serializer
+
+from ..object_identity import ObjectIdentity
 
 
 class Contract(BaseModel):
@@ -13,9 +15,16 @@ class Contract(BaseModel):
 
 
 class Budget(Contract):
+    max_frames_per_request: int | None = Field(default=None, ge=4, le=16)
+    max_total_frames: int | None = Field(default=None, ge=4, le=512)
+
     max_planning_calls: int = Field(default=8, ge=4, le=16)
     max_generation_calls: int = Field(default=4, ge=1, le=32)
     max_review_calls: int = Field(default=10, ge=2, le=200)
+
+    @model_serializer(mode='wrap')
+    def preserve_budget_hash(self, handler):
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class VisualStructureSelection(Contract):
@@ -23,8 +32,36 @@ class VisualStructureSelection(Contract):
     token: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
-class TaskSpec(Contract):
-    character_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_]*$", max_length=100)
+class SkeletonState(Contract):
+    name: str = Field(min_length=1, max_length=40)
+    appearance: str = Field(min_length=1, max_length=200)
+
+
+class InteractableSkeleton(Contract):
+    """Ordered interactable states; one planned stage per consecutive pair."""
+    states: list[SkeletonState] = Field(min_length=2, max_length=5)
+    hold: str = Field(default='', max_length=120)
+
+    @model_validator(mode='after')
+    def distinct(self):
+        names = [s.name.strip() for s in self.states]
+        # Only a final return to the initial state may repeat a name.
+        inner = names[:-1] if len(names) > 2 and names[-1] == names[0] else names
+        if any(not n for n in names) or len(set(inner)) != len(inner):
+            raise ValueError('状态骨架的名称不能为空或重复')
+        return self
+
+    def transitions(self):
+        return len(self.states) - 1
+
+    def summary(self):
+        chain = ' → '.join(s.name for s in self.states)
+        details = '；'.join(f'{s.name}：{s.appearance}' for s in self.states)
+        return f'{chain}。{details}' + (f'。结束：{self.hold}' if self.hold else '')
+
+
+class TaskSpec(ObjectIdentity, Contract):
+    object_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_]*$", max_length=100)
     description: str = Field(min_length=4, max_length=2000)
     ending: str = Field(default="", max_length=300)
     return_to_reference: bool = False
@@ -38,6 +75,8 @@ class TaskSpec(Contract):
     # Missing on historical records: preserve their hash and two-call behavior.
     review_protocol: Literal['baseline', 'experts_v1'] | None = None
     visual_structure: VisualStructureSelection | None = None
+    # Interactables only. Missing on earlier records: their hashes stay unchanged.
+    interactable_skeleton: InteractableSkeleton | None = None
 
     @model_serializer(mode='wrap')
     def preserve_legacy_spec(self, handler):
@@ -45,7 +84,14 @@ class TaskSpec(Contract):
         if self.review_protocol is None:
             data.pop('review_protocol', None)
         if self.visual_structure is None:data.pop('visual_structure',None)
-        return data
+        if self.interactable_skeleton is None:data.pop('interactable_skeleton',None)
+        return self.preserve_identity_shape(data)
+
+    @model_validator(mode='after')
+    def skeleton_object(self):
+        if self.interactable_skeleton is not None and self.object_type != 'interactable':
+            raise ValueError('状态骨架只适用于交互物')
+        return self
 
 
 def review_calls_per_check(spec):
@@ -70,8 +116,92 @@ class Requirement(Contract):
     evidence: str = Field(min_length=1, max_length=300)
 
 
+CHARACTER_DIMENSIONS = ('completeness', 'equipment', 'rhythm')
+PROP_DIMENSIONS = ('state_frame', 'transition', 'fixed_parts')
+QualityDimension = Literal['completeness', 'equipment', 'rhythm', 'state_frame', 'transition', 'fixed_parts']
+
+
+class PremiseCheck(Contract):
+    status: Literal['satisfied', 'mismatch', 'ambiguous']
+    evidence: str = Field(min_length=4, max_length=300)
+
+
+class ReferencePremises(Contract):
+    viewpoint: PremiseCheck
+    initial_state: PremiseCheck
+    part_ownership: PremiseCheck
+
+    def blockers(self):
+        labels = {'viewpoint': '视角', 'initial_state': '初态', 'part_ownership': '部件归属'}
+        return [f'{labels[key]}：{check.evidence}' for key, check in self if check.status != 'satisfied']
+
+
+class OpaqueRegion(Contract):
+    name: str = Field(min_length=1, max_length=80)
+    # Native coordinates on a 128px prop, right/bottom exclusive.
+    box: list[int] = Field(min_length=4, max_length=4)
+
+    @model_validator(mode='after')
+    def within_reference(self):
+        left, top, right, bottom = self.box
+        if not (0 <= left < right <= 128 and 0 <= top < bottom <= 128):
+            raise ValueError('Opaque monitoring region must be within the 128px reference')
+        return self
+
+
+class ReferenceDifference(Contract):
+    description: str = Field(min_length=1, max_length=300)
+    observed: str = Field(min_length=1, max_length=300)
+    impact: Literal['impedes_motion', 'changes_fixed_parts', 'appearance_only']
+    handling: Literal['use_reference', 'needs_decision']
+
+
+class HingeMeasurement(Contract):
+    pivot_anchor_id: str
+    endpoint_part_id: str
+    rotation_plane: Literal['in_plane', 'out_of_plane'] = 'in_plane'
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_hinge(self, handler):
+        data = handler(self)
+        if self.rotation_plane == 'in_plane':
+            data.pop('rotation_plane', None)
+        return data
+
+
+class InteractableMotion(Contract):
+    differences: list[ReferenceDifference] = Field(default_factory=list, max_length=24)
+    hinge: HingeMeasurement | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_recorded_contract(self, handler):
+        data = handler(self)
+        if not self.differences:
+            data.pop('differences', None)
+        if self.hinge is None:
+            data.pop('hinge', None)
+        return data
+
+    def blockers(self):
+        return self.reference_check.blockers() + [
+            f'{item.description} → {item.observed}' for item in self.differences
+            if item.impact != 'appearance_only' or item.handling == 'needs_decision'
+        ]
+
+    initial_state: str = Field(min_length=1, max_length=300)
+    target_state: str = Field(min_length=1, max_length=300)
+    moving_parts: list[str] = Field(min_length=1, max_length=24)
+    fixed_parts: list[str] = Field(max_length=24)
+    motion_type: Literal['appearance_change', 'hinge_rotation', 'deformation', 'occluded_rigid_translation']
+    endpoint: str = Field(min_length=1, max_length=300)
+    hold: str = Field(min_length=1, max_length=300)
+    hold_frames: int = Field(default=0, ge=0, le=63, description="Additional playback ticks repeating the confirmed final frame")
+    reference_check: ReferencePremises
+    opaque_regions: list[OpaqueRegion] = Field(default_factory=list, max_length=24)
+
+
 class QualityCriterion(Contract):
-    dimension: Literal['completeness', 'equipment', 'rhythm']
+    dimension: QualityDimension
     criterion: str = Field(min_length=4, max_length=400)
 
 
@@ -88,19 +218,22 @@ class MotionQuality(Contract):
     ending_contract: str = Field(min_length=4, max_length=180)
     rhythm_contract: str = Field(min_length=4, max_length=180)
     playback_fps: float = Field(gt=0, le=60)
+    interactable: InteractableMotion | None = None
     criteria: list[QualityCriterion] = Field(min_length=3, max_length=3)
     key_poses: list[KeyPose] = Field(default_factory=list, max_length=6)
 
     @model_serializer(mode='wrap')
     def preserve_earlier_quality_hash(self, handler):
         data=handler(self)
+        if self.interactable is None: data.pop('interactable', None)
         if not self.key_poses:data.pop('key_poses',None)
         return data
 
     @model_validator(mode='after')
     def dimensions(self):
-        if {c.dimension for c in self.criteria} != {'completeness', 'equipment', 'rhythm'}:
-            raise ValueError('Quality criteria must cover completeness, equipment and rhythm exactly once')
+        expected = PROP_DIMENSIONS if self.interactable else CHARACTER_DIMENSIONS
+        if {c.dimension for c in self.criteria} != set(expected):
+            raise ValueError(f'Quality criteria must cover {expected} exactly once')
         return self
 
 
@@ -192,7 +325,8 @@ class PlanProposal(Contract):
 
     @model_validator(mode="after")
     def validate_sequence(self):
-        if sum(s.frame_count for s in self.stages) > 64:
+        hold = self.quality.interactable.hold_frames if self.quality and self.quality.interactable else 0
+        if sum(s.frame_count for s in self.stages) + hold > 64:
             raise ValueError("A complete animation supports at most 64 planned frames")
         if self.stages[0].first_frame != "original":
             raise ValueError("The first stage must use the original reference")
@@ -280,9 +414,28 @@ class CoordinatorTurn(Contract):
         return self
 
 
+class FinalCoordinatorTurn(CoordinatorTurn):
+    action: Literal['finalize']
+    plan: PlanProposal
+
+
 def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                      separators=(",", ":")).encode()).hexdigest()
+
+
+def adjustment_source_token(job, work_revision, frame_token):
+    return digest({'token': frame_token, 'fps': job.action.fps, 'loop': job.action.loop,
+                   'reference': job.reference_sha256, 'plan': job.request.open_plan.plan_sha256,
+                   'revision': work_revision})
+
+
+def user_source(spec):
+    """Every text the user actually supplied; a user requirement must quote it."""
+    source = spec.description + "\n" + spec.ending
+    if spec.interactable_skeleton is not None:
+        source += "\n" + spec.interactable_skeleton.summary()
+    return source
 
 
 def bind_original_requirements(plan: PlanProposal, spec: TaskSpec) -> PlanProposal:
@@ -291,13 +444,17 @@ def bind_original_requirements(plan: PlanProposal, spec: TaskSpec) -> PlanPropos
     Keep the model interpretation, label it as such, and attach the actual
     original input in full. This changes provenance, not stages or budgets.
     """
-    source = spec.description + "\n" + spec.ending
+    source = user_source(spec)
     requirements = []
     for item in plan.requirements:
         if item.source == "user" and item.evidence not in source:
             item = item.model_copy(update={"source":"expert", "evidence":("专家对需求的解读，非用户逐字原话：" + item.evidence)[:300]})
         requirements.append(item)
-    for label, text in (("用户原始动作要求",spec.description),("用户指定结束姿势",spec.ending)):
+    originals = [("用户原始动作要求",spec.description),("用户指定结束姿势",spec.ending)]
+    if spec.interactable_skeleton is not None:
+        # Freezing the skeleton into the plan puts it under plan_sha256.
+        originals.append(("用户状态骨架", spec.interactable_skeleton.summary()))
+    for label, text in originals:
         for offset in range(0,len(text),300):
             requirements.append(Requirement(text=label + (f"（{offset//300+1}）" if len(text)>300 else ""), source="user", evidence=text[offset:offset+300]))
     # Revalidate the complete object, preserving every proposed requirement.
@@ -311,7 +468,48 @@ class TargetImage(Contract):
     note: str = Field(min_length=4, max_length=1000)
 
 
+def motion_transport_schema(schema_type, interactable):
+    """Specialize the model-facing schema while persisted records support both types."""
+    class MotionTransport(schema_type):
+        @classmethod
+        def model_json_schema(cls, *args, **kwargs):
+            schema = schema_type.model_json_schema(*args, **kwargs)
+            definitions = schema.get('$defs', {})
+            for definition in definitions.values():
+                dimension = definition.get('properties', {}).get('dimension', {})
+                if dimension.get('enum') == list(CHARACTER_DIMENSIONS + PROP_DIMENSIONS):
+                    dimension['enum'] = list(PROP_DIMENSIONS if interactable else CHARACTER_DIMENSIONS)
+            if 'MotionQuality' in definitions:
+                fields = definitions['MotionQuality']['properties']
+                if interactable:
+                    fields['interactable'] = {'$ref': '#/$defs/InteractableMotion'}
+                else:
+                    fields.pop('interactable', None)
+                    for unused in ('InteractableMotion', 'ReferencePremises', 'PremiseCheck', 'OpaqueRegion'):
+                        definitions.pop(unused, None)
+            return schema
+    return MotionTransport
+
+
+def prop_contract(plan):
+    return plan.quality.interactable if plan and plan.quality else None
+
+
+def skeleton_problem(plan, spec):
+    """The planner must segment by the user's state skeleton (one stage per transition)."""
+    skeleton = spec.interactable_skeleton
+    if skeleton is None or plan is None:
+        return None
+    if len(plan.stages) != skeleton.transitions():
+        names = ' → '.join(s.name for s in skeleton.states)
+        return (f'状态骨架 {names} 有 {skeleton.transitions()} 段过渡，方案需要恰好 {skeleton.transitions()} 段，'
+                f'每段只完成一次相邻状态的过渡，当前为 {len(plan.stages)} 段。不能合并或拆分状态，也不能提高预算。')
+    return None
+
+
 class PlanBinding(Contract):
+    prop_structure_policy: Literal[1] | None = None
+    unsupported_motion_acknowledged: Literal[True] | None = None
     version: Literal[1] = 1
     work_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     revision: int = Field(ge=1)
@@ -323,12 +521,14 @@ class PlanBinding(Contract):
     compiled_prompts: list[str] = Field(default_factory=list, max_length=4)
     end_targets: list[TargetImage] = Field(default_factory=list, max_length=4)
     visual_structure: dict[str,Any] | None = None
-    generation_policy_version: Literal[1, 2, 3, 4, 5] | None = None
+    generation_policy_version: Literal[1, 2, 3, 4, 5, 6] | None = None
     visibility_review_version: Literal[1, 2, 3, 4] | None = None
 
     @model_serializer(mode='wrap')
     def preserve_binding(self, handler):
         data = handler(self)
+        if self.prop_structure_policy is None: data.pop('prop_structure_policy', None)
+        if self.unsupported_motion_acknowledged is None: data.pop('unsupported_motion_acknowledged', None)
         if not self.end_targets: data.pop('end_targets', None)
         if self.visual_structure is None:data.pop('visual_structure',None)
         if self.generation_policy_version is None:data.pop('generation_policy_version',None)
@@ -336,9 +536,21 @@ class PlanBinding(Contract):
         return data
 
     @model_validator(mode="after")
-    def validate_budget_and_identity(self):
+    def validate_budget_and_identity(self, info: ValidationInfo):
         from .structure_control import validate_structure_binding
         validate_structure_binding(self.spec,self.visual_structure,self.reference_sha256,self.plan)
+        prop = prop_contract(self.plan)
+        if self.prop_structure_policy:
+            from .structure_control import prop_structure_problem
+            problem = prop_structure_problem(prop, self.visual_structure)
+            if problem:
+                raise ValueError(problem)
+        if prop and self.plan.quality.version < 3:
+            raise ValueError('交互物计划需要真实帧检查点')
+        if prop and (self.spec.object_type != 'interactable' or prop.blockers()):
+            raise ValueError('交互物合同与对象或起始图前提不符')
+        if prop and prop.motion_type == 'occluded_rigid_translation' and not self.unsupported_motion_acknowledged and not (info.context or {}).get('planning_only'):
+            raise ValueError('当前生成器不适合带遮挡的刚体平移，请明确确认是否尝试')
         stages = [t.stage for t in self.end_targets]
         if len(stages) != len(set(stages)) or any(s >= len(self.plan.stages) for s in stages):
             raise ValueError('Target images must identify unique existing segments')
@@ -351,7 +563,7 @@ class PlanBinding(Contract):
             raise ValueError("Plan hash does not match the approved plan")
         if self.compiled_prompts and (len(self.compiled_prompts)!=len(self.plan.stages) or any(not p or len(p)>1000 for p in self.compiled_prompts)):
             raise ValueError('Frozen provider prompts must match all stages and their size limit')
-        if self.generation_policy_version in (1,2,3,4,5):
+        if self.generation_policy_version in (1,2,3,4,5,6):
             from .generation_conditions import compile_conditions
             if not self.plan.quality or self.plan.quality.version != 4:
                 raise ValueError('Drawing conditions policy 1 requires the complete version 4 motion contract')
@@ -366,11 +578,16 @@ class PlanBinding(Contract):
             raise ValueError("The requested return to reference must be bound to the final stage")
         if len(self.plan.stages) * self.spec.candidate_count > self.spec.budget.max_generation_calls:
             raise ValueError("The plan exceeds the authorized generation-call limit")
+        counts = [stage.frame_count for stage in self.plan.stages]
+        budget = self.spec.budget
+        if ((budget.max_frames_per_request and max(counts) > budget.max_frames_per_request)
+                or (budget.max_total_frames and sum(counts) * self.spec.candidate_count > budget.max_total_frames)):
+            raise ValueError("方案超过用户授权的绘图帧数")
         checks = 1 + len(self.plan.stages) if self.plan.quality and self.plan.quality.version >= 3 else 1
         reviews = review_calls_per_check(self.spec) * checks
         if self.plan.quality and self.spec.candidate_count * reviews > self.spec.budget.max_review_calls:
             raise ValueError(f'Each candidate needs {reviews} visual calls for segment checks and final review; respect the review budget')
-        source = self.spec.description + "\n" + self.spec.ending
+        source = user_source(self.spec)
         for requirement in self.plan.requirements:
             if requirement.source == "user" and requirement.evidence not in source:
                 raise ValueError("A user requirement must quote the user's actual input")
@@ -383,10 +600,12 @@ class StageRun(Contract):
     provider_job_id: str | None = None
     error: dict[str, Any] | None = None
     actual_frame_count: int = Field(default=0, ge=0, le=64)
+    frames_manifest_sha256: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
     usage: dict[str, Any] = Field(default_factory=dict)
     review: dict[str, Any] | None = None
     accepted: dict[str, Any] | None = None
     repairs: list[dict[str, Any]] = Field(default_factory=list, max_length=2)
+    state_checkpoint: dict[str, Any] | None = None
     active_frames: list[dict[str, Any]] | None = None
     review_history: list[dict[str, Any]] = Field(default_factory=list)
     adjustment_history: list[dict[str, Any]] = Field(default_factory=list)
@@ -394,6 +613,8 @@ class StageRun(Contract):
     @model_serializer(mode='wrap')
     def preserve_legacy_stage(self, handler):
         data=handler(self)
+        if self.frames_manifest_sha256 is None: data.pop('frames_manifest_sha256', None)
+        if self.state_checkpoint is None: data.pop('state_checkpoint', None)
         if not self.adjustment_history:data.pop('adjustment_history',None)
         return data
 
@@ -412,7 +633,20 @@ class PlanControl(Contract):
     message: str = "等待确认制作方案"
 
 
+class ExecutionIntent(Contract):
+    version: Literal[1] = 1
+    revision: int = Field(ge=1)
+    plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    targets_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization: Literal['automatic', 'explicit', 'legacy_binding']
+    phase: Literal['authorized', 'paused', 'active'] = 'authorized'
+    generation_account: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    allow_unsupported_motion: bool = False
+    activation_error: dict[str, str] | None = None
+
+
 class OpenWork(Contract):
+    frame_budget: dict[str, Any] | None = None
     version: Literal[1, 2, 3] = 3
     id: str = Field(pattern=r"^[0-9a-f]{32}$")
     revision: int = Field(default=1, ge=1)
@@ -430,19 +664,24 @@ class OpenWork(Contract):
     plan: PlanProposal | None = None
     plan_sha256: str | None = None
     job_id: str | None = None
+    execution_intent: ExecutionIntent | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
     planning_authorized: bool = False
     auto_execute: bool = False
     planning_config: dict[str, Any] = Field(default_factory=dict)
-    planning_format_version: Literal[1, 2, 3] | None = None
+    planning_format_version: Literal[1, 2, 3, 4] | None = None
     end_targets: list[TargetImage] = Field(default_factory=list, max_length=4)
     visual_structure: dict[str,Any] | None = None
-    generation_policy_version: Literal[1, 2, 3, 4, 5] | None = None
+    generation_policy_version: Literal[1, 2, 3, 4, 5, 6] | None = None
     visibility_review_version: Literal[1, 2, 3, 4] | None = None
+    # Set only on copies made for paper experiments; ordinary works omit it.
+    experiment: dict[str, Any] | None = None
 
     @model_serializer(mode='wrap')
     def preserve_structure_free_work(self,handler):
         data=handler(self)
+        if self.execution_intent is None:data.pop('execution_intent',None)
+        if self.experiment is None:data.pop('experiment',None)
         if self.visual_structure is None:data.pop('visual_structure',None)
         if self.planning_format_version is None:data.pop('planning_format_version',None)
         if self.generation_policy_version is None:data.pop('generation_policy_version',None)

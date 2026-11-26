@@ -10,6 +10,7 @@ from .errors import ConflictError, ValidationHarnessError, ProviderError
 from .jsonio import atomic_write_json, read_json
 from .models import CandidateStatus, utc_now
 from .providers.base import ProviderRequest, PollStatus
+from .providers.account import AccountSlotBusy, animation_intent_id
 from .grip_contract import grip_rule
 from .prompts import character_identity_parts
 
@@ -198,7 +199,8 @@ class FixedAttackGeneration:
             self.s._check_submission_quota(job_id,index,provider,phase_frame_count=r['frame_count'])
             folder=self.directory(job_id,index,stage);folder.mkdir(parents=True,exist_ok=True)
             request=ProviderRequest(reference_image=first,last_frame=last,prompt=r['prompt'],frame_count=r['frame_count'],
-                seed=(c.seed+stage*104729)%(2**31-1) if c.seed is not None else None,transparent_background=job.character.transparent_background)
+                seed=(c.seed+stage*104729)%(2**31-1) if c.seed is not None else None,transparent_background=job.character.transparent_background,
+                local_submission_id=animation_intent_id(job_id,index,stage))
             atomic_write_json(folder/'submit.intent.json',{'maximum_submission_attempts':1,'stage':stage,'frame_count':r['frame_count'],
                 'first_sha256':hashlib.sha256(first).hexdigest(),'last_sha256':hashlib.sha256(last).hexdigest() if last else None,
                 'prompt':request.prompt,'seed':request.seed,'grip_contract':c.attack_sequence.get('grip_contract'),'rhythm':c.attack_sequence.get('rhythm')})
@@ -206,28 +208,38 @@ class FixedAttackGeneration:
                 c=self.candidate(current,index);r=self.validate(c)[stage]
                 if r['state']!='created' or r['submission_attempts']:raise ConflictError('片段已在其他进程提交')
                 r.update(state='submitting',submission_attempts=1)
+                current.generation_account=current.generation_account or getattr(provider,'account_fingerprint',None)
                 c.status=CandidateStatus.submitting;c.provider_job_id=None;c.submission_attempts=sum(x['submission_attempts'] for x in self.validate(c))
                 c.submission_started_at=utc_now();c.provider_name='pixellab';c.provider_model='animate-with-text-v3'
                 c.raw_request_path=(folder/'submit.intent.json').relative_to(self.store.job_dir(job_id)).as_posix()
                 current.generation_requested_at=current.generation_requested_at or utc_now()
                 self.s._refresh_job_status(current);current.touch('attack_stage_submitting',candidate_index=index,stage=stage)
             try:submission=provider.submit(request)
+            except AccountSlotBusy:raise
             except Exception as exc:
                 unknown=not isinstance(exc,ProviderError) or bool(exc.details.get('submission_unknown'))
                 with self.store.locked_job(job_id) as current:
                     c=self.candidate(current,index);self.validate(c)[stage].update(state='unknown' if unknown else 'failed')
                     c.status=CandidateStatus.submission_unknown if unknown else CandidateStatus.failed
+                    if isinstance(exc,ProviderError):
+                        c.provider_job_id=exc.details.get('provider_job_id')
+                        c.usage=(exc.details.get('response') or {}).get('usage') or {}
+                        self.validate(c)[stage].update(provider_job_id=c.provider_job_id,usage=c.usage)
                     c.error=exc.as_dict() if isinstance(exc,ProviderError) else {'code':'submission_unknown','message':'提交结果未知，不会重试'}
                     self.s._refresh_job_status(current);current.touch('attack_stage_submission_stopped',candidate_index=index,stage=stage)
+                if isinstance(exc,ProviderError) and exc.details.get('submission_rejected'):return False
                 raise
             # Save the remote ID before optional audit files.
             with self.store.locked_job(job_id) as current:
                 c=self.candidate(current,index);self.validate(c)[stage].update(state='pending',provider_job_id=submission.provider_job_id)
                 c.provider_job_id=submission.provider_job_id;c.provider_status=submission.status;c.submitted_at=utc_now()
                 c.status=CandidateStatus.provider_pending;c.error=None;c.diagnostic_only=submission.diagnostic_only
+                c.usage=submission.raw_response.get('usage') or {}
+                self.validate(c)[stage]['usage']=c.usage
                 self.s._refresh_job_status(current);current.touch('attack_stage_submitted',candidate_index=index,stage=stage,provider_job_id=submission.provider_job_id)
             atomic_write_json(folder/'submit.request.json',submission.request_record)
             atomic_write_json(folder/'submit.response.json',submission.raw_response)
+            return True
 
     def poll(self,job_id,index,stage,provider,wait):
         job=self.store.load(job_id);c=self.candidate(job,index);r=self.validate(c)[stage]
@@ -240,6 +252,8 @@ class FixedAttackGeneration:
             if result.status==PollStatus.failed:
                 with self.store.locked_job(job_id) as current:
                     c=self.candidate(current,index);self.validate(c)[stage].update(state='failed',error=result.error)
+                    c.usage=result.usage or c.usage
+                    self.validate(c)[stage]['usage']=c.usage
                     c.status=CandidateStatus.failed;c.error=result.error;self.s._refresh_job_status(current)
                 return False
             manifest=[]
@@ -325,6 +339,7 @@ class FixedAttackGeneration:
     def advance(self,job_id,provider,*,wait=True,candidate_index=None):
         with self.store.operation_lock(job_id,'attack_sequence',timeout_seconds=1):
             job=self.store.load(job_id)
+            if not self.s._same_generation_account(job,provider):return job
             targets=[candidate_index] if candidate_index is not None else [c.candidate_index for c in job.candidates]
             if any(c.candidate_index not in targets and c.status in {CandidateStatus.submitting,CandidateStatus.submission_unknown,CandidateStatus.provider_pending,CandidateStatus.saving} for c in job.candidates):
                 raise ConflictError('另一个候选仍在执行，暂不能提交这个候选')
@@ -340,7 +355,12 @@ class FixedAttackGeneration:
                     if all(r['state']=='complete' for r in runs):self.assemble(job_id,index);break
                     stage=next(i for i,r in enumerate(runs) if r['state']!='complete');r=runs[stage]
                     if r['state'] in {'unknown','submitting','failed'}:raise ConflictError('攻击片段已停止，不会重新提交')
-                    if r['state']=='created':self.submit(job_id,index,stage,provider)
+                    if r['state']=='created':
+                        try:
+                            if not self.submit(job_id,index,stage,provider):break
+                        except AccountSlotBusy as exc:
+                            self.s._queue_candidate(job_id,index,exc,provider,stage=stage,selected_index=candidate_index)
+                            return self.store.load(job_id)
                     if not self.poll(job_id,index,stage,provider,wait):break
                     if stage==len(runs)-1:self.assemble(job_id,index);break
                 c=self.candidate(self.store.load(job_id),index)

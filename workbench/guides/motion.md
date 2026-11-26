@@ -1,37 +1,51 @@
-# 开放动作：从角色到交付
+# 开放动作：从对象到交付
 
-用于新动作、继续分段制作、检查或导出。精确输入以 `sprite-generator` 当前 schema 为准；模型配置、UI 与旧作业排错见[序列帧文档](../../docs/sprite-generator.md)。局部偏好修改转[选帧调整](../../docs/motion-adjustments.md)。
+本指南用于创建新动作、继续分段制作、复核检查与导出。精确参数以 `sprite-generator` 当前 schema 为准；模型配置、界面详情与旧作业排错见[序列帧文档](../../docs/sprite-generator.md)，局部选帧调整见[选帧调整](../../docs/motion-adjustments.md)。
 
-## 开始或继续
+## 1. 规划与开始制作
 
-读取当前角色和已有作品。新动作使用 `plan-motion`，在 `motionSpec.description` 保留用户原话，按请求设置 ending、候选数与预算；需要角色 preset，不需要动作 preset。用户授权默认制作时可使用已配置模型和当前默认预算，普通参数无需再次确认。规划本身调用模型；纯讨论只读取信息。
+1. **确定对象**：先读取对象库存和已有作品。新请求使用 `motionSpec.object_id` 和 `motionSpec.object_type`（类型从库存读取，旧 `character_id` 仍兼容）。
+   - 已有角色预设可直接规划，不需要动作预设。
+   - 128 px 物品原图支持 PixelLab 生成、本地导入或 PixelProp 转换后移送，流程见[物品原图导入与转换](../../docs/prop-art.md#导入与转换为动画原图)。若只有 GPT Image 物品大图，先执行 `reference-art convert-prop` 检查 `compare.png`，再带 `confirmation.note` 执行 `transfer`（用户未委托确认时先用 `workbench_present` 展示对比图）。
+2. **提交规划（`plan-motion`）**：
+   - 在 `motionSpec.description` 中保留用户原话，按需求填写 `ending`、候选数和预算。规划本身会调用模型；纯讨论只读数据。
+   - **交互物状态骨架**：可在 `motionSpec.interactable_skeleton` 按顺序列出状态（首项为原图，最多 5 个），规划每对相邻状态对应一段，段数不符由本机校验退回。
+   - **自定义模型**：通过 `planningModels` 按角色（`appearance` / `motion` / `strategy` / `coordinator`）指定模型，例如 `{"strategy": {"model": "kimi-k3.1-pro"}}`；冻结配置保存在作品的 `planning_config` 中，`revise-motion` 自动继承。
+   - **预算控制**：PixelLab 规划前会读取可用额度；可通过 `motionSpec.budget` 设 `max_frames_per_request` 与 `max_total_frames`（含所有候选，播放停留不计绘图帧）。
+3. **确认方案并生成（`generate-motion`）**：
+   - 方案返回后只处理仍未明确的关键问题。`generate-motion` 必须绑定返回的 `revision` 与 `planSha256`。
+   - 首次 `plan-motion` 且用户已授权连续制作时可传 `autoExecute=true`；`revise-motion` 不传或传 `false`，确认新方案后再生成。
+   - 遇到带遮挡的刚体平移时，仅在用户明确要求尝试时传 `allowUnsupportedMotion`。
+   - 追踪原 `taskId` 与 `?work=<openWorkId>`，切换候选时保留准确的版本与候选索引。
 
-收到方案后处理真正未答的关键问题。`generate-motion` 绑定返回的 revision 与 planSha256；已授权连续制作可使用 autoExecute。追踪原 taskId 和 `?work=<openWorkId>`，换候选时保留精确版本与候选身份。
+### 交互物合同与视觉复核要点
 
-模型与预算随任务冻结，修改设置影响新任务。新任务通常使用增强复核：基础观察/审核、外观与运动独立意见，有争议再一次复核；每段及整段最多五次。基础协议最多两次。额度从当前 schema 和方案读取，修复后的复查计入原任务账本。旧任务沿用已保存协议。
+- **交互物核对**：规划合同核对视角、初态与部件归属。仅外观文字与参考图不一致时以参考图为准，不阻断制作；影响运动或固定部件集合的差异在规划阶段解决。铰接和形变先选定已核对结构，将各部件归入运动或固定清单（铰接另指定轴点与运动端点），检查阶段结合画面、去遮挡后的固定区像素变化与铰接半径综合判断。
+- **复核协议**：新任务默认启用增强复核（基础 2 次 + 外观/运动独立专家各 1 次 + 有争议时最多 1 次复核；基础协议最多 2 次），详细机制见[视觉复核文档](../../docs/sprite-review-evaluation.md)。涉及角色结构辅助或时序观察见[角色视觉结构](../../docs/visual-structures.md)。
 
-涉及结构辅助、时序观察或规划稳定性时，读取[视觉结构协议](../../docs/visual-structures.md)：策略分析草案与可执行方案分开，预留后续专家预算；实际绘图文本不截断。结构确认不是画面采用或修改区域授权。遮挡、透视缩短与外观断裂保留不确定性及具体矛盾，不能凭单次模型意见自动通过、重绘或升级旧任务。
+## 2. 网页入口与交互物动画面板
 
-## 分段与完整检查
+需要用户在网页查看或手动操作时，用 `workbench_present` 打开准确页面：
 
-出现 pendingCheckpoints 时，用 `get-motion-stage` 读取准确候选和零基 stage 的全序列。以实际 FPS 检查运动、末姿势、装备和接缝，再用原 token/revision 调 `review-motion-stage`，填写接受或拒绝及实际观察依据。用户已委托 Agent 检查时可直接裁决；用户保留选择时展示需要决定的画面。
+- **交互物动画**：`object_type=interactable` 的作品默认在 `/tools/interactable-motion` 打开（可带 `?work=<openWorkId>&document=<id>&definition=<definitionId>`），支持在面板内生成、导入或转换物品原图；完整界面与工具说明见[交互物动画面板](../../docs/交互物动画独立面板方案.md)。
+- **写回与绑定**：交互物编辑器“制作状态动画”会先保存工程再跳转面板。写回统一经 `import-motion-asset` 提交，可附 `durations`（逐帧相对时长）和 `playback: ping_pong`（仅改写回片段，不动原帧与导出）；只读查询槽位绑定用 `workbench_get_motion_bindings`。
+- **确定性工具与派生素材**：固定部件回填、对齐、批量清理和旋转草稿经 `local-frame-edits` 存为完整播放备选，需对比后采用。倒放、旋转草稿、色调派生与上传状态图属于派生素材，目前只在网页面板创建并经人工播放确认后入库。
 
-接受的真实末帧作为下一段输入。拒绝保留当前结果；根据用户目标、可用修复范围和授权决定下一步。模型通过只提供证据，不取代主 Agent 或用户的实际观察。最终仍检查组装后的完整动作。
+## 3. 分段与完整检查
 
-符合目标的姿势若早于越界尾段，可在检查完整源序列后显式选择 anchorFrame 和 acknowledgeTrim，记录原因；省略就保留全段。播放映射记录选中的真实帧，原始字节继续保留。制作前已有合适目标 PNG 时可用 target-motion-stage 绑定，输出端点仍采用真实生成帧。
+1. **追踪进度**：复核期间用 `workbench_get_task` 查 `presentation.reviewProgress`；用 `workbench_get_result` 查 `pendingCheckpoints` 中的片段 token 和 `readyForDecision`。
+2. **读取序列并看图**：片段就绪后调 `get-motion-stage` 获取指定候选和零基 stage 的全序列，用 `workbench_get_result`（`detail:true`, `section:"/result/orderedFrames"`）读帧路径。按实际 FPS 检查运动、末姿势、装备与接缝，然后用原 `stageToken` 和 `workRevision` 调 `review-motion-stage` 并写明观察结论。
+3. **多状态链规则**：用 `get-motion` 查 `state_chain`（首项为参考原图，后续含来源段、帧号与 PNG 哈希）。`get-motion-stage` 中 `frame` 从零计且不含输入参考，`raw_index` 从零计且含上下文帧。可先用 `accept_state` 锁定真实状态帧，之后仍须裁决过渡；若拒绝过渡，已锁定状态图保留，后段停止。
+4. **选帧截尾与目标图**：若目标姿势早于越界尾段，查看完整序列后可传 `anchorFrame` 和 `acknowledgeTrim` 截尾（原始帧仍保留）。制作前已有目标状态图时可用 `target-motion-stage` 绑定，输出端点仍取真实生成帧。
+5. **完整验收**：接受的真实末帧作为下段输入。完整复核显示 `readyForApproval` 后，播放整段动作确认接缝，再由用户或获委托的主 Agent 裁决。
 
-## 调整与恢复
+## 4. 调整与任务恢复
 
-用户偏好也是有效调整目标。用 get-motion-adjustment 读取当前可编辑范围，按已明确的范围与额度创建备选；不要让专家建议覆盖用户原话。已开始后段依赖的锚点、跨段范围和当前不支持的帧数由接口拒绝。完成后检查原版、备选全序列及两侧衔接，再提交采用或保留原版的决定。完整候选采用产生新版本；片段采用仍要完成该片段确认。
+- **选帧修改**：用户审美偏好也是有效目标，不要让专家建议覆盖用户原话。先调 `get-motion-adjustment` 查可编辑范围，再按授权额度创建备选；已开始后段依赖的锚点、跨段范围及不支持的帧数会被接口拒绝。查看原版、备选全序列与两侧衔接后再决定采用或保留原版（旧 `repair-motion-stage` 任务沿用其原 attempt/token）。
+- **异常恢复**：查询刷新继续原任务；提交中断或结果不明时，先查原回执和远端 ID，通过 `recover` / `attach-provider-job` 恢复，避免重复付费提交。
 
-旧 repair-motion-stage 任务继续通过其原 attempt/token 读取和处理。新修改使用统一的备选流程。图像范围、参考、帧序、FPS 和版本绑定保持到采用；改变来源后重新读取上下文。
+## 5. 采用、导出与交付
 
-查询和刷新继续原任务。提交未知或中断先查已有回执和远端 ID；用 recover / attach-provider-job 处理可恢复作业。避免以新请求重复未知付费提交。已知失败则依据原因和现有授权修复；新增费用、范围或候选超出原委托时再询问。
-
-## 采用和导出
-
-实际检查后用 reviewNote 记录结论，并只确认已评估的提醒。技术硬错误需要先处理。获授权的主 Agent 可采用与导出；只有模型报告或文件存在不能据此填写已看图。
-
-采用后导出准确候选。当前包可提供 PNG、预览、配方/QA 和单动作 Godot SpriteFrames 包；历史导出可能没有 Godot 包。需要补包时走已有候选的导出流程，复用已完成的检查。
-
-原始帧和交付映射分别保留，输出 FPS、loop 和实际帧数以最终配方为准。接入游戏读取[工程 Skill](../../.agents/skills/forge-game-engineering/SKILL.md)，保留其他动作及目标控制器行为。
+- 实际看图检查后填写 `reviewNote` 并确认已评估的提醒；技术硬错误须先处理，模型报告不能代替实际看图。
+- 采用后导出准确候选，标准产出包含 PNG、预览、配方/QA 与单动作 Godot SpriteFrames ZIP（历史导出若缺 Godot 包，可对已有候选补导出）。
+- 最终帧数、FPS 与 loop 以导出配方为准。接入游戏请继续使用[游戏工程 Skill](../../.agents/skills/forge-game-engineering/SKILL.md)。

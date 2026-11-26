@@ -1,6 +1,7 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -37,6 +38,7 @@ const image = await sharp({
 let returnedImage = image;
 let configured = true;
 let providerStatus = 'running';
+let dropEnqueueResponse = false;
 let submits = 0;
 let polls = 0;
 let imports = 0;
@@ -56,17 +58,26 @@ const mock = createServer(async (request, response) => {
     result = { configured };
   } else if (request.url === '/v1/reference-art/jobs') {
     submits++;
-    result = { status: 'running', jobId: 'provider-reference-1' };
-  } else if (request.url === '/v1/reference-art/jobs/provider-reference-1') {
+    assert.match(body.requestId, /^reference-art-/);
+    if (dropEnqueueResponse) return request.socket.destroy();
+    result = { status: 'running', stage: 'queued', requestId: body.requestId };
+  } else if (request.url.startsWith('/v1/reference-art/requests/')) {
     polls++;
-    result =
-      providerStatus === 'completed'
-        ? { status: 'completed', image: returnedImage.toString('base64') }
-        : { status: providerStatus, error: 'Provider failed' };
+    const requestId = request.url.split('/').at(-1);
+    result = { requestId, status: providerStatus, stage: providerStatus };
+    if (providerStatus === 'not_submitted') Object.assign(result, { error: 'PixelLab 额度不足。', httpStatus: 402 });
+    else Object.assign(result, { jobId: 'provider-reference-1', usage: { type: 'generations', generations: 1 } });
+    if (providerStatus === 'completed') result.image = returnedImage.toString('base64');
+    if (providerStatus === 'failed') result.error = 'PixelLab 已结束任务，但没有返回原图。';
   } else if (request.url === '/v1/reference-art/import') {
     imports++;
     assert.deepEqual(Buffer.from(body.image, 'base64'), returnedImage);
     result = { characterId: body.characterId };
+  } else if (request.url === '/v1/reference-art/orientation') {
+    assert.equal(body.authorized, true);
+    assert.deepEqual(Buffer.from(body.image, 'base64'), returnedImage);
+    result = { status: 'mismatch', taskId: body.taskId, sha256: createHash('sha256').update(returnedImage).digest('hex'),
+      expectedFacing: body.facing, view: 'back', facing: 'unknown', message: '画面只见后脑。' };
   } else {
     response.writeHead(404);
     response.end();
@@ -92,6 +103,27 @@ try {
   assert.equal(importedMetadata.model,null);assert.equal(importedMetadata.provenance.generatedHere,false);
   assert.equal(importedMetadata.provenance.promptOrigin,'description-added-on-import');
   assert.deepEqual(await readFile(importedPath),image);
+  const browserSource = `data:image/png;base64,${image.toString('base64')}`;
+  const browserImport = await runConnector(manifest, capability, { operation: 'import', sourceImage: browserSource, prompt: '资产库角色的导入展示描述', name: '资产库参考图', size: 128, facing: 'left' });
+  assert.equal(browserImport.task.status, 'completed');
+  assert.equal(browserImport.task.input.facing, 'left');
+  const browserMetadata = JSON.parse(await readFile(path.join(repositoryRoot, browserImport.task.outputs.find(file => file.endsWith('/result.json'))), 'utf8'));
+  assert.equal(browserMetadata.model, null);
+  assert.equal(browserMetadata.provenance.providerCalled, false);
+  assert.equal(browserMetadata.provenance.sourceType, 'browser-image');
+  assert.deepEqual(await readFile(path.join(repositoryRoot, browserImport.task.outputs.find(file => file.endsWith('/reference.png')))), image);
+  const browserPresentation = await agentRequest(manifest, 'result', { taskId: browserImport.task.id });
+  assert.equal(browserPresentation.viewPath, `/tools/reference-art?task=${browserImport.task.id}`, 'Imported references retain the existing resumable task route');
+  const invalidBrowserImages = [
+    `data:image/jpeg;base64,${image.toString('base64')}`,
+    `data:image/png;base64,${(await sharp(image).resize(64, 64).png().toBuffer()).toString('base64')}`,
+    `data:image/png;base64,${(await sharp(image).flatten({ background: '#ffffff' }).png().toBuffer()).toString('base64')}`,
+    `data:image/png;base64,${Buffer.alloc(2_000_001).toString('base64')}`,
+  ];
+  for (const sourceImage of invalidBrowserImages) await assert.rejects(runConnector(manifest, capability, { operation: 'import', sourceImage, prompt: 'invalid fixture', size: 128 }), /PNG|原图|输入|length|maxLength/);
+  assert.ok(validateInput(capability, { operation: 'import', sourceImage: browserSource, sourceImagePath: path.relative(repositoryRoot, importedPath), prompt: 'ambiguous' }).length);
+  assert.ok(validateInput(capability, { operation: 'generate', sourceImage: browserSource, prompt: 'invalid source' }).length);
+  assert.equal(received.length, callsBefore, 'Valid and invalid browser reference imports must never call a model service');
   const importedResult=await agentRequest(manifest,'result',{taskId:local.task.id});
   assert.match(importedResult.presentation.summary,/本地导入/);
   const catalog=await agentRequest(manifest,'assets',{kind:'character',query:'导入角色'});
@@ -131,11 +163,16 @@ try {
   assert.equal(submitted.task.status, 'running');
   assert.equal(submits, 1);
   const task = await readTask(manifest, submitted.task.id);
-  assert.equal(task.adapter.referenceJobId, 'provider-reference-1');
+  assert.equal(task.adapter.referenceRequestId, task.id);
+  assert.equal(task.adapter.referenceStage, 'queued');
+  assert.deepEqual(task.outputs, []);
+  const queued = await agentRequest(manifest, 'result', { taskId: task.id });
+  assert.match(queued.presentation.summary, /排队/);
   task.adapter.lastPolledAt = 0;
   await persistTask(manifest, task);
   const progress = await refreshTask(manifest, task.id);
   assert.equal(progress.task.status, 'running');
+  assert.equal(progress.task.adapter.referenceJobId, 'provider-reference-1');
   assert.equal(polls, 1);
   assert.equal(submits, 1);
   await assert.rejects(
@@ -155,10 +192,12 @@ try {
   const first = await runConnector(manifest, capability, {
     operation: 'transfer',
     sourceTaskId: task.id,
+    confirmation: { note: '已查看原图并接受当前朝向。' },
   });
   const second = await runConnector(manifest, capability, {
     operation: 'transfer',
     sourceTaskId: task.id,
+    confirmation: { note: '已查看原图并接受当前朝向。' },
   });
   const result = JSON.parse(
     await readFile(path.join(repositoryRoot, first.task.outputs[0]), 'utf8'),
@@ -256,17 +295,64 @@ try {
   assert.ok(validateInput(capability, {...input, subject: 'prop', size: 64}).length);
   assert.ok(validateInput(capability, {operation: 'transfer', sourceTaskId: task.id, size: 64}).length);
   returnedImage = await sharp(image).resize(64,64,{kernel:'nearest'}).png().toBuffer();
-  const coarse = await runConnector(manifest, capability, {...input, size:64, prompt: 'coarse keeper '.repeat(90)});
+  const coarse = await runConnector(manifest, capability, {...input, size:64, checkOrientation:true, prompt: 'coarse keeper '.repeat(90)});
   coarse.task.adapter.lastPolledAt = 0; await persistTask(manifest,coarse.task);
+  const checking = await refreshTask(manifest,coarse.task.id);
+  assert.ok(checking.task.adapter.orientationPending);
   const coarseDone = await refreshTask(manifest,coarse.task.id);
   assert.equal(coarseDone.task.status,'completed');
   const coarseResult = JSON.parse(await readFile(path.join(repositoryRoot,coarseDone.task.outputs.find(p=>p.endsWith('result.json'))),'utf8'));
   assert.equal(coarseResult.width,64); assert.equal(coarseResult.height,64);
-  await runConnector(manifest,capability,{operation:'transfer',sourceTaskId:coarse.task.id});
+  assert.equal(coarseResult.orientationReview.status, 'mismatch');
+  const presentationAfterCheck = await agentRequest(manifest, 'result', { taskId: coarse.task.id });
+  assert.match(presentationAfterCheck.presentation.summary, /要求侧视朝左，与要求不符/);
+  await assert.rejects(runConnector(manifest,capability,{operation:'transfer',sourceTaskId:coarse.task.id}), /confirmation.note/);
+  await runConnector(manifest,capability,{operation:'transfer',sourceTaskId:coarse.task.id,confirmation:{note:'已查看背面构图，选作背面动作素材'}});
   assert.equal(received.at(-1).body.size,64);
   assert.equal(received.at(-1).body.reuseIdentity,true);
   assert.ok(received.at(-1).body.prompt.length < 300);
   assert.equal((await readTask(manifest,coarse.task.id)).input.prompt,'coarse keeper '.repeat(90));
+
+  providerStatus = 'not_submitted';
+  const rejected = (await runConnector(manifest, capability, input)).task;
+  rejected.adapter.lastPolledAt = 0;
+  await persistTask(manifest, rejected);
+  const rejectedResult = await refreshTask(manifest, rejected.id);
+  assert.equal(rejectedResult.task.status, 'not_submitted');
+  assert.equal(rejectedResult.task.adapter.referenceHttpStatus, 402);
+  assert.deepEqual(rejectedResult.task.outputs, []);
+  assert.match(rejectedResult.task.error, /额度不足/);
+  const notSubmitted = await agentRequest(manifest, 'result', { taskId: rejected.id });
+  assert.equal(notSubmitted.presentation.state, 'not_submitted');
+
+  for (const { message, expected, extra } of [
+    { message: 'PixelLab 额度不足。', expected: 'not_submitted' },
+    { message: 'PixelLab 当前任务过多，请稍后再试。', expected: 'not_submitted' },
+    { message: 'PixelLab 返回 HTTP 500。', expected: 'failed' },
+    { message: 'PixelLab 额度不足。', expected: 'failed', extra: { referenceJobId: 'existing-paid-job' } },
+  ]) {
+    const { task: legacy } = await prepareTask(manifest, capability, input, 'failed');
+    legacy.error = `Adapter returned HTTP 502: ${message}`;
+    if (extra) legacy.adapter = extra;
+    await persistTask(manifest, legacy);
+    assert.equal((await readTask(manifest, legacy.id)).status, expected);
+    const listed = await fetch(`${base}/v1/tasks?query=${encodeURIComponent(legacy.id)}`).then(response => response.json());
+    assert.equal(listed.tasks[0].status, expected);
+    assert.equal(JSON.parse(await readFile(path.join(repositoryRoot, manifest.workspace.taskDirectory, `${legacy.id}.json`), 'utf8')).status, 'failed');
+  }
+
+  providerStatus = 'failed';
+  dropEnqueueResponse = true;
+  const submissionsBeforeDrop = submits;
+  const missingReply = (await runConnector(manifest, capability, input)).task;
+  assert.equal(missingReply.adapter.referenceStage, 'checking_receipt');
+  missingReply.adapter.lastPolledAt = 0;
+  await persistTask(manifest, missingReply);
+  const paidFailure = (await refreshTask(manifest, missingReply.id)).task;
+  assert.equal(paidFailure.status, 'failed');
+  assert.equal(paidFailure.adapter.referenceJobId, 'provider-reference-1');
+  assert.deepEqual(paidFailure.adapter.referenceUsage, { type: 'generations', generations: 1 });
+  assert.equal(submits, submissionsBeforeDrop + 1);
   console.log('PASS native 64px generation, metadata, transfer and invalid size rejection');
   console.log(
     JSON.stringify(

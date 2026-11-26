@@ -79,6 +79,7 @@ class TemporalStructures:
         if doc:
             receipt=read_json(self.folder(identity)/doc['receipt'])
             shown=copy.deepcopy(doc);shown['frames']=receipt['frames'];shown['width']=receipt['width'];shown['height']=receipt['height']
+            shown['compute']={k:receipt.get(k) for k in ('device','seconds','precision','mps_fallback_enabled','mps_driver_bytes','peak_gpu_bytes')}
             shown['parts']=read_json(self.folder(identity)/'structure.json')['data']['parts']
         else:shown=None
         from .temporal_review_service import review_view
@@ -124,12 +125,13 @@ class TemporalStructures:
         if doc['issues'] or not doc['confirmation']:
             raise ValidationHarnessError('请先核对并确认参考结构中的可见部位；未知部位可以保留')
         runtime=self.structures.runtime()
-        if not runtime['ready'] and not self.tracker:raise ValidationHarnessError('本地结构追踪环境尚未安装')
+        if not runtime['ready'] and not self.tracker:
+            raise ValidationHarnessError(runtime.get('compute', {}).get('error') or '本地结构追踪环境尚未安装')
         models=self.registry.load().model_dump(mode='json')
         if use_semantic and not self.observer and not self.registry.key(self.registry.profile('structure',models).provider):
             raise ValidationHarnessError('结构模型尚未配置；没有提交请求')
         job=self.store.load(job_id)
-        if job.reference_sha256!=structure['source']['sha256']:
+        if job.reference_sha256!=structure['source']['sha256'] or job.character.object_type != structure['source'].get('object_type','character'):
             raise ConflictError('角色结构不是此动画使用的参考图')
         source_identity,frame_token,_=ProductionReview(self.service,job_id,candidate,stage=stage).identity(job)
         fingerprint=digest({'job_id':job_id,'candidate':candidate,'stage':stage,'source':source_identity,'structure':structure_token,'tracker':TRACKER_VERSION,
@@ -166,6 +168,7 @@ class TemporalStructures:
                 'source':{**evidence.manifest['source'],'fps':job.action.fps},'source_identity':source_identity,
                 'evidence_token':evidence.token,'structure_id':structure_id,'structure_token':structure_token,
                 'supports_review':bool(job.request.open_plan.plan.quality),
+                **({'object_type': 'interactable'} if job.character.object_type == 'interactable' else {}),
                 'intent_sha256':sha256_file(folder/'intent.json'),
                 'structure_snapshot_sha256':digest(doc),'parts':parts,'models':models,'runtime_profile':runtime['profile'],
                 'selected_frames':select_keyframes(evidence.paths,job.action.fps),'calls':[],'history':[],
@@ -195,7 +198,8 @@ class TemporalStructures:
                     def started():record['calls'][0]['state']='submitted';self.save(record)
                     try:
                         result,metadata=(self.observer or observe)(self.registry,folder/'evidence/reference.png',structure,
-                            evidence.paths,record['selected_frames'],record['models'],on_request=started,on_response=receipt.update)
+                            evidence.paths,record['selected_frames'],record['models'],on_request=started,on_response=receipt.update,
+                            **({'object_type': 'interactable'} if record.get('object_type') == 'interactable' else {}))
                     except Exception:
                         call=record['calls'][0]
                         state='invalid_response' if receipt.get('response_id') else 'failed_before_submission' if call['state']=='reserved' else 'failed_or_unknown'
@@ -220,6 +224,8 @@ class TemporalStructures:
             saved=read_json(existing)
             if saved.get('mutation_key')!=pending['request_key']:raise ConflictError('已保存版本与待恢复修改不同')
             self._commit(record,saved);return
+        if not self.tracker and not runtime['ready']:
+            raise ValidationHarnessError(runtime.get('compute', {}).get('error') or '本地追踪工具未就绪')
         output=folder/('tracks-'+uuid.uuid4().hex)
         corrections={(c['frame_index'],c['part_id']):c for c in pending['observations']['corrections'] if c['part_id'] in {p['id'] for p in record['parts']}}
         for correction in pending['manual_corrections']:corrections[(correction['frame_index'],correction['part_id'])]=correction
@@ -227,7 +233,8 @@ class TemporalStructures:
             'frames':[{'frame_index':i,'path':str(path),'sha256':evidence.manifest['frames'][i]['sha256']} for i,path in enumerate(evidence.paths)],
             'parts':[{'id':p['id'],'mask_path':str(folder/p['file']),'mask_sha256':p['sha256']} for p in record['parts']],
             'fps':record['source']['fps'],'weights':runtime['weights'],'weights_sha256':record['runtime_profile']['weightsSha256'],
-            'output':str(output),'corrections':list(corrections.values())}
+            'output':str(output),'corrections':list(corrections.values()),
+            'device':runtime.get('compute', {}).get('requested_device', 'auto')}
         policy=pending.get('tracking_policy',record.get('tracking_policy'))
         if policy is not None:job['tracking_policy']=policy
         job_path=folder/(output.name+'-job.json');atomic_write_json(job_path,job)

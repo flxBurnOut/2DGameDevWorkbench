@@ -6,7 +6,9 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { createProject, createObject } from '../../features/interactable-editor/contract.mjs';
 import { createDocument, getDocument, applyDocumentCommands } from '../../lib/workbench/editor-documents.mjs';
-import { imageEditRequest } from '../../lib/workbench/image-edits.mjs';
+import { imageEditRequest, readImageEditReceipt } from '../../lib/workbench/image-edits.mjs';
+import { requestFingerprint } from '../../features/workbench/paid-task.mjs';
+import { imageEditInputs } from '../../lib/workbench/image-edit-contract.mjs';
 import { findCapability, loadManifest, readTask, repositoryRoot, runConnector } from '../../lib/workbench/runtime.mjs';
 
 const manifest = await loadManifest();
@@ -98,7 +100,7 @@ try {
   }
   check(calls.length, 0);
   const original = await fixture('manual-then-ai');
-  check(original.target.aiEdit.supported, true); check(original.target.aiEdit.model, 'gpt-image-2.5-sunburst');
+  check(original.target.aiEdit.supported, true); check(original.target.aiEdit.model, 'gpt-image-2.6-sunburst');
   check(original.target.aiEdit.constraints.preserveAlpha, true); check(original.target.operationConstraints['pixel-patch'].preserveAlpha, true);
   check(original.target.aiEdit.alphaPreservation, 'copy-edit-base-alpha');
   const beforeInvalid = await countTasks();
@@ -124,6 +126,10 @@ try {
   release = {};
   const beforeAi = await countTasks();
   const [submitted, replay] = await Promise.all([request('image-edit', input), request('image-edit', input)]);
+  const requestHash = await requestFingerprint({ operation: 'image-edit', input: imageEditInputs['image-edit'].parse(input) });
+  check((await readImageEditReceipt(repositoryRoot, manifest, input.commandId, requestHash)).taskId, submitted.taskId);
+  await reject(readImageEditReceipt(repositoryRoot, manifest, input.commandId, '0'.repeat(64)), 'IMAGE_RECEIPT_UNAVAILABLE');
+  await reject(readImageEditReceipt(repositoryRoot, manifest, 'absent-command', requestHash), 'IMAGE_RECEIPT_UNAVAILABLE');
   check(submitted.status, 'running'); check(replay.taskId, submitted.taskId); check(replay.replayed, true); check(await countTasks(), beforeAi + 1);
   const persisted = await readTask(manifest, submitted.taskId);
   check(persisted.input.operation, 'edit-image'); check(persisted.input.width, 1024); check(persisted.input.height, 1024);
@@ -131,7 +137,7 @@ try {
   check(persisted.imageEditContext, { editId: manual.edit.editId, candidateVersion: submitted.candidateVersion, target: original.target.targetRef });
   check((await getDocument(repositoryRoot, manifest, { documentId: original.document.id })).document.revision, 1, 'Starting AI does not adopt any image.');
   while (!release.resolve) await new Promise(resolve => setTimeout(resolve, 5));
-  check(calls.length, 1); check(calls[0].model, 'gpt-image-2.5-sunburst'); check(calls[0].images.length, 9);
+  check(calls.length, 1); check(calls[0].model, 'gpt-image-2.6-sunburst'); check(calls[0].images.length, 9);
   check(sha(calls[0].images[0]), sha(await readFile(path.resolve(repositoryRoot, persisted.input.image))));
   check(await decode(calls[0].images[0]), manualPixels, 'The provider base is the manual candidate, not the original source.');
   const maskPixels = await decode(calls[0].mask);

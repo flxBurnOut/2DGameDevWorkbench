@@ -77,7 +77,21 @@ for (let x = 0, column = 0; x < 3840; x += 3, column++) { maskBudget.maskStroke(
 assert.throws(() => maskBudget.endMaskStroke(), /256 KiB/); checks++;
 check(maskBudget.selectionCount, 0); check(maskBudget.region, null); check(JSON.stringify(maskBudget.maskUndo), beforeMaskHistory, 'mask history budget failure rolls back the whole gesture and does not leave an unreplayable recipe');
 
-// Browsing must not reset selection; an explicit new editing base preserves it too.
+// One undo order across strokes and selection changes, and feedback for dropped strokes.
+const ordered = new PixelController(source, width, height);
+ordered.beginStroke(); ordered.stroke({ x: 0, y: 0 }, 'pencil', [9, 9, 9, 255]); ordered.endStroke();
+check([ordered.strokeWritten, ordered.strokeBlocked], [1, 0], 'a stroke inside the range reports its written pixels');
+ordered.selectRegion({ type: 'rectangle', x: 0, y: 0, width: 2, height: 2 });
+ordered.beginStroke(); ordered.stroke({ x: 6, y: 3 }, 'pencil', [9, 9, 9, 255]); ordered.endStroke();
+check([ordered.strokeWritten, ordered.strokeBlocked, ordered.dirtyPixelCount], [0, 1, 1], 'a stroke outside the range is dropped and reported, not silently ignored');
+check(ordered.undo(), 'mask', 'undo reverts the latest action: the selection change');
+check(ordered.selectionCount, width * height);
+check(ordered.undo(), 'pixel', 'then the earlier stroke');
+check(ordered.dirty, false); check(ordered.canUndo, false);
+check(ordered.redo(), 'pixel'); check(ordered.redo(), 'mask'); check(ordered.selectionCount, 4, 'redo replays in the original order');
+check(ordered.redo(), null);
+
+
 const versions = new PixelController(source, width, height);
 versions.selectRegion(null); versions.setBase(new Uint8Array(source));
 check(versions.selectionCount, 0, 'empty selection survives editing-base change');
@@ -96,6 +110,11 @@ versions.beginMaskStroke('replace'); versions.maskStroke({ x: 0, y: 0 }, 'add');
 const vite = await createTestViteServer({ configFile: false, appType: 'custom', resolve: { alias: { '@': process.cwd() } }, optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true }, logLevel: 'error' });
 try {
   const client = await vite.ssrLoadModule('/features/image-edit/client.ts');
+  const {CandidateCheck}=await vite.ssrLoadModule('/components/image-edit/candidate-check.tsx');
+  const criticMarkup=canEdit=>renderToStaticMarkup(createElement(CandidateCheck,{editId:'fixture',candidate:{version:'v',visualReviewRefs:['existing']},disabled:false,canEdit,onAction:()=>{}}));
+  check(criticMarkup(false).includes('查询原复核记录'),true);
+  check(criticMarkup(false).includes('准备成品复核'),false);
+  check(criticMarkup(true).includes('准备成品复核'),true);
   const { ImageVersionCache, ImageViewRequest } = await vite.ssrLoadModule('/features/image-edit/version-cache.ts');
   const lastView = new ImageViewRequest(); const firstView = lastView.begin(); const secondView = lastView.begin(); check(firstView.aborted, true); check(secondView.aborted, false); lastView.cancel(); check(secondView.aborted, true);
   const cache = new ImageVersionCache(200);
@@ -112,6 +131,64 @@ try {
   await assert.rejects(client.verifiedImagePixels({ ...value, rgbaSha256: '0'.repeat(64) }), /SHA/); checks++;
   await assert.rejects(client.verifiedImagePixels({ ...value, rgbaByteLength: source.length - 4 }), /描述/); checks++;
   await assert.rejects(client.verifiedImagePixels({ ...value, pixelFormat: 'premultiplied' }), /描述/); checks++;
+  const previousFetch = globalThis.fetch;
+  let coldReads = 0, corrupt = false;
+  try {
+    const media = await vite.ssrLoadModule('/app/api/workbench/image-edit/[operation]/route.ts');
+    const checkout = 'a'.repeat(64), pin = 'b'.repeat(64);
+    const identity = { service: '2d-game-workbench-runtime', version: 1, workspaceId: checkout, paidWorkspaceId: pin };
+    for (const operation of ['part-suggest', 'critic-run']) {
+      let writes = 0;
+      globalThis.fetch = async (url, init) => {
+        if (url.endsWith('/v1/paid-workspace') || url.endsWith('/health')) return Response.json(identity);
+        assert(url.endsWith('/paired/v1/paid/v1/v1/agent/image-' + operation));
+        assert.equal(new Headers(init.headers).get('x-forge-paid-workspace'), pin);
+        writes++;
+        return Response.json({ ok: true }, { headers: { 'x-forge-paid-workspace': pin } });
+      };
+      const send = (name, workspace) => media.POST(new Request('http://localhost:3000/api/workbench/image-edit/' + name, {
+        method: 'POST', headers: { 'content-type': 'application/json', ...(workspace && { 'x-forge-workspace': workspace }) }, body: '{}',
+      }), { params: Promise.resolve({ operation: name }) });
+      check((await send(operation)).status, 409);
+      check((await send('paid-' + operation, checkout)).status, 409);
+      check(writes, 0, 'A legacy visual control or a switched workspace never sends a modifying request.');
+      check((await send('paid-' + operation, pin)).status, 200);
+      check(writes, 1);
+    }
+    for (const encoded of [true, false]) {
+      globalThis.fetch = async () => new Response(Buffer.from(source), { headers: {
+        'content-type': 'application/octet-stream', 'content-length': String(encoded ? 38 : source.length),
+        ...(encoded ? { 'content-encoding': 'gzip' } : {}),
+      } });
+      const proxied = await media.GET(new Request('http://localhost:3000/api/workbench/image-edit/media'),
+        { params: Promise.resolve({ operation: 'media' }) });
+      check(proxied.status, 200);
+      check(proxied.headers.get('content-length'), encoded ? null : String(source.length));
+      check(new Uint8Array(await proxied.arrayBuffer()), source);
+    }
+    globalThis.fetch = async (input, options) => {
+      coldReads++;
+      if (input.endsWith('/session-get')) {
+        assert.equal(JSON.parse(options.body).includePixels, false);
+        return Response.json({ edit: { mediaProtocol: 1, editId: 'binary-test', target: { width, height },
+          source: { sha256: savedImage.sha256, rgbaSha256: hash }, candidates: [] } });
+      }
+      const selected = new URL(input, 'http://fixture').searchParams;
+      assert.equal(selected.get('sha256'), savedImage.sha256);
+      const preview = selected.get('representation') === 'preview';
+      const data = preview ? previewPng : Buffer.from(source);
+      if (!preview && corrupt) data[0] ^= 1;
+      return new Response(data, { headers: { 'content-type': preview ? 'image/png' : 'application/octet-stream', ...(preview ? {} : { 'content-encoding': 'gzip', 'content-length': String(data.length + 11) }) } });
+    };
+    const binaryCache = new ImageVersionCache();
+    const binary = await binaryCache.load('binary-test', 'source');
+    check(binary.pixels, source);
+    check(binary.previewSource, 'data:image/png;base64,' + savedImage.imageBase64);
+    await binaryCache.load('binary-test', 'source');
+    check(coldReads, 3);
+    corrupt = true;
+    await assert.rejects(new ImageVersionCache().load('binary-test', 'source'), /SHA-256/);
+  } finally { globalThis.fetch = previousFetch; }
   const wire = client.encodePixelPatch(patch, hash);
   check(wire.baseRgbaSha256, hash); check(Buffer.from(wire.spans[0].beforeRgbaBase64, 'base64'), Buffer.from(patch[0].before));
   assert.throws(() => client.encodePixelPatch([{ startPixel: 0, before: new Uint8Array(262148), after: new Uint8Array(262148) }], hash), /512/); checks++;
@@ -210,11 +287,11 @@ async function aiClientRegression(client) {
 
 async function navigationRegression(vite) {
   const navigation = await vite.ssrLoadModule('/features/image-edit/navigation.ts');
-  const initial = 'http://localhost:3000/tools/scene-composer?document=scene-copy&scene=scene-copy&imageEdit=edit-old&imageCandidate=candidate-old#gate';
+  const initial = 'http://localhost:3000/tools/interactable-editor?document=prop-copy&object=door&imageEdit=edit-old&imageCandidate=candidate-old#gate';
   const next = navigation.imageEditNavigationUrl(initial, { editId: 'edit-new', candidateVersion: 'source' });
   const url = new URL(next);
   check(navigation.readImageEditNavigation(url.search), { editId: 'edit-new', candidateVersion: 'source' });
-  check(url.searchParams.get('document'), 'scene-copy'); check(url.searchParams.get('scene'), 'scene-copy'); check(url.hash, '#gate');
+  check(url.searchParams.get('document'), 'prop-copy'); check(url.searchParams.get('object'), 'door'); check(url.hash, '#gate');
   check(new URL(navigation.imageEditNavigationUrl(initial, { editId: 'edit-new' })).searchParams.get('imageCandidate'), 'source', 'A new session never retains an old candidate id.');
   assert.throws(() => navigation.imageEditNavigationUrl(initial, { editId: 'bad/id' }), /身份无效/); checks++;
   const previousWindow = globalThis.window, state = { preservedRouterState: true }, calls = [];
@@ -226,27 +303,24 @@ async function navigationRegression(vite) {
     navigation.writeImageEditNavigation({ editId: 'edit-new', candidateVersion: 'candidate-running' });
     check(navigation.readImageEditNavigation(new URL(globalThis.window.location.href).search).candidateVersion, 'candidate-running');
     navigation.clearImageEditNavigation();
-    check(new URL(globalThis.window.location.href).searchParams.has('imageEdit'), false); check(new URL(globalThis.window.location.href).searchParams.get('document'), 'scene-copy');
+    check(new URL(globalThis.window.location.href).searchParams.has('imageEdit'), false); check(new URL(globalThis.window.location.href).searchParams.get('document'), 'prop-copy');
   } finally { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow; }
 }
 
 async function referenceHostRegression(client, vite) {
   const { createObject, createProject } = await import('../../features/interactable-editor/contract.mjs');
-  const { createScene, addMaterial, addInstance, validateScene } = await import('../../features/scene-composer/model.mjs');
   const { DocumentSyncController, documentFingerprint } = await import('../../features/editor-documents/sync-controller.mjs');
-  const { objectRenderState } = await import('../../features/scene-composer/render-model.mjs');
-  const hash = createHash('sha256').update(source).digest('hex');
   const project = createProject(), object = createObject('toggle');
   object.visual.assetId = 'original'; object.visual.width = 64; object.visual.height = 64;
   object.behavior.states[0].appearance.assetId = 'original'; object.behavior.states[1].appearance.assetId = '';
   const png = await sharp(source, { raw: { width, height, channels: 4 } }).png().toBuffer();
   const originalSource = `data:image/png;base64,${png.toString('base64')}`;
   project.assets = [{ id: 'original', name: 'original.png', mime: 'image/png', source: originalSource }]; project.objects = [object];
-  const choices = client.imageSlotChoices(object, true);
+  const choices = client.imageSlotChoices(object);
   check(choices.map(item => [item.slot, item.index]), [['visual', undefined], ['toggle-state', 0], ['toggle-state', 1]]);
   check(choices[2].available, true); assert.match(choices[2].label, /继承默认/); checks++;
-  object.visual.focusAnimation = 'focus'; check(client.imageSlotChoices(object, true)[0].available, false); check(client.imageSlotChoices(object, false)[0].available, true);
-  object.visual.focusAnimation = ''; object.behavior.states[0].appearance.animation = 'state_clip'; check(client.imageSlotChoices(object, true)[1].available, false);
+  object.visual.focusAnimation = 'focus'; check(client.imageSlotChoices(object)[0].available, true, 'default static appearance remains editable and explicitly stops default animation on adoption');
+  object.visual.focusAnimation = ''; object.behavior.states[0].appearance.animation = 'state_clip'; check(client.imageSlotChoices(object)[1].available, false);
   object.behavior.states[0].appearance.animation = '';
   const panels = await vite.ssrLoadModule('/components/interactable-editor/property-panels.tsx');
   const emitted = [];
@@ -269,85 +343,17 @@ async function referenceHostRegression(client, vite) {
   check(emitted, [{ slot: 'sequence-entry', index: 0 }, { slot: 'sequence-entry', index: 1 }]);
   const sequenceRef = { kind: 'interactable', documentId: project.projectId, definitionId: sequence.definitionId, slot: 'sequence-entry', index: 0 };
   check(client.imageTargetEquals(sequenceRef, { ...sequenceRef, index: 1 }), false, 'an index change cannot be mistaken for the original appearance slot');
-  check(client.imageTargetEquals({ kind: 'scene-instance', documentId: 'scene', instanceId: 'selected' }, { kind: 'scene-instance', documentId: 'scene', instanceId: 'selected', slot: 'visual' }), true);
-  const scene = createScene('Reference UI');
-  scene.map = { name: 'map', origin: { x: 0, y: 0 }, offset: { x: 35, y: 20 }, layers: [{ id: 'map_overall', name: 'map', source: originalSource, width: 512, height: 256, locked: false, hidden: false, included: true }], collisions: [], source: 'data:application/zip;base64,UEs=', warnings: [] };
-  scene.order.push('map_overall');
-  const material = addMaterial(scene, project, object.definitionId);
-  material.project.assets.push({ id: 'image_context_preview', name: 'existing preview-like id', mime: 'image/png', source: originalSource });
-  const selected = addInstance(scene, material.id, 137, 93), sibling = addInstance(scene, material.id, 240, 120);
-  selected.anchor = { x: 11, y: 55 };
-  const targetRef = { kind: 'scene-instance', documentId: scene.id, instanceId: selected.id, slot: 'toggle-state', index: 0 };
-  const target = { targetId: 'imgtarget:reference-ui', targetRef, revision: 1, sha256: hash, rgbaSha256: hash, width, height, editable: true, locked: false, kind: 'prop', name: 'reference', scope: 'single-instance', sharedInstanceCount: 2 };
-  const receipt = { target, revision: 2, currentRevision: 2, adoption: { status: 'adopted', scope: 'single-instance', affectedInstanceIds: [selected.id], sharedInstanceCount: 2, sha256: hash, commandId: 'adopt-selected' } };
-  client.validateSceneImageReceipt(targetRef, receipt); checks++;
-  assert.throws(() => client.validateSceneImageReceipt(targetRef, { ...receipt, adoption: { ...receipt.adoption, affectedInstanceIds: [sibling.id] } }), /作用域/); checks++;
-  assert.throws(() => client.validateSceneImageReceipt(targetRef, { ...receipt, adoption: { ...receipt.adoption, affectedInstanceIds: [selected.id, sibling.id] } }), /作用域/); checks++;
-  assert.throws(() => client.validateSceneImageReceipt({ ...targetRef, index: 1 }, receipt), /不匹配/); checks++;
-  assert.throws(() => client.validateSceneImageReceipt(targetRef, { ...receipt, currentRevision: 3 }), /不匹配/); checks++;
-  imageEditInputs['image-inspect'].parse(client.imageInspectInput(targetRef)); checks++;
-  imageEditInputs['image-apply'].parse(client.imageApplyInput(target, 'edit-reference', 'source', 'restore-selected')); checks++;
-  const before = JSON.stringify(scene);
-  const { SceneImagePreview } = await vite.ssrLoadModule('/components/scene-composer/scene-image-preview.tsx');
-  const markup = renderToStaticMarkup(createElement(SceneImagePreview, { scene, target: targetRef, source: 'blob:isolated-candidate' }));
-  check(JSON.stringify(scene), before, 'candidate context preserves materials, sibling art, anchor, map offset, order and source ZIP');
-  check((markup.match(/href="blob:isolated-candidate"/g) || []).length, 1, 'candidate is overlaid on exactly one scene instance');
-  assert(markup.includes(originalSource)); checks++;
-  assert(markup.includes(objectRenderState(selected, material).outerTransform)); checks++;
-  const mapMarkup = renderToStaticMarkup(createElement(SceneImagePreview, { scene, target: { kind: 'scene-layer', documentId: scene.id, layerId: 'map_overall' }, source: 'blob:isolated-layer' }));
-  assert.match(mapMarkup, /href="blob:isolated-layer" x="35" y="20"/); checks++;
-  check(JSON.stringify(scene), before);
-  const offMap = structuredClone(scene); offMap.instances[0].x = 5000; offMap.instances[0].y = -1500; offMap.instances[0].scale = 2; offMap.instances[0].flipH = true;
-  const { instanceRect } = await import('../../features/scene-composer/render-model.mjs');
-  const offMapRect = instanceRect(offMap.instances[0], material);
-  const offMapMarkup = renderToStaticMarkup(createElement(SceneImagePreview, { scene: offMap, target: targetRef, source: 'blob:off-map-candidate' }));
-  const [left, top, viewWidth, viewHeight] = /viewBox="([^"]+)"/.exec(offMapMarkup)[1].split(' ').map(Number);
-  check(left <= offMapRect.x && top <= offMapRect.y && left + viewWidth >= offMapRect.x + offMapRect.width && top + viewHeight >= offMapRect.y + offMapRect.height, true, 'off-map candidates remain fully inside the display-only view, including flipped/scaled geometry');
-  check((offMapMarkup.match(/href="blob:off-map-candidate"/g) || []).length, 1, 'an existing image_context_preview asset ID cannot shadow the selected candidate');
-  check(JSON.stringify(scene), before);
-  await sceneSourceDeliveryRegression(client, scene);
-  let local = scene, cache = { revision: 1, fingerprint: await documentFingerprint({ ...validateScene(scene), revision: 0 }) };
-  const remote = { id: scene.id, kind: 'scene', revision: 1, content: structuredClone(scene) };
-  const controller = new DocumentSyncController({ id: scene.id, kind: 'scene', current: () => local, busy: () => false, prepare: value => ({ ...validateScene(value), revision: 0 }), saveLocal: async () => {}, applyRemote: async value => { local = value; }, backupLocal: async () => 'backup', readCache: async () => cache, writeCache: async value => { cache = value; }, api: { read: async () => ({ document: remote }), metadata: async () => ({ document: remote }), create: async () => { throw new Error('No creation expected.'); }, save: async () => { throw new Error('No save expected.'); } } });
+  const defaultRef = { kind: 'interactable', documentId: project.projectId, definitionId: object.definitionId };
+  check(client.imageTargetEquals(defaultRef, { ...defaultRef, slot: 'visual' }), true);
+  let local = project, cache = { revision: 1, fingerprint: await documentFingerprint(project) };
+  const remote = { id: project.projectId, kind: 'interactable', revision: 1, content: structuredClone(project) };
+  const controller = new DocumentSyncController({ id: project.projectId, kind: 'interactable', current: () => local, busy: () => false, prepare: value => value, saveLocal: async () => {}, applyRemote: async value => { local = value; }, backupLocal: async () => 'backup', readCache: async () => cache, writeCache: async value => { cache = value; }, api: { read: async () => ({ document: remote }), metadata: async () => ({ document: remote }), create: async () => { throw new Error('No creation expected.'); }, save: async () => { throw new Error('No save expected.'); } } });
   const guard = await controller.flushSaved();
-  local = structuredClone(scene); local.instances[1].x += 4;
+  local = structuredClone(project); local.name += ' dirty';
   const human = JSON.stringify(local);
   await assert.rejects(controller.acceptAdopted({ ...remote, revision: 2 }, guard), /本机工程/); checks++;
-  check(JSON.stringify(local), human, 'the same shared guard used by the scene host retains dirty human edits after a server adoption');
+  check(JSON.stringify(local), human, 'the shared guard retains dirty human edits after a server adoption');
   controller.dispose();
-}
-
-async function sceneSourceDeliveryRegression(client, scene) {
-  const bytes = Buffer.from(scene.map.source.split(',')[1], 'base64');
-  const target = { targetRef: { kind: 'scene-layer', documentId: scene.id, layerId: 'map_overall' }, revision: 1, sourceEntry: { kind: 'embedded-map-source', documentId: scene.id, layerId: 'map_overall', sourceField: 'map.source', sha256: createHash('sha256').update(bytes).digest('hex') } };
-  const snapshot = { id: scene.id, revision: 1, content: scene };
-  const clean = { busy: false, pending: false, pixelDirty: false, aiDraftDirty: false, referencesLoading: false };
-  let handoffs = 0, downloads = 0;
-  const deliver = (metadata, document, opensEditor, state = clean) => client.performImageSourceAction(metadata, state, opensEditor, async received => {
-    const payload = await client.verifiedSceneImageSource(received, document);
-    check(Buffer.from(await payload.blob.arrayBuffer()), Buffer.from(document.content.map.source.split(',')[1], 'base64'), 'delivery bytes are the verified snapshot bytes');
-    if (opensEditor) handoffs++; else downloads++;
-  });
-  await deliver(target, snapshot, true); await deliver(target, snapshot, false);
-  check([handoffs, downloads], [1, 1]);
-  const changedBytes = Buffer.from('different embedded ZIP');
-  const newer = { ...target, revision: 2, sourceEntry: { ...target.sourceEntry, sha256: createHash('sha256').update(changedBytes).digest('hex') } };
-  for (const opensEditor of [true, false]) {
-    await assert.rejects(deliver(newer, snapshot, opensEditor), /版本/); checks++;
-    await assert.rejects(deliver({ ...newer, revision: 1 }, snapshot, opensEditor), /内容已变化/); checks++;
-    await assert.rejects(deliver({ ...target, targetRef: { ...target.targetRef, documentId: 'another-scene' } }, snapshot, opensEditor), /场景或图层/); checks++;
-    await assert.rejects(deliver({ ...target, sourceEntry: { ...target.sourceEntry, layerId: 'another-layer' } }, snapshot, opensEditor), /场景或图层/); checks++;
-  }
-  const geometryOnly = { ...snapshot, revision: 2, content: structuredClone(scene) }; geometryOnly.content.instances[0].x++;
-  await assert.rejects(deliver(target, geometryOnly, true), /版本/); checks++;
-  for (const state of [{ ...clean, aiDraftDirty: true }, { ...clean, pixelDirty: true }, { ...clean, referencesLoading: true }, { ...clean, pending: true }, { ...clean, busy: true }]) {
-    await assert.rejects(deliver(target, snapshot, true, state), /草稿|当前请求/); checks++;
-  }
-  check([handoffs, downloads], [1, 1], 'stale metadata and unsent AI/pixel drafts deliver no source package and never close the editor');
-  const adopted = { ...snapshot, revision: 2, content: structuredClone(scene) };
-  adopted.content.map.source = `data:application/zip;base64,${changedBytes.toString('base64')}`;
-  await deliver(newer, adopted, true); await deliver(newer, adopted, false);
-  check([handoffs, downloads], [2, 2], 'adopted metadata and exact refreshed host source can both open and download');
 }
 
 async function sharedSessionRecovery(client) {

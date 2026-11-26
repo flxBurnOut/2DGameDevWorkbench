@@ -11,7 +11,7 @@ from ..jsonio import read_json
 from ..settings import HarnessSettings
 from ..store import JobStore
 from .model_config import ModelRegistry, ModelConfiguration
-from .review_evaluation import ReviewEvidence, ReviewExperiment, score_reviews
+from .review_evaluation import ReviewEvidence, ReviewExperiment, risk_coverage_curve, score_reviews
 from .independent_review import attach_opinions
 from .review_sources import snapshot_review
 
@@ -28,13 +28,14 @@ def main(argv=None):
     snapshot.add_argument('--output',type=Path,required=True)
     inspect=commands.add_parser('inspect',help='只读验证已有证据')
     inspect.add_argument('--evidence',type=Path,required=True)
-    for command in ('baseline','independent','resolve'):
+    for command in ('baseline','independent','resolve','self-consistency','experts-no-guard'):
         run=commands.add_parser(command,help='需要明确授权的旁路视觉调用')
         run.add_argument('--evidence',type=Path,required=True)
         run.add_argument('--output',type=Path,required=True)
         run.add_argument('--model-snapshot',type=Path)
         run.add_argument('--authorize-review',action='store_true')
         if command=='resolve':run.add_argument('--parent',type=Path,required=True)
+        if command=='self-consistency':run.add_argument('--calls',type=int,default=5)
     combine=commands.add_parser('combine',help='保留基线，补充独立意见；不调用模型')
     combine.add_argument('--baseline',type=Path,required=True)
     combine.add_argument('--independent',type=Path,required=True)
@@ -42,13 +43,19 @@ def main(argv=None):
     score=commands.add_parser('score',help='本地计算误报、漏报与未决项；标签不会发送给模型')
     score.add_argument('--labels',type=Path,required=True)
     score.add_argument('--reports',type=Path,required=True,help='JSON mapping of case IDs to report files')
+    score.add_argument('--risk-coverage',action='store_true',help='另输出置信度阈值扫描下的 Risk-Coverage 曲线')
     args=parser.parse_args(argv)
     if args.command=='inspect':
         evidence=ReviewEvidence(args.evidence)
         return {'token':evidence.token,'frames':len(evidence.paths),'scope':evidence.manifest['scope'],'provider_called':False}
     if args.command=='score':
         labels=read_json(args.labels)
-        return score_reviews(labels.get('labels',labels),{k:read_json(Path(p)) for k,p in read_json(args.reports).items()})
+        label_map=labels.get('labels',labels)
+        loaded={k:read_json(Path(p)) for k,p in read_json(args.reports).items()}
+        scored=score_reviews(label_map,loaded)
+        if args.risk_coverage:
+            scored['risk_coverage']=risk_coverage_curve(label_map,loaded)
+        return scored
     if args.command=='combine':
         result=attach_opinions(read_json(args.baseline),read_json(args.independent))
         # A new report only; never overwrite historical evidence.
@@ -86,8 +93,10 @@ def main(argv=None):
         models=read_json(destination/'review.json')['model_snapshot']
     else:
         models=registry.load().model_dump(mode='json')
-    run=ReviewExperiment(registry,evidence,destination,snapshot=models,max_calls=1 if args.command=='resolve' else 2)
-    result=(run.resolve(read_json(args.parent),authorized=True) if args.command=='resolve' else run.run(mode=args.command,authorized=True))
+    max_calls = 1 if args.command == 'resolve' else (args.calls if args.command == 'self-consistency' else (5 if args.command == 'experts-no-guard' else 2))
+    run=ReviewExperiment(registry,evidence,destination,snapshot=models,max_calls=max_calls)
+    mode_map={'self-consistency':'self_consistency','experts-no-guard':'experts_no_guard'}
+    result=(run.resolve(read_json(args.parent),authorized=True) if args.command=='resolve' else run.run(mode=mode_map.get(args.command,args.command),authorized=True))
     return {'state':result['state'],'advisory_only':True,'verdict':result.get('verdict'),
         'recorded_calls':len(result['requests']),'output':str(destination/'review.json')}
 

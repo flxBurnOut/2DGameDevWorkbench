@@ -1,24 +1,26 @@
-.image-assets-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; font-size: 13px; }
+.image-assets-panel { display: flex; flex-direction: column; gap: 12px; min-width: 0; font-size: var(--ui-text-sm); }
 .image-assets-panel p { margin: 0; line-height: 1.6; }
 .image-assets-panel label { display: flex; flex-direction: column; gap: 6px; margin: 0; }
-.image-assets-panel textarea, .image-assets-panel select, .image-assets-panel input:not([hidden]) { width: 100%; min-width: 0; border: 1px solid light-dark(var(--theme-light-border), #334155); border-radius: 6px; padding: 8px; background: light-dark(var(--theme-light-panel), #152033); color: inherit; font: inherit; }
+.image-assets-panel textarea, .image-assets-panel select, .image-assets-panel input:not([hidden], [type='checkbox']) { width: 100%; min-width: 0; border: 1px solid var(--theme-border); border-radius: var(--ui-radius-md); padding: 8px; background: var(--theme-panel); color: inherit; font: inherit; }
 .image-assets-panel textarea { resize: vertical; min-height: 110px; }
-.image-assets-panel button, .image-assets-panel a { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid light-dark(var(--theme-light-border), #334155); border-radius: 6px; padding: 8px 10px; background: light-dark(var(--theme-light-panel), #1e293b); color: inherit; font: inherit; cursor: pointer; }
-.image-assets-panel button:disabled { opacity: .5; cursor: not-allowed; }
-.image-assets-panel .image-assets-primary { color: light-dark(#006c82, #8ce6ed); border-color: light-dark(#82b9c1, #33727c); }
-.image-assets-panel small { font-size: 12px; color: light-dark(var(--theme-light-muted), #a1acc0); line-height: 1.6; }
+.image-assets-panel button, .image-assets-panel a { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--theme-border); border-radius: var(--ui-radius-md); min-height: var(--ui-control-height); padding: var(--ui-control-padding); background: var(--theme-panel); color: inherit; font: inherit; cursor: pointer; }
+.image-assets-panel button:hover:not(:disabled), .image-assets-panel a:hover { border-color: var(--theme-control-border); background: var(--ui-hover-bg); }
+.image-assets-panel button:active:not(:disabled) { background: var(--ui-press-bg); }
+.image-assets-panel button:disabled { opacity: .5; }
+.image-assets-panel .image-assets-primary { color: var(--theme-cyan); border-color: color-mix(in srgb, var(--theme-cyan) 45%, var(--theme-border)); }
+.image-assets-panel small { font-size: var(--ui-text-xs); color: var(--theme-muted); line-height: 1.6; }
 .image-assets-panel output { overflow-wrap: anywhere; line-height: 1.6; }
 .image-assets-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .image-assets-references { display: flex; flex-direction: column; gap: 8px; }
 .image-assets-reference { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.image-assets-reference img { width: 48px; height: 40px; object-fit: contain; border: 1px solid light-dark(var(--theme-light-border), #334155); }
+.image-assets-reference img { width: 48px; height: 40px; object-fit: contain; border: 1px solid var(--theme-border); }
 .image-assets-reference span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .image-assets-reference button { padding: 5px; }
 .image-assets-settings summary { display: flex; gap: 6px; align-items: center; cursor: pointer; }
 .image-assets-settings label, .image-assets-settings .image-assets-actions { margin-top: 10px; }
-.image-assets-preview { display: grid; place-items: center; padding: 12px; min-height: 160px; border: 1px solid light-dark(var(--theme-light-border), #334155); border-radius: 8px; }
+.image-assets-preview { display: grid; place-items: center; padding: 12px; min-height: 160px; border: 1px solid var(--theme-border); border-radius: var(--ui-radius-lg); }
 .image-assets-preview img { width: 100%; height: auto; max-height: 420px; object-fit: contain; }
-.image-assets-transparent { background-color: light-dark(#e5e9ee, #182231); background-image: conic-gradient(light-dark(#f7f9fc, #263244) 25%, transparent 0 50%, light-dark(#f7f9fc, #263244) 0 75%, transparent 0); background-size: 16px 16px; }
+.image-assets-transparent { background-color: var(--theme-checker-a); background-image: conic-gradient(var(--theme-checker-b) 25%, transparent 0 50%, var(--theme-checker-b) 0 75%, transparent 0); background-size: 16px 16px; }
 .image-assets-spin { animation: image-assets-spin 1s linear infinite; }
 @keyframes image-assets-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .image-assets-spin { animation: none; } }

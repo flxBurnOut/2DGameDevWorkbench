@@ -1,12 +1,10 @@
 import manifest from '@/workbench/manifest.json';
 import { fetchWorkbenchRuntime } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 export async function DELETE(request: Request) {
-  if (request.headers.get('origin') !== new URL(request.url).origin)
-    return Response.json(
-      { error: '请从本机工作台设置页面执行清空。' },
-      { status: 403 },
-    );
+  const denied = trustedRequest(request, { requireOrigin: true });
+  if (denied) return denied;
   const connector = manifest.capabilities.find(
     (c) => c.id === 'sprite-generator',
   )!.connector;

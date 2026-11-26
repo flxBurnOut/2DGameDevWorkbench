@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
@@ -19,6 +20,11 @@ if TYPE_CHECKING:
 
 KIND_LABELS = {"character": "角色原图", "animation": "动画", "map": "地图"}
 ACTION_LABELS = {"edit_reference": "编辑原图", "generate": "制作动作", "edit": "继续编辑", "review": "检查动画", "export": "导出", "download": "导出原图"}
+
+
+def animation_title(character: str, action: str) -> str:
+    character, action = character.strip(), action.strip()
+    return action if character.casefold() in action.casefold() else f"{character} · {action}"
 
 
 def animation_actions(material: dict[str, Any], qa_version: str) -> tuple[str, list[str]]:
@@ -54,11 +60,16 @@ class ArtworkLibrary:
         self.service = service
         self.maps_dir = service.settings.data_root / "artworks" / "maps"
 
-    def list_artworks(self) -> list[dict[str, Any]]:
+    def list_artworks(self, *, jobs=None) -> list[dict[str, Any]]:
+        return self._rows(self.service.presets.list_characters(),
+                          self.service.list_jobs(include_archived=True) if jobs is None else jobs,
+                          self.maps_dir.glob("*/artwork.json"))
+
+    def _rows(self, characters, jobs, maps) -> list[dict[str, Any]]:
         from .service import QA_ALGORITHM_VERSION
 
         result: list[dict[str, Any]] = []
-        for row in self.service.presets.list_characters():
+        for row in characters:
             if row["id"] == "diagnostic_dummy" or not row.get("valid"):
                 continue
             try:
@@ -75,7 +86,7 @@ class ArtworkLibrary:
             except (OSError, ValueError, ValidationHarnessError):
                 continue
         # Workbench history archiving must not hide durable artwork.
-        for row in self.service.list_jobs(include_archived=True):
+        for row in jobs:
             if row.get("execution_only") or row.get("status") == "invalid" or row.get("provider") == "fixture" or row.get("character_id") == "diagnostic_dummy":
                 continue
             for material in row.get("artworks", []):
@@ -88,7 +99,7 @@ class ArtworkLibrary:
                     current = material.get("qa_ready") and material.get("qa_algorithm_version") == QA_ALGORITHM_VERSION
                     result.append({
                         "id": f"animation:{row['job_id']}:{material['candidate_index']}",
-                        "kind": "animation", "title": f"{row.get('character_name') or row['character_id']} · {row.get('action_name') or row['action_id']}",
+                        "kind": "animation", "title": animation_title(row.get('character_name') or row['character_id'], row.get('action_name') or row['action_id']),
                         "character_id": row["character_id"], "job_id": row["job_id"],
                         "candidate_index": material["candidate_index"],
                         "subtitle": f"{material['frame_count']} 帧 · 版本 {material['candidate_index']}",
@@ -98,7 +109,7 @@ class ArtworkLibrary:
                     })
                 except (KeyError, ValueError, ValidationHarnessError):
                     continue
-        for manifest in sorted(self.maps_dir.glob("*/artwork.json")):
+        for manifest in maps:
             try:
                 row = read_json(manifest)
                 source = inside(self.maps_dir, manifest.parent / row["filename"])
@@ -111,8 +122,20 @@ class ArtworkLibrary:
         return sorted(result, key=lambda row: (row["updated_at"], row["id"]), reverse=True)
 
     def get(self, artwork_id: str) -> dict[str, Any]:
-        # Re-resolve on every action; card state is never authorization to edit.
-        for row in self.list_artworks():
+        parts = artwork_id.split(":")
+        characters, jobs, maps = [], [], []
+        if len(parts) == 2 and parts[0] == "character":
+            presets = self.service.presets
+            preset_path = presets.character_path(parts[1])
+            if preset_path.is_file():
+                source = next((label for label, root in presets._character_roots()
+                               if (root / parts[1] / 'character.json').resolve() == preset_path), "user")
+                characters.append({"id": parts[1], "source": source, "valid": True})
+        elif len(parts) == 3 and parts[0] == "animation" and parts[2].isdigit():
+            jobs.append(self.service.store.job_summary(parts[1]))
+        elif len(parts) == 2 and parts[0] == "map" and re.fullmatch(r"[A-Za-z0-9_-]+", parts[1]):
+            maps.append(inside(self.maps_dir, self.maps_dir / parts[1] / "artwork.json"))
+        for row in self._rows(characters, jobs, maps):
             if row["id"] == artwork_id:
                 return row
         raise NotFoundError("作品不存在或当前无法读取，请刷新作品库")

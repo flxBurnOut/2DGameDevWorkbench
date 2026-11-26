@@ -19,18 +19,20 @@ const base=`http://127.0.0.1:${port}`,delay=ms=>new Promise(r=>setTimeout(r,ms))
 let browser, page;
 try {
   for(let i=0;i<100;i++){try{if((await fetch(base+'/health')).ok)break;}catch{} if(server.exitCode!==null||i===99)throw new Error(log);await delay(100);}
-  browser=await playwright.chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHANNEL?{channel:process.env.PLAYWRIGHT_CHANNEL}:{})});
+  browser=await playwright.chromium.launch({headless:true,...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {})});
   page=await browser.newPage({viewport:{width:1440,height:1000}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   // Do not send follow-context, library or task requests to a user's live bridge.
-  await page.route('**/api/workbench/**',route=>route.fulfill({status:503,json:{error:'本隔离验收仅启用角色动作接口'}}));
+  await page.route('**/api/workbench/**',route=>route.fulfill({status:503,json:{error:'本隔离验收仅启用开放动作接口'}}));
   await page.route('**/api/workbench/open-motion?**',async route=>{
     const request=route.request(),url=new URL(request.url());
-    const target=new URL('/v1/'+(url.searchParams.get('path')||'open-motion'),base);
+    const path = url.searchParams.get('path') || 'open-motion';
+    if (path === 'workspace-identity') return route.fulfill({json:{workspaceId:(await (await fetch(base+'/health', {headers:{'x-forge-motion-identity':'1'}})).json()).motion_workspace_id}});
+    const target = new URL(path.startsWith('paired/') ? '/paired/v1/v1/' + path.slice(7) : '/v1/' + path, base);
     for(const key of ['revision','candidate','stage'])if(url.searchParams.has(key))target.searchParams.set(key,url.searchParams.get(key));
     let body=request.postData();
     if(body){const value=JSON.parse(body);if(value.spec)value.spec.provider='fixture';body=JSON.stringify(value);}
-    const response=await fetch(target,{method:request.method(),headers:{'content-type':'application/json'},...(body?{body}:{})});
+    const response=await fetch(target,{method:request.method(),headers:{'content-type':'application/json', ...(path.startsWith('paired/') && {'x-forge-workspace':request.headers()['x-forge-workspace']})},...(body?{body}:{})});
     await route.fulfill({status:response.status,contentType:response.headers.get('content-type'),body:Buffer.from(await response.arrayBuffer())});
   });
   // Settings are readiness-only UI fixture data, never usable credentials.
@@ -46,7 +48,13 @@ try {
     await route.fulfill({status:response.status,contentType:'application/zip',body:Buffer.from(await response.arrayBuffer())});
   });
   await page.goto((process.env.FORGE_TEST_WEB_URL||'http://localhost:3000')+'/tools/sprite-generator?character=test_hero');
-  await page.getByLabel('已有角色').waitFor();
+  await page.getByLabel('已有对象').waitFor();
+  const objectPicker = page.getByLabel('已有对象');
+  // Interactables are made in /tools/interactable-motion; this page lists characters only.
+  assert.equal(await objectPicker.locator('option[value="fixture_door"]').count(), 0);
+  assert.equal(await page.getByText('上传角色原图', { exact: true }).count(), 1);
+  await objectPicker.selectOption('test_hero');
+
   await page.getByText('模型设置',{exact:true}).click();
   await page.getByLabel('TokenHub API Key',{exact:true}).waitFor();
   assert.equal(await page.getByLabel('TokenHub API Key',{exact:true}).isVisible(),true);
@@ -67,17 +75,19 @@ try {
   assert.equal(savedConfig.configuration.saved_models[0].model,'acceptance-custom-vlm');
   await page.screenshot({path:path.join(root,'model-settings.png'),fullPage:true});
   await page.getByText('模型设置',{exact:true}).click();
-  assert.equal(await page.getByLabel('已有角色').inputValue(),'test_hero');
-  await page.getByLabel('已有角色').selectOption('test_hero');
+  assert.equal(await page.getByLabel('已有对象').inputValue(),'test_hero');
+  await page.getByLabel('已有对象').selectOption('test_hero');
   await page.getByText('候选数量、播放速度与调用上限',{exact:true}).click();
+  await page.getByLabel('单次绘图帧数上限',{exact:true}).fill('8');
+  await page.getByLabel('所有候选绘图总帧数上限',{exact:true}).fill('16');
   assert.equal(await page.getByLabel('视觉复核方式',{exact:true}).inputValue(),'experts_v1');
   assert.equal(await page.getByLabel('视觉验收调用上限',{exact:true}).inputValue(),'25');
   await page.getByText('候选数量、播放速度与调用上限',{exact:true}).click();
-  await page.getByLabel('角色要做什么',{exact:true}).fill('先摘帽鞠躬，最后保持低头姿势');
+  await page.getByLabel('对象要做什么',{exact:true}).fill('先摘帽鞠躬，最后保持低头姿势');
   assert.equal((await (await fetch(base+'/v1/open-motion')).json()).works.length,0);
   await page.reload();
-  await page.getByLabel('角色要做什么',{exact:true}).waitFor();
-  assert.equal(await page.getByLabel('角色要做什么',{exact:true}).inputValue(),'先摘帽鞠躬，最后保持低头姿势');
+  await page.getByLabel('对象要做什么',{exact:true}).waitFor();
+  assert.equal(await page.getByLabel('对象要做什么',{exact:true}).inputValue(),'先摘帽鞠躬，最后保持低头姿势');
   await page.getByRole('button',{name:'制定方案',exact:true}).click();
   await page.getByRole('button',{name:'确认方案，开始制作',exact:true}).waitFor({state:'visible'});
   await page.waitForFunction(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('确认方案，开始制作'));return b&&!b.disabled;});
@@ -90,6 +100,7 @@ try {
   await page.getByAltText('第 1 段目标图片',{exact:true}).waitFor();
   assert.match(await page.getByTestId('motion-target-status').innerText(),/1\/2 段/);
   await page.screenshot({path:path.join(root,'plan.png'),fullPage:true});
+  await page.getByText(/绘图预算 · 每次最多 8 帧，合计最多 16 帧/).waitFor();
   await page.getByRole('button',{name:'确认方案，开始制作',exact:true}).click();
   for(let stage=0;stage<2;stage++) {
     await page.getByRole('heading',{name:new RegExp(`确认第 ${stage+1} 段`)}).waitFor({timeout:30000});
@@ -267,14 +278,22 @@ try {
   assert.equal(revised.revision,2);assert.equal(revised.job.candidates[0].status,'approved');
   for(const i of [0,1,2,3,6])assert.equal(revised.job.candidates[0].frames[i].sha256,original.job.candidates[0].frames[i].sha256);
   await page.getByRole('button',{name:/准备与描述/}).first().click();
-  await page.getByLabel('角色要做什么',{exact:true}).fill('修改为鞠躬后坐下，结束保持坐姿');
+  await page.getByLabel('对象要做什么',{exact:true}).fill('修改为鞠躬后坐下，结束保持坐姿');
   await page.reload();
   await page.getByRole('heading',{name:'准备与描述',exact:true}).waitFor();
-  assert.equal(await page.getByLabel('角色要做什么',{exact:true}).inputValue(),'修改为鞠躬后坐下，结束保持坐姿');
+  assert.equal(await page.getByLabel('对象要做什么',{exact:true}).inputValue(),'修改为鞠躬后坐下，结束保持坐姿');
   await page.setViewportSize({width:390,height:844});
   await page.locator('.motion-content').hover();await page.mouse.wheel(0,850);
-  assert.ok(await page.locator('.motion-content').evaluate(el=>el.scrollTop)>0);
+  await page.waitForFunction(()=>document.querySelector('.motion-content')?.scrollTop > 0);
   await page.screenshot({path:path.join(root,'mobile.png'),fullPage:true});
+  const absentId = 'b'.repeat(32);
+  const originalDraft = JSON.stringify({spec:original.spec, requestKey:'missing-work-original-planning-request', revision:1,
+    workspaceId:(await (await fetch(base + '/health', {headers:{'x-forge-motion-identity':'1'}})).json()).motion_workspace_id});
+  await page.evaluate(({id, draft}) => localStorage.setItem('forge.motion.draft.' + id, draft), { id:absentId, draft:originalDraft });
+  await page.goto((process.env.FORGE_TEST_WEB_URL || 'http://localhost:3000') + '/tools/sprite-generator?work=' + absentId);
+  await page.getByText('请核对服务连接后重新连接。').waitFor();
+  assert.equal(await page.evaluate(id => localStorage.getItem('forge.motion.draft.' + id), absentId), originalDraft,
+    'An unavailable original work cannot replace a pending planning draft with blank input.');
   // Real page rendering of rejected/interrupted planning. These responses are
   // browser-only fixtures; no production work or paid retry is created.
   const failed = { ...original, id: 'f'.repeat(32), revision: 1, latest_revision: 1,
@@ -293,9 +312,9 @@ try {
   const recoveryRequests = [];
   await page.route('**/api/workbench/open-motion?**', async route => {
     const routePath = new URL(route.request().url()).searchParams.get('path');
-    if(routePath === `open-motion/${failed.id}`)
+    if(routePath === `paired/open-motion/${failed.id}`)
       return route.fulfill({json:recoveryConfirmed ? recovered : failed});
-    if(routePath === `open-motion/${failed.id}/revise`) {
+    if(routePath === `paired/open-motion/${failed.id}/revise`) {
       const body = route.request().postDataJSON();
       assert.equal(body.planning_authorized, true);
       assert.equal(body.expected_revision, 1);
@@ -389,7 +408,7 @@ try {
     'two historical records in other ranges or without drawing must not disable a fresh selection');
   await page.screenshot({path:path.join(root,'fresh-range-enabled.png'),fullPage:true});
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({browserAcceptance:'passed',evidence:root,checks:['manual-model-addition','role-model-persistence','no-empty-task','draft-reload','planning','generation','review-blocker-explanation','exact-work-editor-return','actual-frame-playback','review','Godot-dialog','real-ZIP-download','repeat-export','modified-draft-reload','narrow-scroll','planning-failure-states','unchanged-input-replan','lost-reply-idempotency','refresh-without-resubmission','old-version-preserved'],paidCalls:0}));
+  console.log(JSON.stringify({browserAcceptance:'passed',evidence:root,checks:['existing-object-type-selection','no-character-controls-on-interactable','character-only-upload','manual-model-addition','role-model-persistence','no-empty-task','draft-reload','planning','generation','review-blocker-explanation','exact-work-editor-return','actual-frame-playback','review','Godot-dialog','real-ZIP-download','repeat-export','modified-draft-reload','narrow-scroll','planning-failure-states','unchanged-input-replan','lost-reply-idempotency','refresh-without-resubmission','old-version-preserved'],paidCalls:0}));
 } catch(error) {
   if(page) {await page.screenshot({path:path.join(root,'failure.png'),fullPage:true});console.log('Failure evidence',root,(await page.locator('body').innerText()).slice(0,2400));}
   throw error;

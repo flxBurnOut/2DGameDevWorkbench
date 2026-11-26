@@ -1,6 +1,9 @@
 import { fetchWorkbenchRuntime, runtimeUnavailable } from './runtime-proxy';
+import { trustedRequest } from './request-security.mjs';
 
 export async function forwardDocumentHttp(request: Request, path = '') {
+  const denied = trustedRequest(request, { json: request.method === 'POST' });
+  if (denied) return denied;
   try {
     const url = new URL(request.url);
     const response = await fetchWorkbenchRuntime(`/v1/documents${path}${url.search}`, {

@@ -1,4 +1,5 @@
 'use client';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useState } from 'react';
 import { motionRequest } from './open-motion-model';
 
@@ -119,7 +120,7 @@ export function MotionModelSettings({
       </p>
       <label>
         默认规划模型
-        <select
+        <NativeSelect
           aria-label="默认规划模型"
           value={identity(current.default)}
           onChange={(e) =>
@@ -127,15 +128,15 @@ export function MotionModelSettings({
           }
         >
           {models.map((p) => (
-            <option key={identity(p)} value={identity(p)}>
+            <NativeSelectOption key={identity(p)} value={identity(p)}>
               {p.provider} · {p.model}
-            </option>
+            </NativeSelectOption>
           ))}
-        </select>
+        </NativeSelect>
       </label>
       <label>
         视觉复核模型
-        <select
+        <NativeSelect
           aria-label="视觉复核模型"
           value={current.roles.reviewer ? identity(current.roles.reviewer) : ''}
           onChange={(e) => {
@@ -145,13 +146,13 @@ export function MotionModelSettings({
             setDraft({ ...current, roles: next });
           }}
         >
-          <option value="">与默认规划模型相同</option>
+          <NativeSelectOption value="">与默认规划模型相同</NativeSelectOption>
           {models.map((p) => (
-            <option key={identity(p)} value={identity(p)}>
+            <NativeSelectOption key={identity(p)} value={identity(p)}>
               {p.provider} · {p.model}
-            </option>
+            </NativeSelectOption>
           ))}
-        </select>
+        </NativeSelect>
       </label>
       <details open>
         <summary>API Key 与服务状态</summary>
@@ -203,7 +204,7 @@ export function MotionModelSettings({
           .map(([role, label]) => (
             <label key={role}>
               {label}
-              <select
+              <NativeSelect
                 aria-label={`${label}模型`}
                 value={current.roles[role] ? identity(current.roles[role]) : ''}
                 onChange={(e) => {
@@ -213,13 +214,13 @@ export function MotionModelSettings({
                   setDraft({ ...current, roles: next });
                 }}
               >
-                <option value="">使用默认规划模型</option>
+                <NativeSelectOption value="">使用默认规划模型</NativeSelectOption>
                 {models.map((p) => (
-                  <option key={identity(p)} value={identity(p)}>
+                  <NativeSelectOption key={identity(p)} value={identity(p)}>
                     {p.provider} · {p.model}
-                  </option>
+                  </NativeSelectOption>
                 ))}
-              </select>
+              </NativeSelect>
             </label>
           ))}
       </details>
@@ -227,22 +228,22 @@ export function MotionModelSettings({
         <summary>新增或编辑可选模型</summary>
         <label>
           编辑已有型号
-          <select
+          <NativeSelect
             aria-label="编辑已有型号"
             value=""
             onChange={(e) => setEditing({ ...choose(e.target.value) })}
           >
-            <option value="">选择后修改参数，或直接新增</option>
+            <NativeSelectOption value="">选择后修改参数，或直接新增</NativeSelectOption>
             {models.map((p) => (
-              <option key={identity(p)} value={identity(p)}>
+              <NativeSelectOption key={identity(p)} value={identity(p)}>
                 {p.provider} · {p.model}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
         </label>
         <label>
           API 服务
-          <select
+          <NativeSelect
             aria-label="新增模型 API 服务"
             value={editing.provider}
             onChange={(e) =>
@@ -252,9 +253,9 @@ export function MotionModelSettings({
               })
             }
           >
-            <option value="tokenhub">腾讯云 TokenHub</option>
-            <option value="openai">OpenAI Responses</option>
-          </select>
+            <NativeSelectOption value="tokenhub">腾讯云 TokenHub</NativeSelectOption>
+            <NativeSelectOption value="openai">OpenAI Responses</NativeSelectOption>
+          </NativeSelect>
         </label>
         <label>
           模型 ID
@@ -289,7 +290,7 @@ export function MotionModelSettings({
         </label>
         <label>
           推理强度
-          <select
+          <NativeSelect
             aria-label="模型推理强度"
             value={editing.reasoning_effort}
             onChange={(e) =>
@@ -301,11 +302,11 @@ export function MotionModelSettings({
             }
           >
             {['auto', 'low', 'medium', 'high', 'max'].map((v) => (
-              <option key={v} value={v}>
+              <NativeSelectOption key={v} value={v}>
                 {v === 'auto' ? '服务商默认' : v}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
         </label>
         <label>
           单次请求等待上限（秒）
@@ -325,7 +326,7 @@ export function MotionModelSettings({
         </label>
         <label>
           Token 参数
-          <select
+          <NativeSelect
             aria-label="模型 Token 参数"
             value={editing.token_parameter}
             onChange={(e) =>
@@ -337,13 +338,13 @@ export function MotionModelSettings({
             }
           >
             {['auto', 'max_tokens', 'max_completion_tokens'].map((v) => (
-              <option key={v} value={v}>
+              <NativeSelectOption key={v} value={v}>
                 {v === 'auto'
                   ? '自动适配（Kimi K3 使用 max_completion_tokens）'
                   : v}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
         </label>
         <button
           disabled={!editing.model || current.saved_models.length >= 24}

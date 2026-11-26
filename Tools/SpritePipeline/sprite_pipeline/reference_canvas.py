@@ -114,7 +114,7 @@ class ReferenceCanvas:
             character_id = f"edited_{edit_id}_v{record['version']}"
             original = CharacterPreset.model_validate(record["character"])
             character = original.model_copy(update={
-                "character_id": character_id,
+                "object_id": character_id,
                 "display_name": f"{original.display_name[:170]} · 修改版 {record['version']}",
                 "reference_frame": "idle_reference.png", "master": None,
                 "palette": None, "silhouette": None,

@@ -2,11 +2,27 @@
 from ..errors import ValidationHarnessError
 
 
+DEFERRED_REQUEST = (
+    'A peer request was deferred to preserve the scheduled budget. Inspect deferred_request and the unchanged raw expert '
+    'response. Resolve from existing evidence, keep unknown geometry unknown, or ask the user in plan.questions. '
+    'Do not claim the consultation occurred.'
+)
+FINAL_RESPONSE = (
+    'This is the final coordinator turn. Return finalize with a complete plan. '
+    'Put any unresolved decision that blocks generation in plan.questions; no further expert calls can be requested.'
+)
+
+
+def final_response_only(work, role):
+    return (work.generation_policy_version in (5, 6) and role == 'coordinator'
+            and len(work.planning_calls) >= work.spec.budget.max_planning_calls)
+
+
 def context(work,role):
     unseen=[r for r in ('appearance','motion','strategy','coordinator') if r!=role and not any(m['role']==r for m in work.messages)]
     remaining=max(0,work.spec.budget.max_planning_calls-len(work.planning_calls))
     return {'remaining_after_current':remaining,'roles_not_yet_heard':unseen,
-            'rule':'Reserve scheduled strategy and coordinator turns. Put noncritical uncertainty in findings; the coordinator can resolve it from peer observations. Do not repeat a consultation merely to name an invisible anatomical detail. Critical unresolved user choices belong in final plan.questions, never an invented assumption.'}
+            'rule':'Reserve scheduled strategy and coordinator turns. If there is no spare call, submit the required observation or strategy draft now. Put noncritical uncertainty in findings; the coordinator can resolve it from peer observations. Do not repeat a consultation merely to name an invisible anatomical detail. Critical unresolved user choices belong in final plan.questions, never an invented assumption.'}
 
 
 def defer(work,role,turn,queue):
@@ -24,7 +40,9 @@ def defer(work,role,turn,queue):
     work.messages[-1]['deferred_request']=note
     for i,(next_role,question,crop) in enumerate(queue):
         if next_role=='coordinator':
-            queue[i]=(next_role,question+'\nA peer request was deferred to preserve the scheduled budget. Inspect deferred_request and the unchanged raw expert response. Resolve from existing evidence, keep unknown geometry unknown, or ask the user in plan.questions; do not claim the consultation occurred.',
+            queue[i]=(next_role, (question+'\n'+DEFERRED_REQUEST).strip(),
                       crop or (turn.crop if turn.action=='inspect_reference' else None))
-            break
+            return True
+    if role == 'coordinator' and remaining > len(queue):
+        queue.append(('coordinator', DEFERRED_REQUEST + '\n' + FINAL_RESPONSE, None))
     return True

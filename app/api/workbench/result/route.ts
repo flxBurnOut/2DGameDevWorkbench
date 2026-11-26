@@ -2,7 +2,10 @@ import {
   fetchWorkbenchRuntime,
   runtimeUnavailable,
 } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 export async function GET(request: Request) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   const query = new URL(request.url).searchParams;
   const input = Object.fromEntries(query);
   try {
@@ -17,6 +20,7 @@ export async function GET(request: Request) {
         ...(input.candidateIndex
           ? { candidateIndex: Number(input.candidateIndex) }
           : {}),
+        ...(input.offset !== undefined ? { offset: Number(input.offset) } : {}),
       }),
     });
     return new Response(response.body, {

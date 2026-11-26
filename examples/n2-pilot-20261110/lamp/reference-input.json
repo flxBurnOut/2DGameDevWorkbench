@@ -1,0 +1,8 @@
+{
+  "operation": "generate",
+  "subject": "prop",
+  "size": 128,
+  "name": "工业指示灯",
+  "seed": 404,
+  "prompt": "One small unlit industrial indicator lamp. Large circular matte charcoal-gray OFF lens in one dark steel housing with a short bolted mounting bracket and two visible screw heads. A flat readable face with the whole lens clearly visible, no other lights, no glow. Simple high-contrast pixel-art game sprite on a transparent canvas."
+}

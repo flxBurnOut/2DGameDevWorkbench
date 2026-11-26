@@ -13,7 +13,7 @@ from PIL import Image
 
 from .workbench_export import REQUEST_GODOT_EXPORT_JS, EXPORTED_GODOT_JS
 from .errors import HarnessError, ProviderConfigurationError, ValidationHarnessError
-from .artwork_library import ArtworkLibrary, ACTION_LABELS, KIND_LABELS
+from .artwork_library import ArtworkLibrary, ACTION_LABELS, KIND_LABELS, animation_title
 from .models import Anchor, CharacterPreset, ExportOptions, FrameReviewRequest, GenerationRequest
 from .reference_canvas import ReferenceCanvas
 from .project_profile import DREAMWEAVER_PROFILE, ProjectAction, project_action_choices
@@ -119,6 +119,8 @@ LIBRARY_DETAIL_SCROLL_JS = """() => {
 
 JOB_STATUS_CN = {
     "created": "任务已保存",
+    "queued": "等待 PixelLab 账户空位",
+    "not_submitted": "未提交",
     "submitting": "正在提交",
     "provider_pending": "模型处理中",
     "saving": "正在安全保存",
@@ -2200,7 +2202,7 @@ def build_ui(
         from .vision_review import VisionReviewer
         reviewer=VisionReviewer(service.settings)
         configured=reviewer.configured
-        note=("可复用服务端 TOKENHUB_API_KEY；若密钥只填在地图页面，请在此保存一次。" if reviewer.provider=="hunyuan" else "使用独立的 OpenAI API Key。")
+        note=("可复用服务端 TOKENHUB_API_KEY，或在此保存 TokenHub Key。" if reviewer.provider=="hunyuan" else "使用独立的 OpenAI API Key。")
         return _notice("ok" if configured else "warn", "视觉检查已配置" if configured else "视觉检查待配置",
             f"请求模型 {reviewer.info['model']}，检查全部实际帧（1–64 帧）；初检加至多一次复核，按 API 用量计费。TokenHub Key 是访问凭据，不会自动选择 Image V3；Image V3 用于生图，本页使用图片理解模型。" + note)
 
@@ -3377,7 +3379,7 @@ def build_ui(
                 notice = _notice("error", "作品暂时无法打开", _human_error(exc))
                 updates.update({library_detail_title: notice, asset_catalog_status: notice})
                 return updates
-            title = f"{job.character.display_name} · {job.action.display_name or job.action.action_id}"
+            title = animation_title(job.character.display_name or job.character.character_id, job.action.display_name or job.action.action_id)
             if candidate is not None:
                 title += f" · 候选 {_candidate_letter(candidate)}"
             updates[library_detail_title] = _notice("info", title, "已打开所选作品。可查看动画与逐帧画面，或进入播放检查。")

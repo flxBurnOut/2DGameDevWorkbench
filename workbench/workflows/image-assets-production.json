@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "image-assets-production",
-  "name": "场景图片素材",
+  "name": "物品图片素材",
   "capabilityId": "image-assets",
   "steps": [
     { "id": "brief", "name": "描述与参考图", "kind": "expert" },

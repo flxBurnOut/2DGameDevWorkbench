@@ -32,8 +32,8 @@ export async function propArtJson(url, init, request = fetch) {
 export function isPropArtTask(task) {
   return (
     task?.capabilityId === 'reference-art' &&
-    task.input?.operation === 'generate' &&
-    task.input.subject === 'prop'
+    ['generate', 'import', 'convert-prop'].includes(task.input?.operation) &&
+    (task.input.subject === 'prop' || task.input.operation === 'convert-prop')
   );
 }
 
@@ -73,7 +73,7 @@ export async function readPropArtAsset(taskId, request = fetch) {
   });
   if (!response.ok) throw new Error('物品图片无法读取，原物件未修改。');
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length > 1000000 || bytes.length < 24)
+  if (bytes.length > 2000000 || bytes.length < 24)
     throw new Error('物品图片大小无效。');
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   const sha256 = Array.from(digest, (b) =>

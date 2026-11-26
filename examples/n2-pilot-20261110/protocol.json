@@ -1,0 +1,41 @@
+{
+  "size": 128,
+  "background": "transparent",
+  "frames": 16,
+  "fps": 8,
+  "animationSeeds": [
+    1101,
+    2202
+  ],
+  "usdCap": 0.75,
+  "estimatedUsdPerImage": 0.00848,
+  "estimatedUsdPerClip": 0.0424,
+  "gate": "At least three objects with any first-round pass, including at least two objects passing both seeds. A pass requires a usable final frame, coherent transition, and preserved fixed parts.",
+  "objects": {
+    "chest": {
+      "name": "宝箱",
+      "referenceSeed": 401,
+      "reference": "One fully CLOSED small wooden treasure chest with a visibly separate flat closed hinged lid, dark iron bands, fixed brass plate on front wall below the lid, two short feet. Side-on game sprite with a slight three quarter view sufficient to see inside when opened. Straight rigid solid base. Center the chest in the lower half with generous empty space immediately above the lid. Clean hand-pixelled outline, simple readable parts, no contents or effects visible.",
+      "action": "From the supplied closed chest, slowly rotate only the lid upward and backward around its rear hinge to an upright, fully OPEN position. Reveal a single dark empty interior. End with the lid held open. The lower box, front brass plate, feet and their exact screen positions stay fixed throughout. One opening only. Locked camera, same pixel-art sprite and scale, transparent canvas."
+    },
+    "lever": {
+      "name": "三档拉杆",
+      "referenceSeed": 402,
+      "reference": "A single three-position mechanical floor lever at rest in its LEFT position. Direct orthographic side view. One rigid long silver rod leaning 45 degrees up and LEFT from one round visible fixed axle near the bottom, with one red round knob at its top; squat wide bolted gray base centered at bottom. Keep generous empty space above and on both sides for the throw. Clean, readable pixel-art sprite.",
+      "action": "Move the red-tipped lever from its left-leaning starting pose slowly clockwise around the fixed axle until its rod points straight UP at twelve o'clock. Stop at the VERTICAL MIDDLE detent and hold. The knob traces an arc and the rigid rod stays the same length. The base bolts, axle and its screen position are stationary. One motion only, locked camera, transparent canvas.",
+      "followup": "Starting from this exact upright middle position, smoothly rotate the lever clockwise about its stationary axle to forty-five degrees up and RIGHT. Hold the right detent. Keep the rigid rod length, knob, base, bolts, position, camera and scale fixed throughout."
+    },
+    "gate": {
+      "name": "升降栅门",
+      "referenceSeed": 403,
+      "reference": "One fully CLOSED medieval portcullis integrated into a freestanding rectangular stone doorway, viewed square-on so the opening and bars are legible in a 2D game. A solid top housing, two stone posts and sill surround four straight iron bars with pointed bottoms reaching the sill. Empty transparent area between bars. All parts within canvas, clean flat pixel art.",
+      "action": "The iron grate slides straight upward as a single rigid assembly into the top housing. Stop halfway open: its tips are held halfway between lintel and sill, revealing a clear passage below. Keep the visible spacing and structure of the bars, crossbar and pointed tips consistent as they rise. Stone posts, lintel, sill and viewpoint stay absolutely still. Single upward motion and final hold. Transparent canvas."
+    },
+    "lamp": {
+      "name": "工业指示灯",
+      "referenceSeed": 404,
+      "reference": "One small unlit industrial indicator lamp. Large circular matte charcoal-gray OFF lens in one dark steel housing with a short bolted mounting bracket and two visible screw heads. A flat readable face with the whole lens clearly visible, no other lights, no glow. Simple high-contrast pixel-art game sprite on a transparent canvas.",
+      "action": "Only the dark circular lens of the unlit indicator gradually lights up to a clearly saturated steady GREEN. Hold green in the final frames. Keep the outline, pixel positions, housing, two screws, mounting bracket, scale and camera entirely fixed. No flashing, no movement and no beam or light spill outside the lens. Preserve transparent background."
+    }
+  }
+}

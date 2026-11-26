@@ -1,11 +1,10 @@
-import manifest from '@/workbench/manifest.json';
+import manifest from './ui-manifest.json';
 
 export type WorkbenchModuleIcon =
   | 'frames'
-  | 'map'
   | 'interactable'
-  | 'reference'
-  | 'scene';
+  | 'interactable-motion'
+  | 'reference';
 
 export type WorkbenchModule = {
   id: string;
@@ -24,18 +23,17 @@ export type WorkbenchModule = {
   starterHint: string;
   entryActions?: readonly { label: string; href: string }[];
   stages: readonly string[];
+  /** Position inside its production line in the header; unset keeps manifest order. */
+  navOrder?: number;
 };
 
 /**
  * The web shell and Agent runner both derive capabilities from the same
  * machine-readable manifest. Tool logic stays behind adapters/connectors.
  */
-export const workbenchModules: readonly WorkbenchModule[] = [
-  ...manifest.capabilities,
-  ...manifest.editorModules,
-].filter((capability) => !('embedded' in capability.ui && capability.ui.embedded)).map((capability) => ({
+export const workbenchModules: readonly WorkbenchModule[] = manifest.modules.filter((capability) => !('embedded' in capability.ui && capability.ui.embedded)).map((capability) => ({
   id: capability.id,
-  executable: 'connector' in capability,
+  executable: capability.executable,
   name: capability.name,
   shortName: capability.shortName,
   description: capability.description,
@@ -45,16 +43,9 @@ export const workbenchModules: readonly WorkbenchModule[] = [
   entryActions: ('entryActions' in capability.ui ? capability.ui.entryActions : undefined) as WorkbenchModule['entryActions'],
   stages: capability.ui.stages,
   href: capability.ui.route,
-  icon:
-    capability.ui.icon === 'scene'
-      ? 'scene'
-      : capability.ui.icon === 'reference'
-        ? 'reference'
-        : capability.ui.icon === 'interactable'
-          ? 'interactable'
-          : capability.ui.icon === 'map'
-            ? 'map'
-            : 'frames',
+  icon: capability.ui.icon === 'reference' ? 'reference' : capability.ui.icon === 'interactable' ? 'interactable'
+    : capability.ui.icon === 'interactable-motion' ? 'interactable-motion' : 'frames',
+  navOrder: 'navOrder' in capability.ui && typeof capability.ui.navOrder === 'number' ? capability.ui.navOrder : undefined,
   accent: capability.ui.accent === 'cyan' ? 'cyan' : 'violet',
   capabilities: capability.ui.capabilities,
   status:

@@ -4,11 +4,11 @@ import hashlib
 from typing import Literal
 from pydantic import Field
 from PIL import Image, ImageDraw
-from .contracts import Contract, digest
+from .contracts import QualityDimension, Contract, digest
 from .model_config import ModelRegistry
 from ..errors import ValidationHarnessError
 from ..vision_evidence import raster, image_part
-from .review_inputs import observation_content, audit_content, TIMING_NOTE
+from .review_inputs import prop_review_context, review_dimensions, observation_content, audit_content, TIMING_NOTE
 
 
 class FrameObservation(Contract):
@@ -24,7 +24,7 @@ class Observations(Contract):
 
 
 class CriterionResult(Contract):
-    dimension: Literal['completeness', 'equipment', 'rhythm']
+    dimension: QualityDimension
     status: Literal['pass', 'fail', 'uncertain']
     confidence: float = Field(ge=0, le=1)
     frames: list[int] = Field(min_length=1, max_length=64)
@@ -60,16 +60,22 @@ def evidence_panels(paths, reference, fps):
     return content
 
 
+def audit_verdict(checks):
+    """One confident defect fails; only unanimous confident passes pass."""
+    if any(c['status']=='fail' and c['confidence']>=.8 for c in checks):return 'fail'
+    return 'pass' if all(c['status']=='pass' and c['confidence']>=.85 for c in checks) else 'uncertain'
+
+
 def grounded_audit(result, count):
     checks=[]
     for item in result.checks:
         c=item.model_dump(mode='json')
-        minimum=2 if c['dimension']=='rhythm' else min(count,3) if c['dimension']=='completeness' else 1
+        minimum=2 if c['dimension'] in {'rhythm','transition','fixed_parts'} else min(count,3) if c['dimension']=='completeness' else 1
         if len(set(c['frames']))<minimum:
-            c.update(status='uncertain',confidence=0,evidence='帧证据不足以支持这一时序结论；请人工核对。模型原意见：'+c['evidence'])
+            c.update(status='uncertain',confidence=0,evidence=('帧证据不足以支持这一时序结论；请人工核对。模型原意见：'+c['evidence'])[:500])
         checks.append(c)
-    verdict='fail' if any(c['status']=='fail' and c['confidence']>=.8 for c in checks) else 'pass' if all(c['status']=='pass' and c['confidence']>=.85 for c in checks) else 'uncertain'
-    labels={'completeness':'完整性','equipment':'装备一致性','rhythm':'节奏'};states={'pass':'模型判定通过','fail':'模型发现问题','uncertain':'证据不足'}
+    verdict=audit_verdict(checks)
+    labels={'state_frame':'状态帧可用','transition':'过渡可用','fixed_parts':'固定内容保持','completeness':'完整性','equipment':'装备一致性','rhythm':'节奏'};states={'pass':'模型判定通过','fail':'模型发现问题','uncertain':'证据不足'}
     summary='；'.join(labels[c['dimension']]+'：'+states[c['status']] for c in checks)+'。仍需结合实际播放人工确认。'
     return verdict,checks,summary
 
@@ -110,17 +116,27 @@ class QualityReviewer:
             reference = self.s.store.job_dir(job_id) / 'input/reference.png'
             pictures = evidence_panels(paths,reference,job.action.fps)
             from .motion_evidence import measurements
-            metrics=measurements([p.read_bytes() for p in paths],job.action.fps)
+            prop_context = prop_review_context(job.request.open_plan)
+            metrics=measurements([p.read_bytes() for p in paths],job.action.fps, prop_context.get('interactable'),
+                reference)
+            from .prop_measurements import tracked_measurements, guard_measurements
+            cues = tracked_measurements(self.s, job, index, None, fingerprint)
+            if cues:
+                metrics['tracked_parts'] = cues
+            from .character_measurements import character_measurements
+            char_cues = None if (cues or prop_context) else character_measurements(self.s, job, paths, reference, stage=None)
+            if char_cues:
+                metrics['character_probes'] = char_cues
             with self.s.store.locked_job(job_id) as current:
                 self.s._candidate(current,index).plan_execution.quality_review['motion_evidence']=metrics
-            observe = observation_content(pictures)
+            observe = observation_content(pictures, interactable=bool(prop_context))
             observations = self.call(job_id,index,'observe',observe,Observations,len(paths))
             if [f.frame for f in observations.frames] != list(range(1,len(paths)+1)):
                 raise ValidationHarnessError('逐帧观察不完整或顺序错误')
             with self.s.store.locked_job(job_id) as current:
                 self.s._candidate(current,index).plan_execution.quality_review['observations'] = observations.model_dump(mode='json')
             contract = job.request.open_plan.plan.quality.model_dump(mode='json')
-            context = {'user_request':job.request.open_plan.spec.description,'quality_contract':contract,
+            context = {**prop_context, 'user_request':job.request.open_plan.spec.description,'quality_contract':contract,
                     'segment_motion_constraints':[s.motion.model_dump(mode='json') if s.motion else None for s in job.request.open_plan.plan.stages],
                     'pixel_cues_not_verdict':metrics,
                     'actual_stage_boundaries':candidate.plan_execution.timeline,
@@ -129,7 +145,7 @@ class QualityReviewer:
             from .adjustment_review import add_accepted_goals
             context=add_accepted_goals(context,candidate)
             result = self.call(job_id,index,'audit',audit_content(pictures,context,job.action.fps),Audit,len(paths))
-            if {c.dimension for c in result.checks} != {'completeness','equipment','rhythm'} or any(f<1 or f>len(paths) for c in result.checks for f in c.frames):
+            if {c.dimension for c in result.checks} != set(review_dimensions(prop_context)) or any(f<1 or f>len(paths) for c in result.checks for f in c.frames):
                 raise ValidationHarnessError('视觉验收维度或帧证据无效')
             verdict, checks, summary = grounded_audit(result,len(paths))
             report = dict(state='complete',verdict=verdict,checks=checks,summary=summary,
@@ -139,6 +155,8 @@ class QualityReviewer:
                 report = ProductionReview(self.s,job_id,index).finish(report,
                     lambda phase, content, schema, count: self.call(job_id,index,phase,content,schema,count),
                     expected_token=fingerprint, expected_fps=job.action.fps)
+            else:
+                report = guard_measurements(report, cues or char_cues)
             with self.s.store.locked_job(job_id) as current:
                 c = self.s._candidate(current,index)
                 if frame_digest(c) != fingerprint: raise ValidationHarnessError('验收期间动画已改变')
@@ -164,7 +182,8 @@ class QualityReviewer:
         receipt = {}
         try:
             result, metadata = self.registry.send('reviewer',content,schema,count,snapshot=job.request.open_plan.model_snapshot,
-                schema_name='open_motion_quality',on_response=receipt.update)
+                schema_name='open_motion_quality',on_response=receipt.update,
+                **({'interactable': True} if job.request.open_plan.plan.quality.interactable else {}))
             request.update(state='complete',**metadata)
             if job.request.open_plan.spec.review_protocol == 'experts_v1':
                 request['response'] = result.model_dump(mode='json')

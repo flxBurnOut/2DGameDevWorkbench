@@ -8,7 +8,7 @@ from test_open_motion_quality import quality, ReviewRegistry
 from sprite_pipeline.api_app import create_api
 from sprite_pipeline.collaboration.checkpoints import Checkpoints, review_call_count
 from sprite_pipeline.collaboration.execution import PlanGeneration
-from sprite_pipeline.errors import ConflictError, ValidationHarnessError, ExportBlockedError
+from sprite_pipeline.errors import ConflictError, ValidationHarnessError, ExportBlockedError, ProviderTemporaryError
 
 
 class CheckpointPlanner(Planner):
@@ -107,6 +107,45 @@ def test_rejected_checkpoint_and_duplicate_accept_cannot_resume(setup):
     with pytest.raises(ConflictError):ws.pause(w.id,1,resume=True)
     engine.advance(w.job_id,p,wait=True);assert len(p.requests)==2
     assert s.store.load(w.job_id).candidates[0].plan_execution.stages[0].accepted
+
+
+@pytest.mark.parametrize('checkpoints',[False,True],ids=['legacy-complete','checkpoint-accepted'])
+def test_manual_recovery_skips_finished_segments_and_only_polls_original_id(setup,checkpoints):
+    s,ws,_,p,_=setup
+    if checkpoints:ws.model=CheckpointPlanner()
+    w=ready(ws);w=ws.start(w.id,1,w.plan_sha256);engine=PlanGeneration(s)
+    engine.advance(w.job_id,p)
+    if checkpoints:accept(s,w,0)
+    p.unknown=True
+    with pytest.raises(ProviderTemporaryError):engine.advance(w.job_id,p)
+    # Exercise PixelLab's manual-ID gate with only the fixture submit/poll implementation.
+    with s.store.locked_job(w.job_id) as job:
+        job.request.open_plan.spec.provider='pixellab';job.request.provider='pixellab'
+    before=s.store.load(w.job_id);finished='accepted' if checkpoints else 'complete'
+    assert [r.state for r in before.candidates[0].plan_execution.stages]==[finished,'unknown']
+    remote='remote-000002'
+    bound=s.attach_provider_job_id(w.job_id,1,remote)
+    assert [r.state for r in bound.candidates[0].plan_execution.stages]==[finished,'pending']
+    assert bound.candidates[0].plan_execution.stages[0]==before.candidates[0].plan_execution.stages[0]
+    assert bound.candidates[0].plan_execution.stages[1].provider_job_id==remote
+    with pytest.raises(ConflictError,match='不同的远端编号'):
+        s.attach_provider_job_id(w.job_id,1,'different-remote-000002')
+    assert s.store.load(w.job_id).model_dump()==bound.model_dump()
+    polls=[];original=p.poll
+    def poll(identity):
+        polls.append(identity);return original(identity)
+    p.poll=poll
+    recovered=s.recover_completed_candidate(w.job_id,1)
+    assert polls==[remote] and len(p.requests)==2
+    if checkpoints:
+        assert recovered.candidates[0].plan_execution.stages[1].state=='awaiting_review'
+        assert not recovered.plan_control.enabled
+        accept(s,w,1);recovered=engine.advance(w.job_id,p,wait=True)
+    assert len(recovered.candidates[0].frames)==8
+    assert recovered.request.request_key==before.request.request_key
+    assert recovered.request.open_plan.plan_sha256==before.request.open_plan.plan_sha256
+    s.recover_completed_candidate(w.job_id,1)
+    assert polls==[remote] and len(p.requests)==2
 
 
 def test_budget_includes_all_segments_and_final_review(setup):

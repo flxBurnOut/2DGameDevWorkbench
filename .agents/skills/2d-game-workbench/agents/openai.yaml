@@ -1,4 +1,4 @@
 interface:
   display_name: "Forge 资产制作"
-  short_description: "制作、编辑、检查并交付 Forge 美术、动画、交互物与场景"
+  short_description: "制作、编辑、检查并交付 Forge 美术、动画与交互物"
   default_prompt: "Use $2d-game-workbench to create, edit, inspect or deliver the requested Forge assets."

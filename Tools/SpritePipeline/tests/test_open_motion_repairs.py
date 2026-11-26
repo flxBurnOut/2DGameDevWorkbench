@@ -1,15 +1,25 @@
 """Window isolation, budget and recovery guarantees; no live provider calls."""
+import hashlib
+import io
+import json
+from dataclasses import replace
+
 import pytest
+from PIL import Image
 from test_open_motion import setup,ready,spec
 from test_open_motion_checkpoints import CheckpointPlanner,accept
 from sprite_pipeline.collaboration.contracts import digest
 from sprite_pipeline.collaboration.execution import PlanGeneration
 from sprite_pipeline.collaboration.checkpoints import Checkpoints,review_call_count
+from sprite_pipeline.collaboration.experiment import retrospective
+from sprite_pipeline.collaboration.workspace import OpenMotionWorkspace
 from sprite_pipeline.collaboration.repairs import LocalRepairs,generation_calls,edit_window_limit,repair_request
 from sprite_pipeline.errors import ConflictError,ValidationHarnessError,ProviderTemporaryError
+from sprite_pipeline.providers.base import PollStatus
+from sprite_pipeline.service import SpritePipelineService
 
 
-def repair_work(setup):
+def repair_work(setup, *, initial_usage=None):
     s,ws,_,p,fixture=setup;ws.model=CheckpointPlanner()
     w=ready(ws,spec(budget={'max_generation_calls':4,'max_review_calls':10}))
     w.plan.stages[0].frame_count=8;w.plan_sha256=digest(w.plan.model_dump(mode='json'));ws.save(w)
@@ -18,6 +28,8 @@ def repair_work(setup):
     def poll(remote):
         result=original(remote);request=p.requests[int(remote.split('-')[-1])-1]
         if result.images:result.images=[result.images[(i+(1 if request.edit_frames else 0))%4] for i in range(request.frame_count)]
+        if initial_usage and len(p.requests) == 1:
+            result.usage = initial_usage
         return result
     p.poll=poll
     PlanGeneration(s).advance(w.job_id,p,wait=True)
@@ -83,3 +95,90 @@ def test_size_specific_edit_limits_reserve_context_slots():
     assert edit_window_limit(80,64)==6
     assert edit_window_limit(128,128)==2
     assert edit_window_limit(256,128)==2
+
+
+@pytest.mark.parametrize('shape', ['exact', 'extra_context', 'extra_pose', 'failed'])
+def test_repair_charges_survive_saved_result_restart_and_count_once(setup, tmp_path, monkeypatch, shape):
+    s, ws, provider, work = repair_work(setup, initial_usage={'type': 'usd', 'usd': 1})
+    submit, poll = provider.submit, provider.poll
+    monkeypatch.setattr(provider, 'submit', lambda req: replace(
+        submit(req), raw_response={'usage': {'type': 'usd', 'usd': 2.5}}))
+
+    def returned(identity):
+        result = poll(identity)
+        if shape == 'failed':
+            return replace(result, status=PollStatus.failed, provider_status='failed', images=[],
+                           usage={'type': 'usd', 'usd': 2.5}, error={'code': 'provider_job_failed'})
+        if shape == 'extra_context':
+            result.images.insert(0, provider.requests[-1].reference_image)
+        elif shape == 'extra_pose':
+            extra = io.BytesIO()
+            Image.new('RGBA', (64, 64), '#ff00ff').save(extra, format='PNG')
+            result.images.insert(0, extra.getvalue())
+        # Some terminal provider responses omit the usage from acceptance.
+        return result
+
+    attempt = create(s, provider, work, mode='transition')
+    assert attempt['usage'] == {'type': 'usd', 'usd': 2.5}
+    monkeypatch.setattr(provider, 'poll', returned)
+    repair_folder = s.store.resolve_job_path(work.job_id, attempt['folder'])
+    from sprite_pipeline.collaboration import repairs as repair_module
+    real_write = repair_module.atomic_write_json
+
+    def crash_after_archive(path, data):
+        if path == repair_folder / 'result.json':
+            raise KeyboardInterrupt('fixture stops after the raw result is durable')
+        return real_write(path, data)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(repair_module, 'atomic_write_json', crash_after_archive)
+        with pytest.raises(KeyboardInterrupt):
+            PlanGeneration(s).advance(work.job_id, provider, wait=True)
+    assert LocalRepairs(s).run(s.store.load(work.job_id), 1, 0).repairs[-1]['state'] == 'pending'
+    original = json.loads((repair_folder / 'provider-result.json').read_bytes())
+    assert original['provider_job_id'] == attempt['provider_job_id'] and original['usage']['usd'] == 2.5
+    assert len(original['frames']) == {'failed': 0, 'exact': 4, 'extra_context': 5, 'extra_pose': 5}[shape]
+    reopened = SpritePipelineService(s.settings.data_root)
+    monkeypatch.setattr(provider, 'poll', lambda *_: pytest.fail('saved terminal result must be reused'))
+    job = PlanGeneration(reopened).advance(work.job_id, provider, wait=True)
+    repair = LocalRepairs(reopened).run(job, 1, 0).repairs[-1]
+    assert len(provider.requests) == 2 and generation_calls(job) == 2
+    assert repair['usage'] == {'type': 'usd', 'usd': 2.5}
+    assert repair['state'] == ('failed' if shape in ('failed', 'extra_pose') else 'awaiting_review')
+    if shape == 'extra_context':
+        assert repair['playback_raw_indices'] == [1, 2, 3, 4]
+    elif shape == 'extra_pose':
+        assert repair['error']['details']['reason'] == 'unexpected_extra_frame' and not repair.get('proposed_frames')
+    output = tmp_path / ('repair-export-' + shape)
+    current = OpenMotionWorkspace(reopened).load(work.id)
+    cost = retrospective(reopened.store.job_dir(job.job_id), current.model_dump(mode='json'), tmp_path / 'none', output)
+    assert cost['calls']['generation'] == cost['priced_drawing_calls'] == 2
+    assert cost['known_drawing_usd'] == 3.5 and cost['unpriced_calls'] == cost['calls']['planning'] + cost['calls']['review']
+    saved = json.loads((output / 'retrospective.json').read_bytes())['stages'][0]['repairs'][0]['original_images']
+    assert [hashlib.sha256((output/f['file']).read_bytes()).hexdigest() for f in saved] == [
+        f['sha256'] for f in original['frames']]
+
+
+@pytest.mark.parametrize('identity', [None, 'already-reported-upstream'])
+def test_ambiguous_repair_keeps_charge_without_repeating_post(setup, tmp_path, monkeypatch, identity):
+    s, ws, provider, work = repair_work(setup)
+
+    def charged_unknown(request):
+        provider.requests.append(request)
+        raise ProviderTemporaryError('charged but unknown result', details={
+            'submission_unknown': True, 'response': {'usage': {'type': 'usd', 'usd': 1.25}},
+            **({'provider_job_id': identity} if identity else {}),
+        })
+
+    monkeypatch.setattr(provider, 'submit', charged_unknown)
+    with pytest.raises(ProviderTemporaryError):
+        create(s, provider, work)
+    reopened = SpritePipelineService(s.settings.data_root)
+    recovered = create(reopened, provider, work)
+    assert recovered['state'] == 'unknown' and recovered.get('provider_job_id') == identity
+    assert recovered['usage'] == {'type': 'usd', 'usd': 1.25} and len(provider.requests) == 2
+    job = PlanGeneration(reopened).advance(work.job_id, provider, wait=True)
+    assert generation_calls(job) == 2
+    cost = retrospective(reopened.store.job_dir(job.job_id), ws.load(work.id).model_dump(mode='json'),
+                         tmp_path / 'none', tmp_path / 'ambiguous-export')
+    assert cost['known_drawing_usd'] == 1.25 and cost['priced_drawing_calls'] == 1

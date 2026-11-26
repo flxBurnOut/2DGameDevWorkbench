@@ -1,4 +1,5 @@
 'use client';
+/* oxlint-disable next/no-html-link-for-pages -- WorkbenchProvider guards navigation. */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Dialog,
@@ -15,6 +16,7 @@ import {
 } from '@/features/godot-export/package.mjs';
 import { gameHandoff } from '@/features/godot-export/handoff.mjs';
 import type { GodotExportOffer } from '@/lib/workbench/godot-export';
+import { readGameDelivery, gameDeliveryHref, deliveryStates } from '@/lib/workbench/game-export-client';
 import {
   publishEditorSession,
   removeEditorSession,
@@ -38,19 +40,13 @@ type Delivery = {
     engine: { status: string; version?: string };
   } | null;
 };
-const states: Record<string, string> = {
-  awaiting_agent: '等待 WorkBuddy 接入',
-  assets_installed: '资源已就位，等待代码接入',
-  integrated: '代码已接入',
-  needs_attention: '接入需要处理',
-};
 const kinds: Record<string, string> = {
-  scene: '完整场景',
-  map: '地图',
   interactable: '交互物',
   animation: '角色动画',
 };
-export function GodotExportDialog() {
+/** Loaded by GodotExportHost on the first export request, which it passes as `initialOffer`. */
+export function GodotExportDialog({ initialOffer = null }: { initialOffer?: GodotExportOffer | null } = {}) {
+  const firstOffer = useRef(initialOffer);
   const [offer, setOffer] = useState<GodotExportOffer | null>(null);
   const [project, setProject] = useState<Project | null>(null),
     [pathValue, setPathValue] = useState('');
@@ -171,6 +167,10 @@ export function GodotExportDialog() {
       })();
     };
     window.addEventListener('forge:godot-export', receive);
+    if (firstOffer.current) {
+      receive(new CustomEvent('forge:godot-export', { detail: firstOffer.current }));
+      firstOffer.current = null;
+    }
     return () => {
       window.removeEventListener('forge:godot-export', receive);
       removeEditorSession('godot-export');
@@ -255,8 +255,7 @@ export function GodotExportDialog() {
       }}
     >
       <DialogContent
-        className="max-h-[90dvh] overflow-y-auto sm:max-w-lg"
-        style={{ width: 'calc(100vw - 32px)', maxWidth: 512 }}
+        className="max-h-[90dvh] w-[calc(100vw-32px)] max-w-lg overflow-y-auto sm:max-w-lg"
         showCloseButton={!busy}
       >
         <DialogTitle>导出到 Godot 项目</DialogTitle>
@@ -278,7 +277,7 @@ export function GodotExportDialog() {
           <>
             <p className="flex items-center gap-2 font-medium">
               <CheckCircle2 className="size-5 text-[var(--theme-success)]" />
-              {states[delivery.status] || delivery.status}
+              {deliveryStates[delivery.status] || delivery.status}
             </p>
             <p>
               已保存到 <strong>{delivery.project.name}</strong>
@@ -308,21 +307,13 @@ export function GodotExportDialog() {
                 disabled={busy}
                 onClick={() =>
                   void run(async () => {
-                    const data = await request('settings');
-                    token.current = data.token;
-                    const found = data.deliveries.find(
-                      (d: Delivery) => d.deliveryId === delivery.deliveryId,
-                    );
-                    if (found) setDelivery(found);
-                    else
-                      setNote(
-                        '此记录不在最近列表中，请让 WorkBuddy 查询确切交付。',
-                      );
+                    setDelivery(await readGameDelivery(delivery.deliveryId));
                   })
                 }
               >
                 刷新接入进度
               </Button>
+              <a className="wb-button" href={gameDeliveryHref(delivery.deliveryId)} onClick={() => setOffer(null)}>查看交付记录</a>
             </div>
             {delivery.integration && (
               <p>

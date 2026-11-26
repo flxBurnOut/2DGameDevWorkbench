@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import re
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +19,7 @@ from .errors import (
     ProviderConfigurationError,
     ValidationHarnessError,
 )
+from .generation_commands import lookup_generation, run_keyed_generation
 from .motion_constraints import Phase
 from .models import ExportOptions, FrameReviewRequest, GenerationRequest
 from .service import QA_ALGORITHM_VERSION, SpritePipelineService
@@ -54,6 +57,7 @@ class MotionRepairBody(_Body):
 
 
 class GenerateBody(_Body):
+    request_key: str | None = Field(default=None, min_length=8, max_length=128, pattern=r'^[A-Za-z0-9][A-Za-z0-9._:-]+$')
     wait: bool = False
     candidate_index: int | None = Field(default=None, ge=1)
 
@@ -102,9 +106,9 @@ def create_api(
     """Create the FastAPI app lazily so CLI/offline processing needs no FastAPI."""
 
     try:
-        from fastapi import FastAPI, Header, Request
+        from fastapi import Depends, FastAPI, Header, Query, Request
         from fastapi.exceptions import RequestValidationError
-        from fastapi.responses import FileResponse, JSONResponse
+        from fastapi.responses import FileResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
     except ImportError as exc:  # pragma: no cover - depends on optional install
         raise ProviderConfigurationError(
@@ -135,7 +139,7 @@ def create_api(
     app.state.sprite_pipeline_recovery = recovery_worker
     from .reference_art import create_reference_router
 
-    app.include_router(create_reference_router(service))
+    app.include_router(create_reference_router(service, recovery_worker.reference_queue))
     from .canvas_api import create_canvas_router
 
     app.include_router(create_canvas_router(service))
@@ -143,7 +147,18 @@ def create_api(
 
     app.include_router(create_asset_router(service))
     from .collaboration.api import create_router as create_open_motion_router
-    app.include_router(create_open_motion_router(service))
+    motion_router = create_open_motion_router(service)
+    app.include_router(motion_router)
+    from .collaboration.workspace import motion_workspace_identity
+
+    class MotionWorkspaceMismatch(ConflictError):
+        code = 'WORKSPACE_MISMATCH'
+
+    def require_motion_workspace(workspace_header: str = Header(default='', alias='x-forge-workspace')):
+        if not workspace_header or workspace_header != motion_workspace_identity(service):
+            raise MotionWorkspaceMismatch('动画服务已切换工作区。请切回原工作区恢复请求。')
+
+    app.include_router(motion_router, prefix='/paired/v1', dependencies=[Depends(require_motion_workspace)], include_in_schema=False)
     static_dir = Path(__file__).resolve().parent / "static"
 
     class _NoStoreStaticFiles(StaticFiles):
@@ -299,12 +314,13 @@ def create_api(
         return attack_plans.stop(plan_id)
 
     @app.get("/health")
-    def health() -> dict[str, Any]:
+    def health(identity_probe: str = Header(default="", alias="x-forge-motion-identity")) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "ok": True,
             "version": "0.1.0",
             "workbench_api_version": 1,
+            **({"motion_workspace_id": motion_workspace_identity(service, create=True)} if identity_probe == "1" else {}),
             "pixellab_configured": bool(service.settings.pixellab_api_key),
             "attack_extra_generation_limit": 2,
             "data_root": str(service.settings.data_root),
@@ -390,9 +406,31 @@ def create_api(
     def get_job(job_id: str) -> dict[str, Any]:
         return {"schema_version": 1, "ok": True, "data": {"job": _job(service.get_job(job_id))}}
 
+    @app.get('/v1/jobs/requests/{request_key}')
+    def get_job_request(request_key: str) -> dict[str, Any]:
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{7,127}', request_key):
+            raise ValidationHarnessError('invalid job request key')
+        job = service.store.find_by_request_key(request_key)
+        if job is None:
+            raise NotFoundError('generation request not found')
+        return {'schema_version': 1, 'ok': True, 'data': {'job': _job(job)}}
+
+    def bound_artifact(artifact: Path, media_type: str, digest: str | None, expected: str | None):
+        if expected is not None and expected != digest:
+            raise ConflictError("artifact SHA-256 does not match the selected job revision")
+        try:
+            content = artifact.read_bytes()
+        except FileNotFoundError as exc:
+            raise NotFoundError("artifact for the selected job revision is unavailable") from exc
+        if digest is not None and hashlib.sha256(content).hexdigest() != digest:
+            raise ConflictError("artifact bytes differ from the selected job revision")
+        return Response(content, media_type=media_type, headers={"Cache-Control": "no-store"})
+
     @app.get("/v1/jobs/{job_id}/candidates/{candidate_index}/frames/{frame_index}/image", response_model=None)
-    def frame_image(job_id: str, candidate_index: int, frame_index: int) -> FileResponse:
-        job = service.get_job(job_id)
+    def frame_image(job_id: str, candidate_index: int, frame_index: int,
+                    revision: int | None = Query(None, ge=0),
+                    expected_sha256: str | None = Query(None, pattern=r"^[0-9a-f]{64}$")):
+        job = service.store.load_revision(job_id, revision)
         candidate = next(
             (item for item in job.candidates if item.candidate_index == candidate_index),
             None,
@@ -413,6 +451,8 @@ def create_api(
                 },
             )
         artifact = service.store.resolve_job_path(job_id, frame.active_path)
+        if revision is not None or expected_sha256 is not None:
+            return bound_artifact(artifact, "image/png", frame.sha256, expected_sha256)
         if not artifact.is_file():
             raise NotFoundError("frame artifact not found", details={"path": frame.active_path})
         return FileResponse(
@@ -423,8 +463,10 @@ def create_api(
         )
 
     @app.get("/v1/jobs/{job_id}/exports/{artifact_name}", response_model=None)
-    def export_artifact(job_id: str, artifact_name: str) -> FileResponse:
-        job = service.get_job(job_id)
+    def export_artifact(job_id: str, artifact_name: str,
+                        revision: int | None = Query(None, ge=0),
+                        expected_sha256: str | None = Query(None, pattern=r"^[0-9a-f]{64}$")):
+        job = service.store.load_revision(job_id, revision)
         if job.export is None:
             raise NotFoundError("job has not been exported", details={"job_id": job_id})
         fields = {
@@ -443,6 +485,16 @@ def create_api(
         recorded_path = getattr(job.export, field[0])
         if not recorded_path:
             raise NotFoundError("this historical export has no Godot package", details={"artifact": artifact_name})
+        if revision is not None or expected_sha256 is not None:
+            digest = {"sheet": job.export.sha256, "preview": job.export.preview_sha256,
+                      "godot": job.export.godot_sha256}.get(artifact_name)
+            immutable = job.export.immutable_artifacts.get(artifact_name)
+            if immutable:
+                return bound_artifact(service.store.resolve_job_path(job_id, immutable), field[1], digest, expected_sha256)
+            # Old export receipts used shared destination names and did not
+            # record a preview hash. Only the current export can serve such bytes.
+            if digest is None and service.get_job(job_id).export != job.export:
+                raise ConflictError("unhashed historical export artifact has been superseded")
         artifact = service.settings.resolve_record_path(recorded_path)
         exports_root = service.settings.exports_dir.resolve()
         try:
@@ -452,6 +504,8 @@ def create_api(
                 "export artifact escaped the configured exports directory",
                 details={"artifact": artifact_name},
             ) from exc
+        if revision is not None or expected_sha256 is not None:
+            return bound_artifact(artifact, field[1], digest, expected_sha256)
         if not artifact.is_file():
             raise NotFoundError(
                 "export artifact file not found",
@@ -472,9 +526,20 @@ def create_api(
             "data": {"safety": service.candidate_safety(job_id, candidate_index)},
         }
 
+    @app.get('/v1/jobs/{job_id}/generation-requests/{request_key}')
+    def generation_request(job_id: str, request_key: str):
+        return lookup_generation(service.store, job_id, request_key)
+
     @app.post("/v1/jobs/{job_id}/generate")
     def generate(job_id: str, body: GenerateBody) -> dict[str, Any]:
-        job = service.generate_job(job_id, wait=body.wait, candidate_index=body.candidate_index)
+        if body.request_key is not None:
+            return run_keyed_generation(service, job_id, body)
+        try:
+            job = service.generate_job(job_id, wait=body.wait, candidate_index=body.candidate_index)
+        except ValidationHarnessError:
+            job = service.get_job(job_id)
+            if job.status.value != "not_submitted":
+                raise
         return {"schema_version": 1, "ok": True, "data": {"job": _job(job)}}
 
     @app.post("/v1/jobs/{job_id}/candidates/{candidate_index}/recover")

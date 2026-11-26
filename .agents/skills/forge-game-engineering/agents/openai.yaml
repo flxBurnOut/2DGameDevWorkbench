@@ -1,4 +1,4 @@
 interface:
   display_name: "Forge 游戏工程"
-  short_description: "按目标 Godot 项目接入已有资产，完成场景、动画与脚本连接"
+  short_description: "按目标 Godot 项目接入已有资产，完成动画、交互物与脚本连接"
   default_prompt: "Use $forge-game-engineering to integrate the selected Forge assets into my Godot project and verify the requested behavior."

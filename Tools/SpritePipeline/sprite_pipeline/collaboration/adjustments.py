@@ -5,19 +5,21 @@ import hashlib
 import re
 import uuid
 from pathlib import Path
+from typing import Literal
 from pydantic import Field, create_model
-from .contracts import Contract, digest, review_calls_per_check
+from .contracts import Contract, adjustment_source_token, digest, review_calls_per_check
 from .model_config import ModelRegistry
-from .workspace import OpenMotionWorkspace, now
+from .workspace import OpenMotionWorkspace, now, record_error
 from .repairs import LocalRepairs, edit_window_limit
 from .review_evaluation import ReviewEvidence
 from .visual_review import frame_digest, evidence_panels
 from .checkpoints import Checkpoints
-from ..errors import ConflictError, NotFoundError, ValidationHarnessError, ProviderError
+from .drawing_receipts import poll_drawing, read_poll_receipt, repair_playback, response_usage
+from ..errors import ConflictError, HarnessError, NotFoundError, ValidationHarnessError, ProviderError
 from ..jsonio import atomic_write_json, read_json, inside
+from ..providers.account import AccountSlotBusy, PixelLabSlot
 from ..providers.base import ProviderRequest, PollStatus
 from ..models import CandidateStatus
-from .targets import checked_png
 from .adjustment_regions import FrameEditRegion, validate_regions, region_summary, region_panels, composite_region, verify_protection
 from .adjustment_attempts import ATTEMPT_LIMIT, frame_attempts, require_drawing_slot
 
@@ -26,9 +28,13 @@ FROZEN=('work_id','revision','candidate','stage','source_job','source_token','so
         'user_request','expert_suggestions','intent_source','methods','budget','models','protocol','diagnostic','seed','reference_sha256')
 
 
+def raw_alternative_name(index):
+    return f'raw/{index:03d}.png'
+
+
 def frozen_inputs(task):
     # Old task hashes remain byte-equivalent; new structure is separately frozen.
-    return {**{k:task[k] for k in FROZEN},**{k:task[k] for k in ('visual_structure','structure_context_version','intent_format_version','range_policy','stage_definition','preserve_motion','edit_regions','spatial_policy','comparison_protocol','visibility_review_version') if k in task}}
+    return {**{k:task[k] for k in FROZEN},**{k:task[k] for k in ('requested_method','local_frames','interactable','visual_structure','structure_context_version','intent_format_version','range_policy','stage_definition','preserve_motion','edit_regions','spatial_policy','comparison_protocol','visibility_review_version') if k in task}}
 
 
 class AdjustmentInput(Contract):
@@ -39,6 +45,7 @@ class AdjustmentInput(Contract):
     start: int = Field(ge=0,le=63)
     end: int = Field(ge=0,le=63)
     user_request: str = Field(default='',max_length=1800)
+    requested_method: Literal['appearance','transition'] | None = None
     preserve_motion: bool | None = None
     edit_regions: list[FrameEditRegion] | None = Field(default=None,min_length=1,max_length=64)
     request_key: str = Field(min_length=8,max_length=128,pattern=r'^[A-Za-z0-9._:-]+$')
@@ -100,14 +107,38 @@ class Adjustments:
         path=self.root(work_id)/task_id/'task.json'
         if not path.is_file():raise NotFoundError('未找到修改任务')
         task=read_json(path)
-        if task['id']!=task_id or task['work_id']!=work_id:raise ConflictError('修改任务来源不匹配')
+        if not isinstance(task, dict) or task.get('id')!=task_id or task.get('work_id')!=work_id:
+            raise ConflictError('修改任务来源不匹配')
+        if (task.get('state') not in ACTIVE | {'adopted', 'rejected', 'failed', 'needs_input'}
+                or not isinstance(task.get('created_at'), str) or type(task.get('revision')) is not int
+                or type(task.get('candidate')) is not int or 'stage' not in task
+                or any(not isinstance(task.get(key), list) for key in ('planning_calls','generation_calls','review_calls'))):
+            raise ValidationHarnessError('修改任务记录缺少状态或调用账本')
+        return task
+
+    def original_request(self, work_id, request_key):
+        receipt = self.root(work_id) / 'requests' / (digest({'request_key': request_key}) + '.json')
+        if not receipt.is_file():
+            raise NotFoundError('未找到此修改请求')
+        saved = read_json(receipt)
+        task = self.load(work_id, saved['id'])
+        if task['request_key'] != request_key or task['request_identity'] != saved['identity']:
+            raise ConflictError('修改任务与原请求回执不符')
         return task
 
     def save(self, task):
         task['updated_at']=now();atomic_write_json(self.folder(task)/'task.json',task)
 
-    def listing(self, work_id):
-        return sorted([read_json(p) for p in self.root(work_id).glob('*/task.json')],key=lambda t:t['created_at'])
+    def listing(self, work_id, *, errors=None):
+        tasks = []
+        for path in self.root(work_id).glob('*/task.json'):
+            try:
+                tasks.append(self.load(work_id, path.parent.name))
+            except (HarnessError, OSError, ValueError, KeyError, TypeError) as exc:
+                if errors is None:
+                    raise
+                errors.append(record_error(exc, work_id=work_id, adjustment_id=path.parent.name, phase='read'))
+        return sorted(tasks, key=lambda task: task['created_at'])
 
     def source(self, work_id, revision, index, stage):
         work=self.ws.load(work_id)
@@ -119,7 +150,7 @@ class Adjustments:
             if run.state not in {'awaiting_review','rejected'} or c.frames or any(r.submission_attempts for r in c.plan_execution.stages[stage+1:]):
                 raise ConflictError('此片段已锁定或后段已执行；请在完整候选中另建修改版本')
             if any(a['state'] in {'submitting','pending','unknown','awaiting_review'} for a in run.repairs):raise ConflictError('先处理已有的局部修复')
-            v=Checkpoints(self.s).view(job.job_id,index,stage);frames=v['frames'];report=v['review'] or {};token=v['token']
+            v=Checkpoints(self.s).view(job.job_id,index,stage,job=job);frames=v['frames'];report=v['review'] or {};token=v['token']
         else:
             if not c.frames or c.status not in {CandidateStatus.review_ready,CandidateStatus.approved}:raise ConflictError('请等待完整动画保存并检查完成')
             if job.request.open_plan.plan.quality and job.request.open_plan.plan.quality.version>=3 and any(r.state!='accepted' for r in c.plan_execution.stages):raise ConflictError('完整动画的原片段尚未确认')
@@ -129,8 +160,7 @@ class Adjustments:
         reference=(self.store.job_dir(job.job_id)/'input/reference.png').read_bytes()
         if hashlib.sha256(reference).hexdigest()!=job.reference_sha256:raise ConflictError('原图已改变')
         # Prevent reusing observations at a different playback speed or contract.
-        identity=digest({'token':token,'fps':job.action.fps,'loop':job.action.loop,'reference':job.reference_sha256,
-                         'plan':job.request.open_plan.plan_sha256,'revision':revision})
+        identity=adjustment_source_token(job, revision, token)
         return work,job,c,frames,data,reference,report,identity
 
     def context(self, work_id, revision, index, stage=None):
@@ -141,16 +171,25 @@ class Adjustments:
             # source() already requires an unlocked segment and no submitted
             # continuation. This endpoint is not a frozen checkpoint yet.
             locked.remove(len(frames)-1)
+        pinned = None
+        if stage is not None and c.plan_execution.stages[stage].state_checkpoint:
+            pinned = c.plan_execution.stages[stage].state_checkpoint['frame']
+            locked.add(pinned)
+            if pinned == len(frames) - 1:
+                editable_end = False
         if stage is None:
             for row in c.plan_execution.timeline:
-                locked.update([row['start'],row['start']+row['count']-1])
+                end = row['start'] + row['count'] - 1
+                locked.add(row['start'])
+                locked.update(range(end - row.get('hold_frames', 0), end + 1))
         checks=report.get('checks',[])
         # These are suggestions, never a finding prerequisite or a preselection.
         suggestions=[{'dimension':x['dimension'],'text':x['evidence'],'frames':x['frames']} for x in checks if x.get('status')!='pass']
         tasks=[t for t in self.listing(work_id) if t['revision']==revision and t['candidate']==index and t['stage']==stage]
         legacy=frame_attempts(len(frames),c.plan_execution.stages[stage].repairs if stage is not None else [],legacy=True)
         drawings=frame_attempts(len(frames),tasks)
-        return {'token':token,'frames':frames,'fps':job.action.fps,'locked_frames':sorted(locked),
+        return {'token':token,'frames':frames,'job_revision':job.revision,'fps':job.action.fps,'locked_frames':sorted(locked),
+                **({'state_checkpoint_frame': pinned} if pinned is not None else {}),
                 'width':job.character.cell_width,'height':job.character.cell_height,
                 'editable_stage_end':editable_end,
                 'attempt_scope':'selected_frames','attempt_limit':ATTEMPT_LIMIT,
@@ -174,6 +213,7 @@ class Adjustments:
         if not body.authorized:raise ValidationHarnessError('生成备选包含需求理解、绘图和复核，请先授权本次上限')
         raw=body.model_dump(mode='json');key=digest({'request_key':body.request_key})
         # Omitted new options must not change old idempotency receipts.
+        if body.requested_method is None:raw.pop('requested_method')
         if body.preserve_motion is None:raw.pop('preserve_motion')
         if body.edit_regions is None:raw.pop('edit_regions')
         with self.ws.lock(work_id):
@@ -182,6 +222,9 @@ class Adjustments:
                 previous=read_json(receipt)
                 if previous['identity']!=digest(raw):raise ConflictError('同一请求编号用于不同修改，不能重复提交')
                 return self.load(work_id,previous['id'])
+            from .experiment_policy import experiment_for
+            if experiment_for(self.s, work_id).get('arm') == 'model_only':
+                raise ConflictError('model_only 实验副本由自动策略裁决，禁止人工创建修改备选')
             context=self.context(work_id,body.expected_revision,body.candidate_index,body.stage_index)
             if context['token']!=body.token:raise ConflictError('实际画面已改变，请重新选择修改范围')
             methods=self.validate_range(context,body.start,body.end)
@@ -189,6 +232,11 @@ class Adjustments:
                 if 'appearance' not in methods:
                     raise ValidationHarnessError(f"保留原动作的外观编辑一次最多支持 {context['appearance_max']} 个偶数帧。请缩小范围；不会改用动作重生成，也不会自动拆成多次收费请求。")
                 methods=['appearance']
+            if body.requested_method is not None:
+                if body.requested_method not in methods:raise ValidationHarnessError('所选工具不支持当前范围')
+                methods=[body.requested_method]
+            from .experiment_policy import require_redraw_scope
+            methods=require_redraw_scope(self.s,work_id,body,context,methods)
             if any(t['state'] in ACTIVE for t in context['tasks']):raise ConflictError('先处理当前备选或未知请求，不会同时生成多个版本')
             require_drawing_slot(context,body.start,body.end)
             user=body.user_request.strip()
@@ -208,6 +256,9 @@ class Adjustments:
                 'models':self.registry.load().model_dump(mode='json') if hasattr(self.registry,'load') else copy.deepcopy(job.request.open_plan.model_snapshot),'protocol':work.spec.review_protocol or 'baseline',
                 'planning_calls':[],'generation_calls':[],'review_calls':[],'diagnostic':c.diagnostic_only,'seed':c.seed,
                 'message':'已保存修改任务，原版保持不变','source_goal':work.spec.description}
+            from .review_inputs import prop_review_context
+            task.update(prop_review_context(job.request.open_plan, body.stage_index))
+            if body.requested_method:task['requested_method']=body.requested_method
             task['intent_format_version']=4
             task['comparison_protocol']=1
             # Keep the source work's frozen reviewer policy; a newer deployment
@@ -225,7 +276,7 @@ class Adjustments:
                 from .structure_control import require_current_structure
                 require_current_structure(self.s,work.visual_structure,work.reference_sha256)
                 task['visual_structure']=copy.deepcopy(work.visual_structure)
-                if work.planning_format_version in (2,3):task['structure_context_version']=2
+                if work.planning_format_version in (2,3,4):task['structure_context_version']=2
             folder=self.folder(task);(folder/'source').mkdir(parents=True)
             for i,png in enumerate(data):(folder/'source'/f'{i:03d}.png').write_bytes(png)
             (folder/'reference.png').write_bytes(reference)
@@ -252,11 +303,11 @@ class Adjustments:
                     'frames':task['proposed_frames'],'fps':task['fps'],'models':task['models'],'protocol':task['protocol']}):raise ConflictError('备选与检查版本不一致')
             for i,f in enumerate(task['proposed_frames']):
                 if hashlib.sha256(inside(folder,folder/f['file']).read_bytes()).hexdigest()!=f['sha256']:raise ConflictError('备选图片已改变')
-                if not task['start']<=i<=task['end'] and f['sha256']!=task['source_frames'][i]['sha256']:raise ConflictError('备选改动了未选择的帧，禁止采用')
+                if (not task['start']<=i<=task['end'] or ('local_frames' in task and i not in task['local_frames'])) and f['sha256']!=task['source_frames'][i]['sha256']:raise ConflictError('备选改动了未选择的帧，禁止采用')
             for region in task.get('edit_regions',[]):
                 i=region['frame']
                 verify_protection((folder/'source'/f'{i:03d}.png').read_bytes(),
-                                  inside(folder,folder/task['proposed_frames'][i]['file']).read_bytes(),region)
+                                  inside(folder,folder/task['proposed_frames'][i]['file']).read_bytes(),region,allow_full='local_frames' in task)
             if task.get('edit_regions') and (not task.get('spatial_protection') or digest(task['spatial_protection'])!=task.get('protection_digest')):
                 raise ConflictError('区域外像素保护记录缺失或改变')
         if task.get('comparison_digest') and digest(task['review'].get('comparison'))!=task['comparison_digest']:
@@ -270,7 +321,7 @@ class Adjustments:
                  'profile':self.registry.profile(role,task['models']).model_dump(mode='json')}
         task[bucket].append(request);self.save(task);receipt={}
         try:
-            options={}
+            options={'interactable': True} if task.get('interactable') else {}
             if phase=='intent' and task.get('intent_format_version') in (2,3,4) and request['profile']['provider']=='tokenhub' and request['profile']['model']=='kimi-k3.1-pro':
                 options['output_format']='json_schema';request['requested_output_format']='json_schema';self.save(task)
             result,meta=self.registry.send(role,content,schema,count,snapshot=task['models'],schema_name='motion_adjustment',on_response=receipt.update,**options)
@@ -371,6 +422,10 @@ class Adjustments:
             goal=task['user_request'] or task['expert_suggestions'][0]['text']
             intent=AdjustmentIntent(goal=goal,preserve='保持其他帧、时长和首尾衔接',method=task['methods'][0],provider_prompt=goal[:700])
         else:intent=self.model_call(task,'coordinator','intent',[{'type':'input_text','text':prompt+json.dumps(data,ensure_ascii=False)},*pictures],schema,len(task['source_frames']))
+        from .experiment_policy import is_stage_redraw_range
+        stage_context = self.context(task['work_id'], task['revision'], task['candidate'], task['stage'])
+        whole = task['stage'] is not None and is_stage_redraw_range(stage_context, task['start'], task['end'])
+        task['repair_level']='restricted_generation' if intent.method=='appearance' else 'stage_redraw' if whole else 'window_redraw'
         task['intent']=intent.model_dump(mode='json');task['intent_sha256']=digest(task['intent']);self.save(task)
         if intent.conflict:task.update(state='needs_input',message=intent.conflict);self.save(task);return False
         if intent.method not in task['methods']:raise ValidationHarnessError('建议方法不支持当前选帧；不会扩展范围或提交绘图')
@@ -387,8 +442,8 @@ class Adjustments:
         prompt=drawing_prompt(task,intent['method'],intent['provider_prompt'],data)
         if intent['method']=='appearance':
             context=data[task['start']-1] if tail else data[task['end']+1]
-            request=ProviderRequest(reference_image=ref,edit_frames=(ref,*window,context),prompt=prompt,frame_count=len(window)+2,seed=task['seed'])
-        else:request=ProviderRequest(reference_image=data[task['start']-1] if tail else window[0],last_frame=None if tail else window[-1],prompt=prompt,frame_count=len(window),seed=task['seed'])
+            request=ProviderRequest(reference_image=ref,edit_frames=(ref,*window,context),prompt=prompt,frame_count=len(window)+2,seed=task['seed'],local_submission_id=f"adjustment:{task['id']}")
+        else:request=ProviderRequest(reference_image=data[task['start']-1] if tail else window[0],last_frame=None if tail else window[-1],prompt=prompt,frame_count=len(window),seed=task['seed'],local_submission_id=f"adjustment:{task['id']}")
         if len(prompt)>1000:raise ValidationHarnessError('本次修改描述超过绘图上限，未截断或提交')
         task['input_count']=request.frame_count
         call={'id':uuid.uuid4().hex,'state':'submitting','prompt':prompt,'frame_count':request.frame_count,
@@ -397,29 +452,51 @@ class Adjustments:
             task['generation_calls'].append(call);task.update(state='submitting',message='正在生成一个备选，原版保留');self.save(task)
             try:
                 result=provider.submit(request)
-                call.update(state='submitted',provider_job_id=result.provider_job_id)
-                task.update(state='pending',provider_job_id=result.provider_job_id);self.save(task)
-                atomic_write_json(folder/'provider-request.json',result.request_record);atomic_write_json(folder/'provider-response.json',result.raw_response)
+            except AccountSlotBusy as exc:
+                task['generation_calls'].pop()
+                task.update(state='queued',message=exc.message);self.save(task)
             except Exception as exc:
                 unknown=not isinstance(exc,ProviderError) or exc.details.get('submission_unknown')
-                call['state']='unknown' if unknown else 'failed';task.update(state=call['state'],message='绘图未确认完成，记录保留，不自动重发');self.save(task)
+                call['state']='unknown' if unknown else 'failed'
+                if isinstance(exc, ProviderError):
+                    call.update(error=exc.as_dict(), usage=response_usage(exc.details.get('response')))
+                    if exc.details.get('provider_job_id'):
+                        call['provider_job_id'] = task['provider_job_id'] = exc.details['provider_job_id']
+                    task['usage'] = call['usage']
+                task.update(state=call['state'],message='绘图未确认完成，记录保留，不自动重发');self.save(task)
+            else:
+                usage = response_usage(result.raw_response)
+                call.update(state='submitted',provider_job_id=result.provider_job_id,usage=usage)
+                task.update(state='pending',provider_job_id=result.provider_job_id,usage=usage);self.save(task)
+                atomic_write_json(folder/'provider-request.json',result.request_record);atomic_write_json(folder/'provider-response.json',result.raw_response)
 
     def collect(self, task, provider):
-        result=provider.poll(task['provider_job_id'])
-        if result.status==PollStatus.pending:return
-        if result.status==PollStatus.failed:raise ValidationHarnessError('备选生成失败，原版保留')
-        from ..attack_timeline import is_context_frame
-        frames=result.images;folder=self.folder(task);count=task['input_count']
+        folder = self.folder(task)
+        job = self.store.load(task['source_job'])
+        call = task['generation_calls'][-1]
+        try:
+            result = poll_drawing(folder, provider, task['provider_job_id'], (job.character.cell_width, job.character.cell_height),
+                                  raw_alternative_name, self.s._atomic_write_bytes, usage=task.get('usage'))
+        except (ProviderError, ConflictError):
+            receipt = read_poll_receipt(folder / 'poll-receipt.json', task['provider_job_id'])
+            if response_usage(receipt):
+                call['usage'] = task['usage'] = response_usage(receipt)
+            raise
+        if result['status'] == PollStatus.pending:
+            if result['usage'] and result['usage'] != call.get('usage'):
+                call['usage'] = task['usage'] = result['usage']
+                self.save(task)
+            return
+        call.update(usage=result['usage'],provider_status=result['provider_status'],raw_count=result['raw_count'])
+        task.update(usage=result['usage'],raw_frames=result['frames'],invalid_raw_indices=result['invalid_frames'])
+        self.save(task)
+        if result['status'] == PollStatus.failed:
+            raise ValidationHarnessError('备选生成失败，原版保留', details=result['error'] or {})
         first=task['start']-1 if task.get('range_policy')=='unlocked_stage_tail_v2' else task['start']
-        if task['intent']['method']=='transition' and len(frames)==count+1 and is_context_frame(frames[0],(folder/'source'/f"{first:03d}.png").read_bytes()):frames=frames[1:]
-        if len(frames)!=count:raise ValidationHarnessError('返回帧数不符，未截断或替换原帧')
-        job=self.store.load(task['source_job']);raw=folder/'raw';raw.mkdir(exist_ok=True)
-        for i,png in enumerate(result.images):
-            checked_png(png,job.character.cell_width,job.character.cell_height)
-            path=raw/f'{i:03d}.png'
-            if path.exists() and path.read_bytes()!=png:raise ConflictError('远端返回已改变，保留旧结果')
-            path.write_bytes(png)
-        replacements=frames[1:-1] if task['intent']['method']=='appearance' else frames
+        frames, indices = repair_playback(folder, result, raw_alternative_name, task['input_count'], task['intent']['method'],
+                                         (folder / 'source' / f'{first:03d}.png').read_bytes())
+        replacements = [frames[index] for index in indices]
+        task['playback_raw_indices'] = list(indices)
         output=folder/'proposed';output.mkdir(exist_ok=True);items=[]
         regions={r['frame']:r for r in task.get('edit_regions',[])};protection=[]
         for i,f in enumerate(task['source_frames']):
@@ -430,7 +507,7 @@ class Adjustments:
         if regions:
             task['spatial_protection']={'version':1,'frames':protection,'regions_sha256':digest(task['edit_regions'])}
             task['protection_digest']=digest(task['spatial_protection'])
-        task.update(proposed_frames=items,usage=result.usage,state='reviewing',message='备选已保存，正在检查修改目标与衔接')
+        task.update(proposed_frames=items,state='reviewing',message='备选已保存，正在检查修改目标与衔接')
         task['preview_token']=digest({'source':task['source_token'],'intent':task['intent'],'user':task['user_request'],'frames':items,'fps':task['fps'],'models':task['models'],'protocol':task['protocol']})
         self.save(task);self.verify(task,live=True)
         from ..processing import run_qa
@@ -453,6 +530,13 @@ class Adjustments:
     def advance(self, work_id, task_id, provider=None):
         with self.store.global_lock('adjustment-'+task_id,timeout_seconds=.1):
             task=self.load(work_id,task_id)
+            if task['state']=='submitting' and task.get('generation_account') and self.s.settings.pixellab_api_key:
+                slot=PixelLabSlot(self.s.settings,self.store)
+                if slot.key!=task['generation_account']:return task
+                receipt=slot.accepted_receipt(f"adjustment:{task['id']}")
+                if receipt and task['generation_calls']:
+                    task['generation_calls'][-1].update(state='submitted',provider_job_id=receipt['jobId'],usage=receipt['usage'])
+                    task.update(state='pending',provider_job_id=receipt['jobId'],usage=receipt['usage']);self.save(task)
             if task['state'] in {'planning','submitting','reviewing'}:
                 task.update(state='unknown',message='上次请求中断，未自动重发；已有结果保留');self.save(task);return task
             if task['state'] not in {'queued','pending'}:return task
@@ -461,29 +545,48 @@ class Adjustments:
                 if provider is None:
                     from ..providers import get_provider
                     provider=get_provider(self.store.load(task['source_job']).request.provider,self.s.settings)
+                account=getattr(provider,'account_fingerprint',None)
+                if task.get('generation_account') and task['generation_account']!=account:return task
+                if account and not task.get('generation_account'):
+                    task['generation_account']=account;self.save(task)
                 if task['state']=='queued':
-                    if self.plan(task):self.submit(task,provider)
+                    if task.get('intent') or self.plan(task):self.submit(task,provider)
                 if task['state']=='pending':self.collect(task,provider)
             except Exception as exc:
                 task.update(state='failed',message=str(exc) if isinstance(exc,(ConflictError,ValidationHarnessError)) else '修改未完成；原版与请求记录保留，不自动重试')
+                if isinstance(exc, HarnessError):
+                    task['error'] = exc.as_dict()
                 self.save(task)
             return task
 
     def recover(self, stopping=lambda:False):
+        summary = {'checked_at': now(), 'checked': 0, 'advanced': [], 'errors': []}
         for path in self.ws.root.glob('*/adjustments/*/task.json'):
-            if stopping():break
+            if stopping():
+                break
+            work_id, task_id = path.parents[2].name, path.parent.name
             try:
-                task=read_json(path)
-                if task['state'] in {'queued','planning','submitting','pending','reviewing'}:self.advance(task['work_id'],task['id'])
-            except (ConflictError,ValueError,OSError):continue
+                task = self.load(work_id, task_id)
+                summary['checked'] += 1
+                if task['state'] in {'queued','planning','submitting','pending','reviewing'}:
+                    updated = self.advance(work_id, task_id)
+                    if updated['updated_at'] != task['updated_at']:
+                        summary['advanced'].append({'work_id': work_id, 'adjustment_id': task_id, 'state': updated['state']})
+            except (HarnessError, OSError, ValueError, KeyError, TypeError) as exc:
+                if not isinstance(exc, ConflictError) or not exc.details.get('operation'):
+                    summary['errors'].append(record_error(exc, work_id=work_id, adjustment_id=task_id, phase='recovery'))
+        return summary
 
-    def image(self, work_id, task_id, kind, index):
-        task=self.load(work_id,task_id);self.verify(task)
+    def image(self, work_id, task_id, kind, index, *, token=None):
+        task = self.load(work_id, task_id)
+        if token is not None and token != task.get('preview_token'):
+            raise ConflictError('备选媒体版本已改变')
+        self.verify(task)
         if kind not in {'source','proposed'} or not 0<=index<len(task['source_frames']):raise ValidationHarnessError('帧不存在')
         if kind=='proposed' and not task.get('proposed_frames'):raise NotFoundError('备选尚未保存')
         return (self.folder(task)/kind/f'{index:03d}.png').read_bytes()
 
-    def decide(self, work_id, task_id, *, token, decision, note, acknowledge=False):
+    def decide(self, work_id, task_id, *, token, decision, note, acknowledge=False,human_seconds=None):
         if decision not in {'accept','reject'} or (decision=='accept' and len(note.strip())<4):raise ValidationHarnessError('采用前请填写实际播放结论')
         with self.store.global_lock('adjustment-'+task_id,timeout_seconds=.2), self.ws.lock(work_id):
             task=self.load(work_id,task_id)
@@ -491,7 +594,7 @@ class Adjustments:
             if task['state']==('adopted' if decision=='accept' else 'rejected'):return task
             if decision=='reject':
                 if task['state'] in {'queued','planning','submitting','pending','reviewing','adopting'}:raise ConflictError('请求仍在处理，请等待结果；不会再提交新请求')
-                task.update(state='rejected',decision_note=note.strip(),message='保留原版；本次备选与费用记录仍可查看');self.save(task);return task
+                task.update(state='rejected',human_seconds=human_seconds,decision_note=note.strip(),message='保留原版；本次备选与费用记录仍可查看');self.save(task);return task
             if task['state'] not in {'ready','adopting'}:raise ConflictError('备选尚未完成检查')
             # Recover a crash after an atomic native adoption, without reapplying it.
             current=self.ws.load(work_id)
@@ -502,9 +605,12 @@ class Adjustments:
                 if any(x['id']==task_id for x in run.adjustment_history):
                     task.update(state='adopted',message='已采用备选，请确认本段后继续');self.save(task);return task
             self.verify(task,live=True)
+            if 'local_frames' in task:
+                from .local_frame_edits import required_locks
+                required_locks(self,task)
             if task.get('qa',{}).get('hard_failures'):raise ValidationHarnessError('备选存在技术阻断，不能采用')
             if (task.get('review',{}).get('verdict')!='pass' or task.get('qa',{}).get('warnings')) and not acknowledge:raise ValidationHarnessError('请实际检查并确认尚未解决的视觉或技术提醒')
-            task.update(state='adopting',decision_note=note.strip(),acknowledge=acknowledge);self.save(task)
+            task.update(state='adopting',human_seconds=human_seconds,decision_note=note.strip(),acknowledge=acknowledge);self.save(task)
             from .adjustment_delivery import adopt_stage, adopt_clip
             if task['stage'] is not None:adopt_stage(self,task)
             else:adopt_clip(self,task)

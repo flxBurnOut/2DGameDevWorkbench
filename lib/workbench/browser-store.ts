@@ -1,4 +1,3 @@
-import { isLegacyEmptyWorkItem } from '@/features/interactable-editor/draft-activity';
 import type { WorkItem } from './work-items';
 
 const DB = 'workbench-production-v1';
@@ -9,6 +8,15 @@ function historyGeneration() {
   catch { return ''; }
 }
 let generation = historyGeneration();
+
+/** Capture before queueing a write so clearing history also invalidates pending work. */
+export function createLocalHistoryGuard() {
+  const expected = generation;
+  return () => {
+    if (historyGeneration() !== expected)
+      throw new Error('本机历史已清空，请刷新页面后创建新草稿。');
+  };
+}
 async function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB, 1);
@@ -26,10 +34,11 @@ async function database(): Promise<IDBDatabase> {
 export async function listWorkItems(): Promise<WorkItem[]> {
   const db = await database();
   try {
-    return await new Promise((resolve, reject) => {
+    const visible: WorkItem[] = [];
+    const candidates: { items: WorkItem[]; draft: unknown }[] = [];
+    await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(['items', 'drafts']);
       const request = tx.objectStore('items').getAll();
-      const visible: WorkItem[] = [];
       request.onsuccess = () => {
         const groups = new Map<string, WorkItem[]>();
         for (const item of request.result as WorkItem[]) {
@@ -49,18 +58,21 @@ export async function listWorkItems(): Promise<WorkItem[]> {
           const draft = tx.objectStore('drafts').get(key);
           draft.onsuccess = () => {
             // Read each project once, retaining source bytes and any meaningful work.
-            visible.push(
-              ...items.filter(
-                (item) => !isLegacyEmptyWorkItem(item, draft.result),
-              ),
-            );
+            candidates.push({ items, draft: draft.result });
           };
         }
       };
-      tx.oncomplete = () => resolve(visible);
+      tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error || new Error('草稿列表读取中断。'));
     });
+    if (!candidates.length) return visible;
+    // The starter-project comparison needs the interactable schema (zod); load
+    // it only when unmarked interactable drafts exist.
+    const { isLegacyEmptyWorkItem } = await import('@/features/interactable-editor/draft-activity');
+    for (const { items, draft } of candidates)
+      visible.push(...items.filter((item) => !isLegacyEmptyWorkItem(item, draft)));
+    return visible;
   } finally {
     db.close();
   }
@@ -81,6 +93,32 @@ export async function readWorkspaceDraft<T>(
   }
 }
 
+/** Compare and replace durable request records atomically across tabs. */
+export async function updateWorkspaceDraft<T>(key: string, modify: (previous: T | undefined) => T): Promise<T> {
+  const assertCurrent = createLocalHistoryGuard();
+  assertCurrent();
+  const db = await database();
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      assertCurrent();
+      const tx = db.transaction('drafts', 'readwrite');
+      const store = tx.objectStore('drafts');
+      const request = store.get(key);
+      let next: T, failure: unknown;
+      request.onsuccess = () => {
+        try {
+          assertCurrent();
+          next = modify(request.result as T | undefined);
+          store.put(next, key);
+        } catch (error) { failure = error; tx.abort(); }
+      };
+      tx.oncomplete = () => resolve(next);
+      tx.onerror = () => reject(failure || tx.error);
+      tx.onabort = () => reject(failure || tx.error || new Error('原请求记录未保存，请保留页面后重试。'));
+    });
+  } finally { db.close(); }
+}
+
 /** Draft bytes and their resumable entries commit atomically, including removed objects. */
 export async function saveWorkspaceDraft(
   key: string,
@@ -88,15 +126,12 @@ export async function saveWorkspaceDraft(
   items: WorkItem[],
   currentKey?: string,
 ) {
-  if (historyGeneration() !== generation)
-    throw new Error('本机历史已在其他页面清空，请刷新页面后创建新项目。');
+  const assertCurrent = createLocalHistoryGuard();
+  assertCurrent();
   const db = await database();
   try {
     await new Promise<void>((resolve, reject) => {
-      if (historyGeneration() !== generation) {
-        reject(new Error('本机历史已清空，请刷新页面。'));
-        return;
-      }
+      assertCurrent();
       const tx = db.transaction(['drafts', 'items'], 'readwrite');
       tx.objectStore('drafts').put(draft, key);
       if (currentKey) tx.objectStore('drafts').put(key, currentKey);
@@ -132,16 +167,22 @@ export function subscribeWorkItems(listener: () => void) {
 export async function clearLocalProjects() {
   // Prevent stale tabs from autosaving deleted projects back into storage.
   window.localStorage.setItem(RESET_KEY, crypto.randomUUID());
-  for (const name of [DB, 'workbench-interactable-editor']) {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+  for (const name of [DB, 'workbench-interactable-editor', 'forge-image-edit-drafts']) {
+    const db = await new Promise<IDBDatabase | null>((resolve, reject) => {
       const request = indexedDB.open(name);
+      let absent = false;
       request.onupgradeneeded = () => {
-        request.result.createObjectStore('drafts');
-        if (name === DB) request.result.createObjectStore('items', { keyPath: 'id' });
+        // Clearing must not create an unused database with another feature's schema.
+        absent = true;
+        request.transaction!.abort();
       };
       request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+      request.onerror = (event) => {
+        if (absent) { event.preventDefault(); resolve(null); }
+        else reject(request.error);
+      };
     });
+    if (!db) continue;
     try {
       const stores = Array.from(db.objectStoreNames);
       if (!stores.length) continue;

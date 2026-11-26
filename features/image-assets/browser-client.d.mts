@@ -12,6 +12,7 @@ export function imageAssetKind(task: unknown): ImageAssetKind | undefined;
 export function imageAssetPath(task: StoredTask | null): string | undefined;
 export function imageBytesSha256(bytes: Uint8Array): Promise<string>;
 export function imageBytesDataUrl(bytes: Uint8Array, mime?: string): string;
-export function readImageGeneration(value: unknown): ImageGeneration | undefined;
 export function readImageAsset(taskId: string, kind: ImageAssetKind, request?: typeof fetch): Promise<VerifiedImageAsset>;
 export function imageReferenceUpload(file: File): Promise<string>;
+export function storeTaskImageReference(file: File, request?: typeof fetch): Promise<string>;
+export function storeInlineTaskImages(input: Record<string, unknown>, request?: typeof fetch): Promise<Record<string, unknown>>;

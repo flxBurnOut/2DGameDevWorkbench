@@ -9,7 +9,6 @@ import re
 import shutil
 import struct
 import tempfile
-import zipfile
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 
@@ -171,90 +170,16 @@ def stage_sprite(spec_path, output, namespace):
     return publish(output, files, report)
 
 
-def stage_map(archive, output, namespace):
-    namespace = resource_root(namespace)
-    archive = Path(archive).resolve(strict=True)
-    raw = archive.read_bytes()
-    files, seen = {}, set()
-    with zipfile.ZipFile(archive) as z:
-        if sum(i.file_size for i in z.infolist()) > 1_073_741_824:
-            raise ValueError("Map package exceeds 1 GiB expanded size")
-        for entry in z.infolist():
-            name = entry.filename
-            if "\\" in name or ":" in name or name.startswith("/") or any(p in ("..", ".") for p in name.split("/")) or "//" in name:
-                raise ValueError("Unsafe map archive path")
-            if entry.create_system == 3 and (entry.external_attr >> 16) & 0o170000 == 0o120000:
-                raise ValueError("Map archive symlinks are unsupported")
-            if name.rstrip("/").lower() in seen:
-                raise ValueError("Duplicate or case-colliding map archive paths")
-            seen.add(name.rstrip("/").lower())
-            if not entry.is_dir():
-                files[name] = z.read(entry)
-    roots = [name[:-len("map_export.json")] for name in files if re.fullmatch(r"forge_maps/[^/]+/map_export.json", name)]
-    if roots:
-        if len(roots) != 1:
-            raise ValueError("Select a package containing one map")
-        prefix = roots[0]
-        flattened = {}
-        for name, data in files.items():
-            if not name.startswith(prefix):
-                continue
-            local = name[len(prefix):]
-            if local.endswith((".gd", ".tscn", ".tres", ".json")):
-                data = data.decode("utf-8-sig").replace("res://" + prefix, "res://").encode("utf-8")
-            flattened[local] = data
-        files = flattened
-    if "map_export.json" not in files:
-        raise ValueError("Requires a Frame Ronin Godot export (map_export.json); use the documented Pixelwork/scene-composer workflow for other formats")
-    manifest = json.loads(files["map_export.json"])
-    if manifest.get("format") != "frame-ronin-engine-package" or manifest.get("version") != 1 or manifest.get("target") != "godot":
-        raise ValueError("Unsupported map export format/version/target")
-    for required in ("map_scene.tscn", "regions.json", "frame_ronin_regions.gd"):
-        if required not in files:
-            raise ValueError(f"Missing map resource: {required}")
-    regions = json.loads(files["regions.json"])
-    if regions.get("format") != "frame-ronin-regions" or regions.get("version") != 1 or regions.get("coordinateSystem") != "pixel-world-y-down":
-        raise ValueError("Unsupported region coordinate contract")
-    copied, source_hashes = {}, {}
-    for name, data in files.items():
-        if name == "project.godot":
-            continue
-        if not name.startswith("assets/") and name not in ("map_export.json", "map_scene.tscn", "regions.json", "frame_ronin_regions.gd", "source_state.zip", "INSTALL.md"):
-            raise ValueError(f"Unexpected file in current Frame Ronin package: {name}")
-        source_hashes[name] = digest(data)
-        if name.endswith((".tscn", ".tres", ".gd", ".json")):
-            text = data.decode("utf-8-sig")
-            def relocate(match):
-                path = match.group(1)
-                if path not in files or path == "project.godot":
-                    raise ValueError(f"Map has unresolved resource dependency: res://{path}")
-                return "res://" + namespace + "/" + path
-            text = re.sub(r'res://([^"\s)]+)', relocate, text)
-            if name == "frame_ronin_regions.gd":
-                # Multiple maps must not register the same global script class.
-                text = re.sub(r"(?m)^class_name FrameRoninRegions\s*$", "", text)
-            data = text.encode("utf-8")
-        if name == "INSTALL.md":
-            data = f"Open res://{namespace}/map_scene.tscn. Import this staged directory into your existing Godot 4.7.x project. project.godot was intentionally omitted. Region runtime is loaded by path, without a duplicate global class.\n".encode("utf-8")
-        copied[f"{namespace}/{name}"] = data
-    report = {"format": "forge-godot-map-handoff", "version": 1, "engine": "4.7.x", "resourceRoot": namespace,
-              "scene": f"res://{namespace}/map_scene.tscn", "sourceArchive": str(archive), "sourceSha256": digest(raw),
-              "sourceFiles": source_hashes, "canvas": manifest.get("canvas"), "coordinateSystem": regions["coordinateSystem"],
-              "engineValidated": False, "modifiesSource": False}
-    return publish(output, copied, report)
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("sprite", "map"):
-        command = sub.add_parser(name)
-        command.add_argument("input", help="Sprite input JSON or existing Frame Ronin Godot ZIP")
-        command.add_argument("--output", required=True, help="NEW staging directory, not the target game root")
-        command.add_argument("--resource-root", required=True, help="Resource namespace inside the eventual game")
+    command = sub.add_parser("sprite")
+    command.add_argument("input", help="Sprite input JSON")
+    command.add_argument("--output", required=True, help="NEW staging directory, not the target game root")
+    command.add_argument("--resource-root", required=True, help="Resource namespace inside the eventual game")
     args = parser.parse_args()
     try:
-        result = (stage_sprite if args.command == "sprite" else stage_map)(args.input, args.output, args.resource_root)
+        result = stage_sprite(args.input, args.output, args.resource_root)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    except (ValueError, OSError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+    except (ValueError, OSError, KeyError, TypeError) as exc:
         parser.exit(1, f"Asset staging failed: {exc}\n")

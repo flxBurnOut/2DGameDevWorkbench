@@ -2,7 +2,7 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 @import './theme-tokens.css';
-@import '../components/map-stitcher/map-editor.css';
+@import './interaction.css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -52,7 +52,34 @@
 }
 
 :root {
-  --workbench-nav-height: 3.5rem;
+  /* Shared scales: three radii and six type sizes for every workbench surface. */
+  --ui-radius-sm: 4px;
+  --ui-radius-md: 6px;
+  --ui-radius-lg: 8px;
+  --ui-text-xs: 12px;
+  --ui-text-sm: 13px;
+  --ui-text-base: 14px;
+  --ui-text-md: 16px;
+  --ui-text-lg: 20px;
+  --ui-text-xl: 28px;
+  --ui-control-height: 34px;
+  --ui-control-padding: 6px 12px;
+}
+
+/* NativeSelect fills its container like the native selects it replaced and
+   shares the control height, radius and chevron spacing on every surface. */
+[data-slot='native-select-wrapper'] {
+  width: 100%;
+}
+[data-slot='native-select-wrapper'] > [data-slot='native-select'] {
+  height: auto;
+  min-height: var(--ui-control-height);
+  padding-block: 0;
+  padding-right: 2rem;
+  border-radius: var(--ui-radius-md);
+}
+
+:root {
   --background: var(--theme-bg);
   --foreground: var(--theme-text);
   --card: var(--theme-panel);
@@ -98,82 +125,9 @@
 
   body {
     @apply min-h-svh bg-background text-foreground antialiased;
-    background-image:
-      radial-gradient(
-        circle at 68% -10%,
-        light-dark(var(--theme-light-bg), oklch(0.48 0.2 280 / 14%)),
-        transparent 36rem
-      ),
-      radial-gradient(
-        circle at 0% 100%,
-        light-dark(var(--theme-light-bg), oklch(0.42 0.14 215 / 8%)),
-        transparent 30rem
-      ),
-      linear-gradient(light-dark(var(--theme-light-bg), oklch(0.25 0.025 275 / 8%)) 1px, transparent 1px),
-      linear-gradient(90deg, light-dark(var(--theme-light-bg), oklch(0.25 0.025 275 / 8%)) 1px, transparent 1px);
-    background-size:
-      auto,
-      auto,
-      32px 32px,
-      32px 32px;
   }
 
   ::selection {
-    background: light-dark(var(--theme-light-panel), oklch(0.65 0.2 265 / 45%));
-  }
-}
-
-@layer utilities {
-  .nav-item {
-    @apply relative flex h-8 items-center gap-2 rounded-lg px-2 text-left text-[13px] transition-colors hover:bg-muted hover:text-foreground;
-  }
-
-  .pixel-thumb {
-    background-image:
-      linear-gradient(45deg, light-dark(var(--theme-light-surface), oklch(0.67 0.18 285 / 6%)) 25%, transparent 25%),
-      linear-gradient(-45deg, light-dark(var(--theme-light-surface), oklch(0.67 0.18 285 / 6%)) 25%, transparent 25%),
-      linear-gradient(45deg, transparent 75%, light-dark(var(--theme-light-surface), oklch(0.67 0.18 285 / 6%)) 75%),
-      linear-gradient(-45deg, transparent 75%, light-dark(var(--theme-light-surface), oklch(0.67 0.18 285 / 6%)) 75%);
-    background-position:
-      0 0,
-      0 4px,
-      4px -4px,
-      -4px 0;
-    background-size: 8px 8px;
-  }
-
-  .panel-highlight {
-    box-shadow:
-      inset 0 1px 0 light-dark(var(--theme-light-shadow), oklch(1 0 0 / 6%)),
-      0 24px 80px light-dark(var(--theme-light-shadow), oklch(0.05 0.03 275 / 24%));
-  }
-
-  .workbench-app-shell {
-    isolation: isolate;
-  }
-
-  .workbench-navigation {
-    box-shadow: 0 1px 0 light-dark(var(--theme-light-shadow), oklch(1 0 0 / 2%));
-  }
-
-  .pixel-grid {
-    background-image:
-      linear-gradient(light-dark(var(--theme-light-surface), oklch(0.75 0.16 267 / 12%)) 1px, transparent 1px),
-      linear-gradient(90deg, light-dark(var(--theme-light-surface), oklch(0.75 0.16 267 / 12%)) 1px, transparent 1px);
-    background-size: 16px 16px;
-  }
-
-  .sprite-frame-placeholder {
-    background-image:
-      linear-gradient(45deg, light-dark(var(--theme-light-surface), oklch(0.78 0.05 275 / 4%)) 25%, transparent 25%),
-      linear-gradient(-45deg, light-dark(var(--theme-light-surface), oklch(0.78 0.05 275 / 4%)) 25%, transparent 25%),
-      linear-gradient(45deg, transparent 75%, light-dark(var(--theme-light-surface), oklch(0.78 0.05 275 / 4%)) 75%),
-      linear-gradient(-45deg, transparent 75%, light-dark(var(--theme-light-surface), oklch(0.78 0.05 275 / 4%)) 75%);
-    background-position:
-      0 0,
-      0 6px,
-      6px -6px,
-      -6px 0;
-    background-size: 12px 12px;
+    background: color-mix(in srgb, var(--theme-accent) 35%, transparent);
   }
 }

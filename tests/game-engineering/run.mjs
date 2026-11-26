@@ -3,9 +3,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, writeFile, cp, access } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import JSZip from 'jszip';
 import sharp from 'sharp';
-import { createTestViteServer } from '../helpers/vite-server.mjs';
 import { getConversationGuidance } from '../../lib/workbench/agent-api.mjs';
 
 const root = process.cwd();
@@ -65,29 +63,10 @@ const input = {
   ],
 };
 await writeFile(path.join(fixtures, 'sprite.json'), JSON.stringify(input, null, 2));
-const mapImage = await sharp({ create: { width: 64, height: 48, channels: 4, background: '#55aa66' } }).png().toBuffer();
-await writeFile(path.join(fixtures, 'map.png'), mapImage);
-const server = await createTestViteServer({ root, configFile: false, appType: 'custom', logLevel: 'error', server: { middlewareMode: true } });
-try {
-  const engine = await server.ssrLoadModule('/features/map-stitcher/engine-export.ts');
-  const regions = { format: 'frame-ronin-regions', version: 1, canvas: { originX: -96, originY: -48, width: 64, height: 48 }, coordinateSystem: 'pixel-world-y-down', regions: [
-    { id: 'ground', tileKey: '-1,-1', mapLayer: 'surface', layer: 'collision', mode: 'include', points: [{ x: -96, y: -16 }, { x: -32, y: -16 }, { x: -32, y: 0 }, { x: -96, y: 0 }] },
-  ] };
-  const zip = new JSZip();
-  zip.file('map_export.json', JSON.stringify({ format: 'frame-ronin-engine-package', version: 1, target: 'godot', canvas: regions.canvas, layers: ['surface'] }));
-  zip.file('regions.json', JSON.stringify(regions));
-  zip.file('map_scene.tscn', engine.buildGodotScene(regions, ['surface'], true));
-  zip.file('frame_ronin_regions.gd', engine.buildGodotRegionRuntime());
-  zip.file('assets/map_surface.png', mapImage);
-  zip.file('project.godot', '[application]\nconfig/name="Exporter sample project"\n');
-  await writeFile(path.join(fixtures, 'map.zip'), await zip.generateAsync({ type: 'nodebuffer' }));
-} finally { await server.close(); }
 console.log(await run(python, ['-X', 'utf8', 'tests/game-engineering/test_staging.py', '-v'], { WORKBENCH_ENGINEERING_FIXTURES: fixtures }));
 const stage = `${skill}/scripts/stage_assets.py`;
 const spriteOut = path.join(dir, 'sprite');
-const mapOut = path.join(dir, 'map');
 await run(python, ['-X', 'utf8', stage, 'sprite', path.join(fixtures, 'sprite.json'), '--output', spriteOut, '--resource-root', 'Assets/Hero']);
-await run(python, ['-X', 'utf8', stage, 'map', path.join(fixtures, 'map.zip'), '--output', mapOut, '--resource-root', 'LevelModule/Forest']);
 const report = { staging: 'passed', discovery: 'passed', engine: 'not-run', directory: dir, fixturesOnly: true, paidCalls: 0 };
 const godot = process.env.GODOT_47_BIN;
 if (godot) {
@@ -96,11 +75,8 @@ if (godot) {
   const project = path.join(dir, 'project');
   await mkdir(project);
   await cp(path.join(spriteOut, 'Assets'), path.join(project, 'Assets'), { recursive: true });
-  await cp(path.join(mapOut, 'LevelModule'), path.join(project, 'LevelModule'), { recursive: true });
-  await cp(`${skill}/assets/map_mount.gd`, path.join(project, 'map_mount.gd'));
   await cp(`${skill}/assets/sprite_frames_merge.gd`, path.join(project, 'sprite_frames_merge.gd'));
   await cp('tests/game-engineering/probe.gd', path.join(project, 'probe.gd'));
-  await cp('tests/game-engineering/lifecycle_fixture.gd', path.join(project, 'lifecycle_fixture.gd'));
   await writeFile(path.join(project, 'project.godot'), '[application]\nconfig/name="Forge engineering acceptance fixture"\nconfig/features=PackedStringArray("4.7", "GL Compatibility")\n[rendering]\nrenderer/rendering_method="gl_compatibility"\n');
   const imported = await run(godot, ['--headless', '--path', project, '--editor', '--import']);
   await writeFile(path.join(dir, 'godot-import.log'), imported);

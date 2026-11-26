@@ -74,6 +74,18 @@ def test_reads_never_analyze_and_creation_is_cached(setup):
     assert service.store.list_jobs()==[]
 
 
+def test_device_change_preserves_paid_identity_history_and_cached_masks(setup, monkeypatch):
+    _,structures,_,counts=setup
+    first=ready(structures)
+    runtime=structures.runtime()
+    for device in ['mps','cpu']:
+        monkeypatch.setattr(structures,'runtime',lambda: {**runtime,
+            'compute':{'available':True,'device':device,'requested_device':device}})
+        assert structures.create('test_hero','device-'+uuid.uuid4().hex,authorized=True)['id']==first['id']
+        assert structures.view(first['id'])['document']==first['document']
+    assert counts=={'semantic':1,'local':1}
+
+
 def test_correction_restore_confirmation_preserve_versions(setup):
     _,structures,fixture,counts=setup
     first=ready(structures);data=copy.deepcopy(first['document']['data'])
@@ -196,3 +208,26 @@ def test_http_contract_and_exact_version_images(setup):
     assert client.post(f'/v1/open-motion/structures/{identity}/corrections',json=payload).status_code==200
     assert client.post(f'/v1/open-motion/structures/{identity}/corrections',json=payload).json()['revision']==2
     assert counts['semantic']==1
+
+
+def test_prop_semantic_parser_receives_typed_reference_and_reuses_result(setup):
+    from object_test_fixtures import write_interactable
+    service, structures, _, counts = setup
+    preset = write_interactable(service.settings.root)
+    def parser(registry, data, models, *, object_type, on_request, on_response):
+        assert object_type == 'interactable'
+        counts['semantic'] += 1
+        on_request()
+        on_response({'response_id':'fixture-prop'})
+        part = {'id':'panel','name':'面板','kind':'other','box':[44,20,75,100],
+                'points':[{'x':60,'y':60,'label':1}],'evidence':'Visible fixed panel.'}
+        return StructureProposal(summary='Fixture panel', parts=[part]), {}
+    structures.parser = parser
+    pending = structures.create(preset.object_id, 'prop-structure-fixture', authorized=True)
+    structures.run(pending['id'])
+    analysis = structures.latest(preset.object_id)['analysis']
+    assert analysis['source']['object_type'] == 'interactable'
+    assert analysis['state'] == 'ready' and not analysis['document']['issues']
+    assert edit(structures, analysis, confirm=True)['document']['confirmation']
+    assert structures.create(preset.object_id, 'prop-structure-repeat', authorized=True)['id'] == pending['id']
+    assert counts == {'semantic':1,'local':1}

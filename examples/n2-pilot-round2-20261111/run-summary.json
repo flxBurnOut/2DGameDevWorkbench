@@ -1,0 +1,283 @@
+{
+  "round": 2,
+  "protocol": {
+    "protocol": "N2 round 2, default transfer entry",
+    "seeds": [
+      1101,
+      2202
+    ],
+    "supported": [
+      "chest",
+      "lever",
+      "lamp"
+    ],
+    "reported_separately": [
+      "gate"
+    ],
+    "usd_cap": 1,
+    "success": "actual target frame, usable transition, fixed components preserved; human or delegated agent adjudication on actual frames",
+    "threshold": "at least two items with one success and at least one item with two successes",
+    "initial_pixellab_usd": 0,
+    "initial_pixellab_trial_units": 3,
+    "planning_model": "kimi-k3.1-pro",
+    "max_output_tokens_per_model_call": 8192,
+    "tokenhub_cny_limit": 5.3,
+    "tokenhub_cny_per_million_token_estimates": {
+      "input": 13,
+      "output": 68
+    },
+    "pricing_sources": [
+      "https://cloud.tencent.com/product/tokenhub",
+      "https://www.pixellab.ai/docs/tools/animate-with-text-new"
+    ],
+    "pixellab": "Only existing account quota. No top-up.",
+    "original_protocol": "examples/n2-pilot-20261110/protocol.json"
+  },
+  "samples": [
+    {
+      "item": "chest",
+      "seed": 1101,
+      "in_denominator": true,
+      "object": "reference_dabc135608d2a60a0ca6fc5f",
+      "reference_task": "reference-art-20261110225224-n52w",
+      "status": "not_started",
+      "reason_not_started": "PixelLab trial and credit balances exhausted before generation; original front plate crosses the seam."
+    },
+    {
+      "item": "chest",
+      "seed": 2202,
+      "in_denominator": true,
+      "object": "reference_dabc135608d2a60a0ca6fc5f",
+      "reference_task": "reference-art-20261110225224-n52w",
+      "status": "not_started",
+      "reason_not_started": "PixelLab trial and credit balances exhausted before generation; original front plate crosses the seam."
+    },
+    {
+      "item": "lever",
+      "seed": 1101,
+      "in_denominator": true,
+      "object": "reference_71f8d547436e2a272e054b51",
+      "reference_task": "reference-art-20261110225456-uhi6",
+      "status": "ready",
+      "work_id": "dbc9693f320346589f5cd3e4b1952a5a",
+      "task_id": "sprite-generator-20261111012227-31fv",
+      "job": null,
+      "message": "方案已就绪，等待制作授权",
+      "planning_calls": [
+        {
+          "role": "appearance",
+          "state": "completed"
+        },
+        {
+          "role": "motion",
+          "state": "completed"
+        },
+        {
+          "role": "strategy",
+          "state": "completed"
+        },
+        {
+          "role": "coordinator",
+          "state": "completed"
+        }
+      ],
+      "proposed_frame_counts": [
+        12
+      ],
+      "reference_check": {
+        "initial_state": {
+          "evidence": "深红球约在左上(35,15)，杆向右下延伸至中央轴附近，符合左倾约45度起点。",
+          "status": "satisfied"
+        },
+        "part_ownership": {
+          "evidence": "红球和细杆为连续上部运动件并接中央轴；宽底座及支撑固定。轴座细小重叠件的内部关节仍不确定，但不需另设运动。",
+          "status": "satisfied"
+        },
+        "viewpoint": {
+          "evidence": "128px参考呈清晰正交横向剪影，底座水平，杆、轴与支撑均在同一侧视平面可读。",
+          "status": "satisfied"
+        }
+      },
+      "assessment": {
+        "accepted": false,
+        "reason": "Approved single-stage plan requires 12 frames at 128 px, about 3 trial units. The balance at the generation decision was 2 units and zero USD credits.",
+        "generation_submitted": false
+      }
+    },
+    {
+      "item": "lever",
+      "seed": 2202,
+      "in_denominator": true,
+      "object": "reference_71f8d547436e2a272e054b51",
+      "reference_task": "reference-art-20261110225456-uhi6",
+      "status": "executing",
+      "work_id": "0783ee9d94d24ff0859a03852ecb5cef",
+      "task_id": "sprite-generator-20261111012824-64wr",
+      "job": "20261110_reference_71f8d547436e2a272e054b51_motion_0783ee9d94d2_001",
+      "message": "正在按方案制作",
+      "planning_calls": [
+        {
+          "role": "appearance",
+          "state": "completed"
+        },
+        {
+          "role": "motion",
+          "state": "completed"
+        },
+        {
+          "role": "strategy",
+          "state": "completed"
+        },
+        {
+          "role": "coordinator",
+          "state": "completed"
+        }
+      ],
+      "proposed_frame_counts": [
+        8
+      ],
+      "reference_check": {
+        "initial_state": {
+          "evidence": "红球约在(38,23)，杆件向左上倾斜并延伸至中央轴部；并非竖直或右倾，描述中的45度仅作近似。",
+          "status": "satisfied"
+        },
+        "part_ownership": {
+          "evidence": "红球底端直接连接刚性杆，杆终止于中央轴部；轴部坐落在固定支座和带三枚螺栓的底座上。轴接缝细小，外缘细部仍需生成像素复核。",
+          "status": "satisfied"
+        },
+        "viewpoint": {
+          "evidence": "参考图完整呈现透明背景上的正交侧视机构，红球、斜杆、中央轴部和水平底座均清楚可见。",
+          "status": "satisfied"
+        }
+      },
+      "candidate_status": "rejected",
+      "stages": [
+        {
+          "state": "rejected",
+          "raw_frames": 9,
+          "provider_job_id": "8db26e43-fe02-41c6-9e03-40d93b62fbca",
+          "review": "fail"
+        }
+      ],
+      "assessment": {
+        "accepted": false,
+        "state_frame": "末帧呈竖直中档，但手柄与轴心的间距明显小于原图，未采用为同一刚性物件的状态帧。",
+        "transition": "第5–8帧红球先向下压、再在相同x附近上移。枢轴转动半径不恒定，杆身明显伸缩。",
+        "fixed_parts": "底座及三枚螺栓位置稳定。固定区域局部最多10个像素与参考不同，画面中斜杆下半部逐渐收进支架。",
+        "raw_and_method_result": "reject",
+        "reference_pivot": "approximate, x=63, y=41",
+        "raw_frame_count": 9,
+        "context_removed": true,
+        "playback_frame_count": 8,
+        "fps": 12.0,
+        "provider_usage": {
+          "generations": 2.0,
+          "type": "generations"
+        }
+      }
+    },
+    {
+      "item": "lamp",
+      "seed": 1101,
+      "in_denominator": true,
+      "object": "reference_6b782dfdb0c801c6ef656f3c",
+      "reference_task": "reference-art-20261110225404-smhm",
+      "status": "ready",
+      "work_id": "abfccb70bafa48e08cff9bb75174d1df",
+      "task_id": "sprite-generator-20261111012114-s2ni",
+      "job": null,
+      "message": "方案已就绪，等待制作授权",
+      "planning_calls": [
+        {
+          "role": "appearance",
+          "state": "completed"
+        },
+        {
+          "role": "motion",
+          "state": "completed"
+        },
+        {
+          "role": "strategy",
+          "state": "completed"
+        },
+        {
+          "role": "coordinator",
+          "state": "completed"
+        }
+      ],
+      "proposed_frame_counts": [
+        16
+      ],
+      "reference_check": {
+        "initial_state": {
+          "evidence": "圆形灯镜整体为哑光深灰，中心略有明暗层次，无绿色、辉光、光束或外部光溢。",
+          "status": "satisfied"
+        },
+        "part_ownership": {
+          "evidence": "只有独立深色镜圈包围的内圆表面可变；镜圈、钢壳和外部紧固件固定。螺钉数量描述不符且支架不明确，均保留实际参考。",
+          "status": "satisfied"
+        },
+        "viewpoint": {
+          "evidence": "参考为近乎正面的平面像素视图，完整圆镜可见，镜圈与八角壳体清晰，无侧视遮挡。",
+          "status": "satisfied"
+        }
+      },
+      "assessment": {
+        "accepted": false,
+        "reason": "The original housing has more than two screw-like fasteners. The revised PixelLab reference visibly has four corner screws. The same reference premise applies before either animation seed.",
+        "redrawn_reference_task": "reference-art-20261111012626-j67x",
+        "generation_submitted": false,
+        "plan_observation": "All three premise checks returned satisfied despite textual evidence of a mismatch. Requested 16 frames also exceeded available trial units."
+      }
+    },
+    {
+      "item": "lamp",
+      "seed": 2202,
+      "in_denominator": true,
+      "object": "reference_6b782dfdb0c801c6ef656f3c",
+      "reference_task": "reference-art-20261110225404-smhm",
+      "status": "not_started",
+      "assessment": {
+        "accepted": false,
+        "reason": "The original housing has more than two screw-like fasteners. The revised PixelLab reference visibly has four corner screws. The same reference premise applies before either animation seed.",
+        "redrawn_reference_task": "reference-art-20261111012626-j67x",
+        "generation_submitted": false
+      }
+    },
+    {
+      "item": "gate",
+      "seed": 1101,
+      "in_denominator": false,
+      "object": "reference_49868762abf791219979ecea",
+      "reference_task": "reference-art-20261110225328-10ko",
+      "status": "not_started",
+      "exclusion": "Unsupported motion type: occluded rigid translation"
+    },
+    {
+      "item": "gate",
+      "seed": 2202,
+      "in_denominator": false,
+      "object": "reference_49868762abf791219979ecea",
+      "reference_task": "reference-art-20261110225328-10ko",
+      "status": "not_started",
+      "exclusion": "Unsupported motion type: occluded rigid translation"
+    }
+  ],
+  "pixellab": {
+    "trial_units_before": 3,
+    "reference_redraw_units": 1,
+    "lever_animation_units": 2,
+    "trial_units_after": 0,
+    "usd_credit_balance_before": 0,
+    "usd_credit_balance_after": 0
+  },
+  "tokenhub": {
+    "calls": 17,
+    "input_tokens": 111214,
+    "output_tokens": 31638,
+    "estimated_cny_at_full_input_price": 3.59717
+  },
+  "real_clips": 1,
+  "accepted": 0,
+  "denominator": 6
+}

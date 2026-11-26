@@ -4,12 +4,34 @@ import { useEffect, useState } from 'react';
 import { useWorkbench } from './workbench-provider';
 import { ClearHistory } from './clear-history';
 import { TaskResultCard } from './task-result-card';
+import { GameDeliveryHistory } from './game-delivery-history';
 import { workStateLabels, operationLabel } from '@/lib/workbench/work-items';
 
-type Tab = 'services' | 'records' | 'data';
+type ServiceTone = 'ok' | 'warning' | 'error' | 'checking';
+const checking = { tone: 'checking' as ServiceTone, text: '正在检查' };
+function online(value: boolean | null): { tone: ServiceTone; text: string } {
+  return value === null ? checking : value ? { tone: 'ok', text: '已连接' } : { tone: 'error', text: '未连接' };
+}
+
+/** One service check: name on the left, a coloured status label on the right. */
+function ServiceRow({ label, tone, text }: { label: string; tone: ServiceTone; text: string }) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>
+        <span className="wb-service-status" data-tone={tone}>
+          {text}
+        </span>
+      </dd>
+    </>
+  );
+}
+
+type Tab = 'services' | 'records' | 'deliveries' | 'data';
 const tabs: [Tab, string][] = [
   ['services', '服务状态'],
-  ['records', '制作记录'],
+  ['records', '全部制作记录'],
+  ['deliveries', '游戏交付'],
   ['data', '本机数据'],
 ];
 const time = (value: string) =>
@@ -78,22 +100,22 @@ export function WorkbenchManagement() {
       )
     : visible[0];
   const tasks = wb.tasks.filter((task) => item?.taskIds?.includes(task.id));
-  const resultTaskId = requestedTask || tasks.at(-1)?.id;
+  const resultTaskId = requestedTask || tasks[0]?.id;
   return (
     <main className="wb-page wb-advanced">
       <div className="wb-page-heading">
         <div>
-          <div className="wb-eyebrow">WORKBENCH / MANAGEMENT</div>
           <h1>工作台管理</h1>
-          <p>检查服务、继续制作，或整理本机数据。</p>
+          <p>检查服务、继续制作、查看游戏交付，或整理本机数据。</p>
         </div>
-        <button
+        {tab !== 'deliveries' && <button
           className="wb-button"
           disabled={wb.refreshing}
+          aria-busy={wb.refreshing}
           onClick={() => void wb.refresh()}
         >
           {wb.refreshing ? '刷新中…' : '刷新状态'}
-        </button>
+        </button>}
       </div>
       <div
         className="wb-management-tabs"
@@ -124,13 +146,9 @@ export function WorkbenchManagement() {
             <div className="wb-service-grid">
               <article className="wb-management-card">
                 <h2>任务服务</h2>
-                <strong>
-                  {wb.runtimeOnline === null
-                    ? '正在检查'
-                    : wb.runtimeOnline
-                      ? '已连接'
-                      : '未连接'}
-                </strong>
+                <dl className="wb-service-list">
+                  <ServiceRow label="连接" {...online(wb.runtimeOnline)} />
+                </dl>
                 <p>负责后台任务、制作记录和产物读取。</p>
                 {wb.runtimeOnline === false && (
                   <p>请启动本地任务服务后刷新。已有浏览器草稿仍可继续编辑。</p>
@@ -138,32 +156,27 @@ export function WorkbenchManagement() {
               </article>
               <article className="wb-management-card">
                 <h2>序列帧服务</h2>
-                <p>
-                  作业接口：
-                  {wb.spriteOnline === null
-                    ? '正在检查'
-                    : wb.spriteOnline
-                      ? '已连接'
-                      : '未连接'}
-                </p>
-                <p>
-                  编辑界面：
-                  {!health
-                    ? '正在检查'
-                    : health.error
-                      ? '无法确认'
-                      : health.uiReady
-                        ? '已就绪'
-                        : '尚未就绪'}
-                </p>
-                <p>
-                  图片生成配置：
-                  {!health || health.error
-                    ? '无法确认'
-                    : health.pixellabConfigured
-                      ? '已配置'
-                      : '尚未配置'}
-                </p>
+                <dl className="wb-service-list">
+                  <ServiceRow label="作业接口" {...online(wb.spriteOnline)} />
+                  <ServiceRow
+                    label="编辑界面"
+                    {...(!health
+                      ? checking
+                      : health.error
+                        ? { tone: 'warning', text: '无法确认' }
+                        : health.uiReady
+                          ? { tone: 'ok', text: '已就绪' }
+                          : { tone: 'warning', text: '尚未就绪' })}
+                  />
+                  <ServiceRow
+                    label="图片生成配置"
+                    {...(!health || health.error
+                      ? { tone: 'warning', text: '无法确认' }
+                      : health.pixellabConfigured
+                        ? { tone: 'ok', text: '已配置' }
+                        : { tone: 'warning', text: '尚未配置' })}
+                  />
+                </dl>
                 {health?.error && <p role="alert">{health.error}</p>}
                 {health && !health.error && !health.uiReady && (
                   <p>
@@ -172,24 +185,11 @@ export function WorkbenchManagement() {
                 )}
               </article>
             </div>
-            <div className="wb-tool-links">
-              {wb.modules.map((module) => (
-                <a className="wb-button" key={module.id} href={module.href}>
-                  打开{module.shortName}
-                </a>
-              ))}
-              <button
-                className="wb-button"
-                onClick={() => { window.dispatchEvent(new Event('workbench:restart-guide')); wb.setGuideOpen(true); }}
-              >
-                查看制作引导
-              </button>
-            </div>
           </>
         )}
         {tab === 'records' && (
           <>
-            <div className="wb-record-filters" aria-label="筛选制作记录">
+            <fieldset className="wb-record-filters ui-segmented" aria-label="筛选制作记录">
               {[
                 ['all', '全部'],
                 ['running', '进行中'],
@@ -213,7 +213,8 @@ export function WorkbenchManagement() {
                     : wb.items.filter((entry) => entry.state === id).length}
                 </button>
               ))}
-            </div>
+            </fieldset>
+            {wb.taskHistoryIncomplete && <p className="wb-notice">部分本地任务记录无法读取。这里只显示可读取的记录。</p>}
             {(wb.runtimeOnline === false || wb.spriteOnline === false) && (
               <p className="wb-notice">
                 部分服务未连接，记录可能不是最新状态。
@@ -226,8 +227,8 @@ export function WorkbenchManagement() {
               </p>
             )}
             <div className="wb-task-layout">
-              <section aria-label="制作记录">
-                <h2>制作记录</h2>
+              <section aria-label="全部制作记录">
+                <h2>全部制作记录</h2>
                 {visible.map((entry) => (
                   <button
                     className="wb-task-button"
@@ -260,7 +261,7 @@ export function WorkbenchManagement() {
                       {workStateLabels[item.state]} · {time(item.updatedAt)}
                     </p>
                     <p>
-                      {tasks.some((task) => task.error || task.refreshError)
+                      {item.state !== 'not_submitted' && tasks.some((task) => task.error || task.refreshError)
                         ? '执行遇到问题，请进入制作工具处理；具体原因见技术详情。'
                         : item.detail}
                     </p>
@@ -273,7 +274,7 @@ export function WorkbenchManagement() {
                       <a className="wb-button" href={item.href}>
                         {item.state === 'completed'
                           ? '查看制作成果'
-                          : '继续制作'}
+                          : item.state === 'not_submitted' ? '查看原请求' : '继续制作'}
                       </a>
                     )}
                     <h3>制作成果</h3>
@@ -311,7 +312,7 @@ export function WorkbenchManagement() {
                                   ? '已准备，尚未执行'
                                   : task.status === 'awaiting_configuration'
                                     ? '等待配置'
-                                    : '需要处理'}
+                                    : task.status === 'not_submitted' ? '未提交' : '需要处理'}
                           </p>
                         ))}
                       </>
@@ -344,6 +345,7 @@ export function WorkbenchManagement() {
             </div>
           </>
         )}
+        {tab === 'deliveries' && <GameDeliveryHistory />}
         {tab === 'data' && <ClearHistory />}
       </section>
     </main>

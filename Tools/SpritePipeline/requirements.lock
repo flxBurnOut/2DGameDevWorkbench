@@ -3,6 +3,7 @@
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.0
+audioop-lts==0.2.2; python_version >= "3.13"
 brotli==1.2.0
 certifi==2026.7.22
 click==8.5.0
@@ -26,7 +27,8 @@ Jinja2==3.1.6
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
-numpy==2.5.2
+numpy==2.4.6; python_version == "3.11"
+numpy==2.5.2; python_version >= "3.12"
 orjson==3.12.0
 packaging==26.3
 pandas==3.0.5
@@ -55,5 +57,6 @@ typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzdata==2026.3
 uvicorn==0.52.4
+uvloop==0.23.0; sys_platform != "win32" and sys_platform != "cygwin" and platform_python_implementation != "PyPy"
 watchfiles==1.2.0
 websockets==17.1

@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   title: workbenchTitle,
   applicationName: workbenchBrand.name,
   icons: { icon: { url: workbenchBrand.icon, type: 'image/svg+xml' } },
-  description: '制作玩家动画、拼接地图和交互物，保存草稿并从制作记录继续。',
+  description: '制作角色动画、交互物和图片局部调整，保存草稿并从制作记录继续。',
 };
 
 export default function RootLayout({

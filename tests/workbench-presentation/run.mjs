@@ -57,6 +57,8 @@ assert.equal(
 );
 for (const [remoteStatus, state] of [
   ["created", "saved"],
+  ["queued", "running"],
+  ["not_submitted", "not_submitted"],
   ["review_required", "attention_required"],
   ["approved", "saved"],
   ["exported", "completed"],
@@ -84,7 +86,7 @@ const saved = {
   input: { operation: "save-project", project: { name: "门" } },
 };
 assert.equal(taskPresentation(manifest, saved).state, "saved");
-for (const [operation, route] of [["generate-background", "/tools/map-stitcher"], ["generate-prop", "/tools/interactable-editor"]]) {
+for (const [operation, route] of [["generate-prop", "/tools/interactable-editor"], ["edit-image", "/tools/interactable-editor"]]) {
   const imageTask = { ...base, capabilityId: "image-assets", status: "completed", input: { operation } };
   const imagePresentation = taskPresentation(manifest, imageTask, { artifacts: [{ path: "outputs/example/image.png" }] });
   assert.equal(imagePresentation.viewPath, `${route}?imageTask=example`);

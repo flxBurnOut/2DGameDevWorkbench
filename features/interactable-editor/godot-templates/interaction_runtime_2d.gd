@@ -11,6 +11,7 @@ var objects: Array = []
 var focused: Node = null
 var active_object: Node = null
 var _actors: Dictionary = {}
+static var _fallback_actions: Dictionary = {}
 @onready var dialogue: Node = $DialoguePresenter
 
 func _enter_tree() -> void:
@@ -26,12 +27,32 @@ func register_interactable(object: Node) -> void:
 	var action := StringName(config.action)
 	if not InputMap.has_action(action):
 		InputMap.add_action(action)
+		_fallback_actions[action] = []
+	if uses_fallback_key(action):
 		var key := InputEventKey.new()
 		key.physical_keycode = OS.find_keycode_from_string(config.key)
-		if key.physical_keycode != KEY_NONE:
+		if key.physical_keycode != KEY_NONE and not InputMap.action_has_event(action, key):
 			InputMap.action_add_event(action, key)
+			_fallback_actions[action].append(key.physical_keycode)
 	object.restore_memory()
 	interactable_registered.emit(object)
+
+func uses_fallback_key(action: StringName) -> bool:
+	if not _fallback_actions.has(action):
+		return false
+	# A game can remap an action after this runtime first created it.
+	var bindings := InputMap.action_get_events(action)
+	var installed: Array = _fallback_actions[action]
+	return bindings.size() == installed.size() and bindings.all(func(binding):
+		return binding is InputEventKey and installed.has(binding.get_physical_keycode_with_modifiers()))
+
+func accepts_activation(event: InputEvent, activation: Dictionary) -> bool:
+	if not event.is_action_pressed(activation.action):
+		return false
+	if event is InputEventKey and uses_fallback_key(activation.action):
+		var key: Key = event.physical_keycode if event.physical_keycode != KEY_NONE else event.keycode
+		return key == OS.find_keycode_from_string(activation.key)
+	return true
 
 func unregister_interactable(object: Node) -> void:
 	objects.erase(object)
@@ -92,7 +113,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_echo():
 		return
 	if is_instance_valid(active_object):
-		if dialogue.is_open() and (event.is_action_pressed(active_object.config.activation.action) or event.is_action_pressed("ui_accept")):
+		if dialogue.is_open() and (accepts_activation(event, active_object.config.activation) or event.is_action_pressed("ui_accept")):
 			get_viewport().set_input_as_handled()
 			dialogue.advance()
 		return
@@ -101,7 +122,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		hits.sort_custom(func(a, b): return a.z_index > b.z_index if a.z_index != b.z_index else _nearer(a, b))
 		if not hits.is_empty() and hits[0].request_interaction():
 			get_viewport().set_input_as_handled()
-	elif is_instance_valid(focused) and event.is_action_pressed(focused.config.activation.action):
+	elif is_instance_valid(focused) and accepts_activation(event, focused.config.activation):
 		if focused.request_interaction(resolve_actor(focused.config.detection.actorGroup)):
 			get_viewport().set_input_as_handled()
 

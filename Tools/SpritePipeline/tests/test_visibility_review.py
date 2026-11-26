@@ -195,3 +195,118 @@ def test_adjustment_comparison_and_visibility_share_the_existing_five_calls(setu
     assert (s.store.job_dir(w.job_id)/'job.json').read_bytes()==before
     assert not t.get('edit_regions')
     assert all(t['proposed_frames'][i]['sha256']==t['source_frames'][i]['sha256'] for i in (0,3))
+
+
+def test_not_visible_occlusion_requires_external_context_frames():
+    # Repeating observed frames inside before_frames/after_frames cannot satisfy occlusion context.
+    item = finding()
+    item.update(frames=[2, 3], before_frames=[2], after_frames=[3],
+                observation='not_visible', explanation='occlusion', finding='consistent')
+    result, trace = guard(opinion('pass', item=item), 4, version=4)
+    assert result.checks[0].status == 'uncertain' and trace['unresolved_visibility'] is True
+
+
+def test_v4_empty_dispute_cannot_clear_independent_visibility_uncertainty(setup):
+    s, ws, p, w, _ = production(setup)
+    with s.store.locked_job(w.job_id) as job:
+        job.request.open_plan.visibility_review_version = 4
+
+    class EmptyDisputeClear(VisibilityRegistry):
+        def send(self, role, content, result_type, count, **kw):
+            result, meta = super().send(role, content, result_type, count, **kw)
+            if not hasattr(result, 'equipment_visibility'):
+                return result, meta
+            if isinstance(result, Resolution):
+                for c in result.checks:
+                    c.classification = 'satisfied'
+                    c.confidence = .95
+                result.equipment_visibility.items = []
+                result.equipment_visibility.summary = '未见异常'
+            else:
+                # Expert reports unresolved visibility uncertainty (not a definite fail).
+                next(c for c in result.checks if c.dimension == 'equipment').status = 'uncertain'
+                next(c for c in result.checks if c.dimension == 'equipment').confidence = 0
+            return result, meta
+
+    s.open_motion_review_registry = EmptyDisputeClear()
+    PlanGeneration(s).advance(w.job_id, p, wait=True)
+    report = s.store.load(w.job_id).candidates[0].plan_execution.stages[0].review
+    assert report['state'] == 'complete'
+    assert next(c for c in report['checks'] if c['dimension'] == 'equipment')['status'] == 'uncertain'
+    assert report['expert_review']['visibility_conflict']['rule'] == 'require_visibility_evidence_to_clear_expert_uncertainty'
+
+
+def test_500_char_evidence_never_overflows_on_grounded_downgrade_or_v4_retention():
+    from sprite_pipeline.collaboration.visibility_review import retain_visible_disagreement
+    from sprite_pipeline.collaboration.visual_review import grounded_audit
+
+    long_ev = '实' * 500
+    audit = Audit.model_validate({'summary': '长证据边界', 'checks': [
+        {'dimension': 'completeness', 'status': 'pass', 'confidence': .95, 'frames': [1, 2, 3], 'evidence': long_ev},
+        {'dimension': 'equipment', 'status': 'pass', 'confidence': .95, 'frames': [1, 2], 'evidence': long_ev},
+        {'dimension': 'rhythm', 'status': 'pass', 'confidence': .95, 'frames': [1], 'evidence': long_ev},
+    ]})
+    verdict, checks, summary = grounded_audit(audit, 4)
+    assert verdict == 'uncertain' and all(len(c['evidence']) <= 500 for c in checks)
+    traces = {'expert_appearance': {
+        'definite_contradiction_reported': True,
+        'raw_opinion': {'checks': [{'dimension': 'equipment', 'status': 'fail', 'confidence': .95, 'frames': [2], 'evidence': long_ev}]},
+    }}
+    retained = retain_visible_disagreement({'summary': summary, 'checks': checks, 'verdict': verdict}, traces, 4)
+    assert all(len(c['evidence']) <= 500 for c in retained['checks'])
+    assert next(c for c in retained['checks'] if c['dimension'] == 'equipment')['status'] == 'uncertain'
+
+
+def test_checkpoint_rejects_zero_frame_and_vision_preserves_incomplete_usage(setup, monkeypatch):
+    from sprite_pipeline.vision_review import VisionReviewer
+    from sprite_pipeline.collaboration.checkpoints import Checkpoints
+
+    # 1. vision_review._send must report receipt (id + usage) before raising on incomplete HTTP 200 response.
+    class FakeResp:
+        status_code = 200
+        headers = {}
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            return FakeResp(self._payload)
+
+    reviewer = VisionReviewer(setup[0].settings)
+    captured = {}
+    monkeypatch.setattr('sprite_pipeline.vision_review.httpx.Client', lambda **kw: FakeClient({
+        'id': 'resp-incomplete-1', 'model': 'gpt-5.4', 'status': 'incomplete',
+        'usage': {'input_tokens': 120, 'output_tokens': 30, 'total_tokens': 150},
+    }))
+    with pytest.raises(ValidationHarnessError):
+        reviewer._send([{'type': 'input_text', 'text': 'test'}], Audit, 'openai', 'sk-test', 4, None,
+                       on_response=captured.update)
+    assert captured['response_id'] == 'resp-incomplete-1'
+    assert captured['usage']['total_tokens'] == 150
+    assert captured['response_status'] == 'incomplete'
+
+    # 2. Checkpoints.inspect rejects frame=0 in audit checks.
+    s, ws, p, w, _ = production(setup)
+    class ZeroFrameRegistry(ExpertRegistry):
+        def send(self, role, content, result_type, count, **kw):
+            val, meta = super().send(role, content, result_type, count, **kw)
+            if isinstance(val, Audit):
+                val.checks[0].frames = [0, 1, 2]
+            return val, meta
+    s.open_motion_review_registry = ZeroFrameRegistry()
+    PlanGeneration(s).advance(w.job_id, p, wait=True)
+    report = s.store.load(w.job_id).candidates[0].plan_execution.stages[0].review
+    assert report['state'] == 'failed' and '证据无效' in report['summary']

@@ -245,3 +245,9 @@ def test_hinge_rotation_plane_preserves_legacy_hash_and_skips_out_of_plane_radiu
     assert cues['rotation_plane'] == 'out_of_plane' and cues['radius_check_skipped'] is True
     assert cues['reference_radius_px'] is None and cues['flags']['transition'] == []
     assert 6 in cues['flags']['fixed_parts']
+
+
+def test_prop_instructions_document_hinge_rotation_plane():
+    from sprite_pipeline.collaboration.planning import PROP_INSTRUCTIONS
+    assert 'hinge.rotation_plane' in PROP_INSTRUCTIONS
+    assert 'out_of_plane' in PROP_INSTRUCTIONS and 'in_plane' in PROP_INSTRUCTIONS

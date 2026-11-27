@@ -16,6 +16,7 @@ import io
 import json
 import secrets
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageChops
@@ -671,6 +672,93 @@ def inventory(jobs_dir):
     return rows
 
 
+def _parse_iso_dt(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _escalation_summary(job, rows, alternatives, *, current_protocol):
+    """Objective checkpoint escalation counts and backend wall-clock latency."""
+    ready_events = {}
+    for event in job.events:
+        if event.get('event') == 'open_motion_checkpoint_ready':
+            key = (event.get('candidate_index'), event.get('stage'))
+            dt = _parse_iso_dt(event.get('at'))
+            if dt is not None:
+                ready_events.setdefault(key, []).append(dt)
+
+    all_reports = []
+    wall_deltas = []
+    human_checkpoint_decisions = 0
+    for row in rows:
+        reports = [rep for rep in row['review_history'] if rep]
+        all_reports.extend(reports)
+        human_checkpoint_decisions += sum(
+            1 for d in row['human_decisions']
+            if not current_protocol or d.get('reviewer') != MODEL_ONLY_REVIEWER
+        )
+        candidate = next((c for c in job.candidates if c.candidate_index == row['candidate']), None)
+        stage_run = candidate.plan_execution.stages[row['stage']] if (candidate and candidate.plan_execution) else None
+        for idx, rep in enumerate(reports):
+            decision = rep.get('human_decision')
+            if not decision or (current_protocol and decision.get('reviewer') == MODEL_ONLY_REVIEWER):
+                continue
+            end_dt = _parse_iso_dt(decision.get('decided_at'))
+            if end_dt is None and idx == len(reports) - 1 and stage_run and stage_run.accepted:
+                end_dt = _parse_iso_dt(stage_run.accepted.get('accepted_at'))
+            start_dt = _parse_iso_dt(rep.get('reviewed_at'))
+            if start_dt is None:
+                stage_ready = ready_events.get((row['candidate'], row['stage']), [])
+                if idx < len(stage_ready):
+                    start_dt = stage_ready[idx]
+            if start_dt is not None and end_dt is not None:
+                wall_deltas.append(max(0.0, round((end_dt - start_dt).total_seconds(), 3)))
+
+    def is_auto_pass(rep):
+        expert = rep.get('expert_review') or {}
+        return (
+            rep.get('state') == 'complete'
+            and rep.get('verdict') == 'pass'
+            and not _adjudication_items(rep, expert)
+        )
+
+    total = len(all_reports)
+    auto_pass = sum(1 for rep in all_reports if is_auto_pass(rep))
+    escalated = total - auto_pass
+    probe_escalated = sum(
+        1 for rep in all_reports
+        if any(_is_probe_override(item) for item in _adjudication_items(rep, rep.get('expert_review') or {}))
+    )
+    contradiction_escalated = sum(
+        1 for rep in all_reports
+        if any(not _is_probe_override(item) and 'proposal' in item
+               for item in _adjudication_items(rep, rep.get('expert_review') or {}))
+    )
+    human_adjustment_decisions = sum(
+        1 for t in alternatives
+        if t.get('state') in ('adopted', 'rejected') or t.get('decision_note') or t.get('human_seconds') is not None
+    )
+    return {
+        'total_checkpoint_reviews': total,
+        'auto_pass_reviews': auto_pass,
+        'escalated_reviews': escalated,
+        'escalation_rate': round(escalated / total, 6) if total else None,
+        'probe_escalated_reviews': probe_escalated,
+        'contradiction_escalated_reviews': contradiction_escalated,
+        'human_checkpoint_decisions': human_checkpoint_decisions,
+        'human_adjustment_decisions': human_adjustment_decisions,
+        'human_interventions': human_checkpoint_decisions + human_adjustment_decisions,
+        'measured_wall_decisions': len(wall_deltas),
+        'known_wall_seconds': round(sum(wall_deltas), 3),
+    }
+
+
 def retrospective(job_dir, work, adjustments, out):
     """Export one open-plan job for labelling. Paths are supplied by the operator;
     every copied PNG is verified against its recorded hash."""
@@ -861,7 +949,8 @@ def retrospective(job_dir, work, adjustments, out):
     result = {
         'job': job.job_id, 'kind': 'open_plan', 'revision': work['revision'], 'experiment': work.get('experiment'),
         'clips': _playback(job, job_dir, out), 'stages': rows, 'alternatives': alternatives,
-        'tool_usage': tools, 'cost': cost}
+        'tool_usage': tools, 'cost': cost,
+        'escalation': _escalation_summary(job, rows, alternatives, current_protocol=current_protocol)}
     if current_protocol:
         frame_budget = _model_frame_budget(job, work['experiment'])
         if frame_budget:

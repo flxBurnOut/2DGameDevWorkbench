@@ -12,7 +12,7 @@ Forge 论文分支保留序列帧、交互物、图片局部调整与 Godot 交�
 | MCP 连接、指导读取或宿主工具排错 | [客户端接入](docs/agent-clients.md) |
 | 安装、启动、服务排错或数据恢复 | [操作手册](docs/operations-manual.md) |
 | 讨论方案、解释功能或梳理需求 | [对话指南](workbench/conversation-guide.md) |
-| 讨论论文方向、写论文或安排实验 | [论文方向与方法](docs/论文方向与方法.md)，正文草案见[论文主文档](docs/论文-序列帧长动作生成.md) |
+| 讨论论文方向、写论文或安排实验 | VBYC 方法架构与 v8 大纲已定稿封版（进入正文撰写阶段）：定稿边界与进度见[论文方向与方法](docs/论文方向与方法.md)，8 页正文蓝图见[论文主文档](docs/论文-序列帧长动作生成.md) |
 | 需要用追问检验方案、决策与假设 | [Grill Me Skill](.agents/skills/grill-me/SKILL.md) |
 
 ## 基本约定

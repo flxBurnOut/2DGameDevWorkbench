@@ -190,7 +190,8 @@ class Checkpoints:
             report = {'state':'failed','verdict':'uncertain','summary':str(exc) if isinstance(exc,ValidationHarnessError) else '分段视觉检查未完成，未自动重试；请人工检查。'}
         with self.s.store.locked_job(job_id) as current:
             r = self.run_record(current,index,stage)
-            r.review.update(report); r.state = 'awaiting_review'
+            r.review.update(report); r.review.setdefault('reviewed_at', utc_now().isoformat())
+            r.state = 'awaiting_review'
             current.plan_control.enabled = False
             current.plan_control.message = f'第 {stage+1} 段已保存，等待确认实际姿势后继续'
             current.touch('open_motion_checkpoint_ready',candidate_index=index,stage=stage)
@@ -299,7 +300,7 @@ class Checkpoints:
             with self.s.store.locked_job(job_id) as current:
                 r = self.run_record(current,index,stage)
                 r.state = 'accepted' if snapshot else 'rejected'; r.accepted = snapshot
-                r.review['human_decision'] = {'decision':decision,'human_seconds':human_seconds,'note':note.strip(),'reviewer':reviewer,'token':token,'anchor_frame':end if snapshot else None}
+                r.review['human_decision'] = {'decision':decision,'human_seconds':human_seconds,'note':note.strip(),'reviewer':reviewer,'token':token,'anchor_frame':end if snapshot else None,'decided_at':utc_now().isoformat()}
                 current.plan_control.enabled = bool(snapshot)
                 current.plan_control.message = '实际姿势已锁定，继续已授权制作' if snapshot else '当前片段不合格，已停止后续制作；原始结果保留'
                 if not snapshot:self.s._candidate(current,index).status = CandidateStatus.rejected

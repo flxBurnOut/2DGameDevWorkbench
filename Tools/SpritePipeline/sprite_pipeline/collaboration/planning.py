@@ -166,8 +166,10 @@ observed fact, impact and handling. For appearance_only use_reference, rewrite t
 executable contract using the observed appearance; preserve the user's original text.
 A motion or fixed-set conflict, or needs_decision, requires adjudication.
 With a checked structure classify every part by its exact ID in either moving_parts or
-fixed_parts. For hinge_rotation bind hinge.pivot_anchor_id to a visible fixed pivot
-and hinge.endpoint_part_id to the moving tip. Hinge and deformation need a checked
+fixed_parts. For hinge_rotation bind hinge.pivot_anchor_id to a visible fixed pivot,
+hinge.endpoint_part_id to the moving tip, and hinge.rotation_plane to out_of_plane
+when the part swings toward/away from the camera with foreshortening (else in_plane).
+Hinge and deformation need a checked
 structure. Never invent coordinates, IDs, or a new part when structure is missing.
 Report conflicts even if a different image would be easy to animate. Never
 declare a task premise true just because the description requests it.

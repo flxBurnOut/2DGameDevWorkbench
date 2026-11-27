@@ -78,5 +78,6 @@ EXP blind /absolute/new-blind-pack /absolute/run-A /absolute/export-B
 - **`retrospective.json` 核心字段**：
   - `tool_usage`：按 `deterministic` / `restricted_generation` / `window_redraw` / `stage_redraw` 统计修复次数；
   - `drawing_frame_budget`：核对已请求帧数、待执行预留帧数与冻结上限；
-  - `stages[].drift`（标 `drift_source`: `'accepted'` 或 `'raw'`）与 `clips[].drift`：由 `sequence_drift_metrics` 相对 `input/reference.png` 本地离线计算地面基线偏移（`ground_y_delta_px`）、前景面积变化率（`area_change_ratio`）、轮廓 IoU（`silhouette_iou`）与调色板偏离度（`palette_deviation_ratio`）的逐帧及最大/均值/末帧汇总。
+  - `stages[].drift`（标 `drift_source`: `'accepted'` 或 `'raw'`）与 `clips[].drift`：由 `sequence_drift_metrics` 相对 `input/reference.png` 本地离线计算地面基线偏移（`ground_y_delta_px`）、前景面积变化率（`area_change_ratio`）、轮廓 IoU（`silhouette_iou`）与调色板偏离度（`palette_deviation_ratio`）的逐帧及最大/均值/末帧汇总；
+  - `escalation`：汇总总检查点复核数（`total_checkpoint_reviews`）、无待裁决冲突的直接通过数（`auto_pass_reviews`）、升级裁决数与升级率（`escalated_reviews` / `escalation_rate`）、确定性探针/矛盾保留各自触发的升级数、人工介入次数（`human_interventions`）及配对 `reviewed_at` 与 `decided_at` 的后端墙钟耗时（`known_wall_seconds`），自动排除 `model_only` 规则裁决；
   - 坏帧段保留 `raw_count`、`invalid_raw_indices` 与其余有效原帧；派生作业跨版本统计时需按来源请求去重。

@@ -818,6 +818,7 @@ def test_model_only_redraw_preserves_actual_review_and_drawing_outcome(tmp_path,
     result = json.loads((export / 'retrospective.json').read_bytes())
     assert result['tool_usage'] == ({'window_redraw': 1} if run.repairs else {})
     assert result['experiment']['arm'] == 'model_only'
+    assert result['escalation']['human_interventions'] == 0 and result['escalation']['measured_wall_decisions'] == 0
     if scenario == 'first_review_failed':
         assert result['stages'][0]['review_ablation'] == [None]
     assert result['outcome'] == summary['outcome']
@@ -1193,6 +1194,35 @@ def test_retrospective_and_legacy_export_compute_objective_drift_metrics(chain, 
     clip_drift = exported['clips'][0]['drift']
     assert clip_drift['frame_count'] == len(exported['clips'][0]['frames'])
     assert clip_drift['summary']['end_silhouette_iou'] == clip_drift['frames'][-1]['silhouette_iou']
+
+    # Objective checkpoint escalation rate and backend wall-clock timestamps are also recorded & exported.
+    job = service.store.load(work.job_id)
+    stage0_review = job.candidates[0].plan_execution.stages[0].review
+    assert isinstance(stage0_review.get('reviewed_at'), str) and isinstance(stage0_review['human_decision'].get('decided_at'), str)
+    escalation = exported['escalation']
+    assert escalation['total_checkpoint_reviews'] == 2
+    assert escalation['auto_pass_reviews'] == 2 and escalation['escalated_reviews'] == 0 and escalation['escalation_rate'] == 0.0
+    assert escalation['human_checkpoint_decisions'] == 2 and escalation['human_interventions'] == 2
+    assert escalation['measured_wall_decisions'] == 2 and escalation['known_wall_seconds'] >= 0.0
+
+    # Verify non-zero probe escalation accounting on retrospective export.
+    escalated_job_dir = tmp_path / 'escalated-job'
+    shutil.copytree(job_dir, escalated_job_dir)
+    esc_record = json.loads((escalated_job_dir / 'job.json').read_bytes())
+    esc_record['candidates'][0]['plan_execution']['stages'][0]['review'].update(
+        verdict='uncertain',
+        requires_human_adjudication=[{
+            'source': 'deterministic_probe', 'dimension': 'transition', 'frames': [1],
+            'prior': {'dimension': 'transition', 'status': 'pass', 'confidence': 0.95, 'frames': [1], 'evidence': 'ok'},
+            'reason': 'probe',
+        }]
+    )
+    (escalated_job_dir / 'job.json').write_text(json.dumps(esc_record), encoding='utf8')
+    esc_out = tmp_path / 'escalated-export'
+    retrospective(escalated_job_dir, ws.load(work.id).model_dump(mode='json'), tmp_path / 'none', esc_out)
+    esc_summary = json.loads((esc_out / 'retrospective.json').read_bytes())['escalation']
+    assert esc_summary['escalated_reviews'] == 1 and esc_summary['probe_escalated_reviews'] == 1
+    assert esc_summary['escalation_rate'] == 0.5
 
     # Legacy export also attaches clip-level drift relative to input/reference.png.
     legacy_dir = tmp_path / 'legacy-job'

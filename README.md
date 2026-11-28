@@ -2,7 +2,9 @@
 
 本分支面向 *Verify Before You Chain* 论文开发，保留序列帧、交互物编辑器、图片局部调整与共用底座。完整工作台及原参赛功能存档在 [new-arch](https://github.com/aaaarthur666-design/2DGameDevWorkbench/tree/new-arch)；当前研究进度见[论文方向与方法](docs/论文方向与方法.md)，工程追踪见[问题清单](docs/问题清单/README.md)。
 
-Forge 是面向 2D 游戏美术制作与工程交接的本地工作台。创作者在网页中制作、预览、审查和导出资产；WorkBuddy、Codex 等外部 Agent 通过项目 MCP 与 Skills 协作完成批量制作或游戏接入。详细操作见[操作手册](docs/operations-manual.md)，全部公开文档见[文档中心](docs/README.md)。
+**本分支的论文方向**　以一次交互事件为单位，协同生成角色与物件的两套序列帧。研究问题、拟议方法与验收标准见[交互事件动画研究说明](RESEARCH.md)。
+
+完整流程见 [使用与操作手册](docs/operations-manual.md)，公开功能文档见 [文档中心](docs/README.md)。外部 Agent 通过 MCP discovery 与项目 Skills 获取使用流程。
 
 ## 当前能力
 

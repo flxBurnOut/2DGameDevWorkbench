@@ -27,9 +27,13 @@ function content(value: unknown): unknown {
 }
 
 // Ignore only generated identities. Names, behavior, geometry and assets all count as content.
-const starter = canonical(content(createProject()));
-export const isUntouchedStarterProject = (project: unknown) =>
-  canonical(content(project)) === starter;
+// Workers reject crypto.randomUUID during module evaluation. Initialize the
+// identity-free comparison baseline when called within a request or browser.
+let starter: string | undefined;
+export const isUntouchedStarterProject = (project: unknown) => {
+  starter ??= canonical(content(createProject()));
+  return canonical(content(project)) === starter;
+};
 
 export function isLegacyEmptyWorkItem(item: WorkItem, draft: unknown): boolean {
   return (

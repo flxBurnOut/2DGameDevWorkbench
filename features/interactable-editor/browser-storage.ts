@@ -160,7 +160,6 @@ export function downloadJson(project: InteractableProject) {
 export async function exportProject(
   project: InteractableProject,
   selectedDefinitionIds: string[],
-  targetProfile: 'generic' | 'copyworms' = 'generic',
 ) {
   const clean = selectedProject(project, selectedDefinitionIds);
   const assets: Asset[] = [];
@@ -191,7 +190,6 @@ export async function exportProject(
       capabilityId: 'interactable-editor',
       input: {
         operation: 'export-godot',
-        targetProfile,
         project: { ...clean, assets },
         selectedDefinitionIds,
       },

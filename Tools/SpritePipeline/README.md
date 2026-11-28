@@ -54,7 +54,7 @@ portable/test mode.
   repair-requested, modified, and blocking states, previous/next-problem
   navigation, keep-without-edit for falsely flagged or acceptable frames,
   a lossless in-browser pixel editor, unlimited local manual
-  versions, two separately bounded external/future-AI replacements per bad
+  versions, two separately bounded external replacements per bad
   frame, and deterministic staged export.
 - Exported PNG, preview GIF, recipe JSON, and QA JSON.
 - A progressively disclosed project UI whose default path is Start → 1 Generate
@@ -74,8 +74,9 @@ portable/test mode.
   import/recovery path still preserves valid non-sixteen and sparse legacy
   sheets instead of discarding existing or already-paid artwork.
 
-PixelLab Edit Animation V2 and GPT-Image-2 automatic repair are intentionally
-not in V0.1. The built-in editor already provides exact RGBA pencil and an
+PixelLab Edit Animation V2 supports human-requested frame repair with a preview
+and explicit adoption. Automatic repair and GPT-Image-2 repair are not enabled.
+The built-in editor already provides exact RGBA pencil and an
 eraser that clears both generated and newly painted pixels to transparent black,
 eyedropper, exact four-connected fill, rectangular selection with integer-pixel
 nudge, opt-in previous/next onion skins that are temporarily hidden while erasing,
@@ -356,11 +357,11 @@ This project is released under the [MIT License](LICENSE).
 
 
 
-地面/空中攻击的新 PixelLab 任务默认使用 `two_stage_attack`：每个候选固定生成准备/蓄力、挥击/收招两个片段；16 帧默认使用 4 + 12 个请求帧：4 帧起势/蓄力，8 帧出刀与随挥，4 帧收招。出刀先快后慢；中间 8 帧包含同一次攻击的随挥减速，不要求把刀匀速慢挥 8 帧。空中攻击的前 4 帧为沿连续飞行轨迹准备，不强加地面蓄力。第二段使用第一段实际末帧作为起始参考，持续沿用同一持刀手和肩肘腕连接。新计划不再用可能握法不同的原图待机姿势强制收招终点；两段分别以自身起始参考锁定握刀臂，文字明确要求同一只手完成挥击并回到准备姿势。角色可用 `weapon_hand` 声明左右手/双手，默认沿用原图的持刀手；其值和原图哈希在创建时冻结。两段都复用普通生成的角色身份约束，并保留创建时的专属外观说明及不得新增披风的约束；衔接帧不能取代原型定义。分别给出短阶段提示词，第二段必须立即出刀，不再重新蓄力。仅去掉两个片段间像素完全相同的重复衔接帧，保留其他所有实际返回帧，再检查整段动作。阶段端点是生成模型的引导输入，仍需实际画面验收。
+地面攻击的新 PixelLab 任务默认使用 `reference_anchored_attack`：16 帧请求拆成 6 帧起势/蓄力和 10 帧挥击/随挥/收招；第二段从第一段的实际末姿势开始，并以不可变原图约束最终外观和收招姿势。空中攻击默认使用 `three_stage_attack`，16 帧请求拆成 4 帧准备、8 帧挥击/随挥、4 帧恢复，沿同一次连续飞行轨迹完成攻击，不套用地面蓄力。各段保持原图身份、服装、配色和装备约束；角色可用 `weapon_hand` 声明左右手/双手，默认沿用原图的持刀手，其值和原图哈希在创建时冻结。出刀段立即执行同一次攻击，不重新蓄力。地面参考锚定流程仅移除经核对的额外输入上下文帧，保留全部实际动作姿势；空中三段流程按各段请求预算选择实际帧并保留端点，所有提供方原始帧另行保留。阶段端点是生成模型的引导输入，仍需实际画面验收。
 
-每段最多提交一次，每个候选固定最多两次生成，不因视觉检查失败追加生成。提交前持久记录次数、原图/衔接帧哈希及远端任务 ID；重启只推进尚未提交的计划片段，提交结果未知时停止。取回接口只取回已存在的片段，不提交下一段。128×128、4 + 12 帧仍通常合计 4 个 generation 额度；较小尺寸按每段分别向上取整，页面及额度预检使用相同计算。每次提交仍读取余额。旧任务保留创建时的单段或两段计划、提示词、端点和额度预算，不自动转换或重新收费；显式选帧、循环及不支持两段帧数的动作保持原流程。
+每段最多提交一次，16 帧地面攻击每候选最多两次生成、空中攻击最多三次，不因视觉检查失败追加生成。提交前持久记录次数、原图/衔接帧哈希及远端任务 ID；重启只推进尚未提交的计划片段，提交结果未知时停止。取回接口只取回已存在的片段，不提交下一段。额度对每段分别向上取整：128×128 的 6 + 10 帧请求约为 5 个 generation 额度，4 + 8 + 4 帧约为 4 个；页面及额度预检使用相同计算，每次提交仍读取余额。旧任务保留创建时的计划、提示词、端点和额度预算，不自动转换或重新收费；显式选帧、循环及不支持分段帧数的动作保持原流程。
 
-节奏比例是新生成的目标，不是按帧号强行贴上的视觉阶段标签。新计划保存 `rhythm` 中的请求帧分配，不能用后来的默认值覆盖。受 PixelLab 每次至少 4 帧且必须为偶数的限制，8/10/12/14 帧请求分别使用 4+4、4+6、4+8、4+10 两段，并为后段保留收招空间；这些较短任务不能精确达到 1:2:1。模型返回 17/18 等实际帧数时，保留全部有效帧，不通过删帧、补重复帧或拉长刀光凑比例。视觉阶段仍依据真实画面确认。
+节奏比例是新生成的目标，不是按帧号强行贴上的视觉阶段标签。新计划保存 `rhythm` 中的请求帧分配，不能用后来的默认值覆盖。受 PixelLab 每次至少 4 帧且必须为偶数的限制，较短请求的分段取决于已冻结策略：地面 8/10/12/14 帧分别为 4+4、4+6、4+8、6+8；空中分别为 4+4、4+6、4+4+4、4+6+4。实际返回帧按该策略处理，原始帧始终保留，不通过补重复帧或拉长刀光凑比例。视觉阶段仍依据真实画面确认。
 
 
 批量候选独立记录视觉结果与次数。某个候选网络或格式失败会显示“检查未完成”，后续候选继续检查，失败请求不自动重试。旧版因中途失败而跳过的后续候选可用“继续视觉检查”补做仅未发送的检查，已检查或结果未知的请求不会重发。
@@ -373,7 +374,7 @@ This project is released under the [MIT License](LICENSE).
 
 生成动作描述放在提示词前部；保持角色服装与颜色不等于保持待机姿势。肩后持刀约束仅适用于蓄力阶段，允许从参考图待机姿势举刀。PixelLab 的文本约束仍是软约束，不能保证生成器按阶段执行。同一模型的两次检查也不等于独立模型验证：2026-09-07 的有上限真实样本复测仍发现 HY Vision 2.0 的握剑手位置和阶段描述错误，目前不能据此声称视觉识别准确率达标。协议回归测试验证检查与计费边界，不代表模型语义准确率。
 
-在设置中保存视觉检查 API Key。默认使用 TokenHub 混元 `hy-vision-2.0-instruct`，可复用服务端 `TOKENHUB_API_KEY`；也可选择 OpenAI `gpt-5.4-2026-03-05`，使用独立的 `OPENAI_API_KEY`。两家密钥分开保管；图片发给所选服务，视觉检查按用量计费，不自动重试结果未知的请求。地图页面只保存在进程内的 Key 需在此另行保存。TokenHub Key 不指定模型；`hy-image-v3` 是图像生成模型，本页使用图片理解接口。新报告分别保存请求模型、服务回传模型（缺失时明确未知）、响应 ID、调用次数、用量及送检原图/帧哈希。
+在设置中保存视觉检查 API Key。默认使用 TokenHub 混元 `hy-vision-2.0-instruct`，可复用服务端 `TOKENHUB_API_KEY`；也可选择 OpenAI `gpt-5.4-2026-03-05`，使用独立的 `OPENAI_API_KEY`。两家密钥分开保管；图片发给所选服务，视觉检查按用量计费，不自动重试结果未知的请求。TokenHub Key 不指定模型；`hy-image-v3` 是图像生成模型，本页使用图片理解接口。新报告分别保存请求模型、服务回传模型（缺失时明确未知）、响应 ID、调用次数、用量及送检原图/帧哈希。
 
 在 **3 · 逐帧修补 → AI 修补当前问题帧** 中，由人决定保留当前帧、手工修改或请求 AI 重新生成。新请求必须携带当前帧的攻击阶段及专项约束，并锁定前后帧参考；例如蓄力阶段要求刀保持在肩后，不提前出刀或重新蓄力。已复核、证据充分且对应当前版本的视觉判断可以自动提供阶段；否则必须人工选择，不能按固定帧号猜测阶段。修改其他帧后，旧报告不能继续自动提供阶段。
 

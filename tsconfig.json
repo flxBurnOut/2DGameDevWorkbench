@@ -26,5 +26,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "work", "outputs"]
+  "exclude": ["node_modules", "work", "outputs", "2dgamedevworkbench"]
 }

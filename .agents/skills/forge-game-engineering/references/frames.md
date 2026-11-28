@@ -2,7 +2,7 @@
 
 ## Identify the exact artwork
 
-Use the workbench manifest/discovery and `get_asset` / `get_result` for the selected candidate. Match job ID, candidate index and source hashes. Only consume actual reviewed/exported delivery when a production replacement is requested. A test import of an unapproved candidate can be useful, but label it as such and keep it isolated. Never choose a different candidate merely because its files are easier to find.
+Use `get_asset` / `get_result` for the selected candidate and match job ID, candidate index and source hashes. A production replacement uses the reviewed/exported delivery; importing any other candidate is a test, labeled and kept isolated.
 
 Inspect the real export recipe from `Tools/SpritePipeline/sprite_pipeline/service.py` (`export_candidate`) and `processing/sheet_export.py`. Current recipe fields include:
 
@@ -14,13 +14,13 @@ Inspect the real export recipe from `Tools/SpritePipeline/sprite_pipeline/servic
 | `frame_cells`, `cell_width`, `cell_height`, `columns`, `rows` | Cross-check rectangles and dimensions; unused cells are padding |
 | `sheet_sha256` | Verify the delivered sheet before slicing |
 | `runtime_fps`, `fps`, `scene_fps`, `loop` | Compare intended runtime and target-scene values; record the effective choice |
-| `critical_frame_indices` | QA emphasis only; these are **not** automatic damage or gameplay triggers |
+| `critical_frame_indices` | QA emphasis only, not gameplay triggers |
 
-Recipe paths can be relative to the service's configured data root. Resolve them using returned artifact paths/current service settings; do not assume the workbench cwd. For the source project's separate SPRITE_ASSET_MANIFEST, the relevant geometry is `frame_order[].source_region_px`; do not confuse that schema with the pipeline recipe's separate arrays. The actual CopyWorms atlas order can skip cells. Frame count alone never implies row-major order.
+Recipe paths can be relative to the service's configured data root; resolve them through the returned artifact paths or current service settings. Atlas order can skip cells, so read playback order from `source_region_px[]`, not from frame count.
 
 ## Prefer an existing Godot export
 
-Current SpritePipeline exports include a `.godot.zip` beside the PNG. The workbench result exposes `godotPackage`; native export records use `godot_package_path` and download `/v1/jobs/{job_id}/exports/godot`. Inspect its `export.json`, SpriteFrames and texture references, then import its `forge_sprites` tree intact. The pack already contains the selected action's actual frames, mapped animation name, runtime FPS and loop. It includes a visual scene, not a gameplay controller. Preserve other actions through the existing merge helper when adding a clip to an actor. Older exports may lack this optional file; do not claim it exists or trigger a new export just to browse.
+Current SpritePipeline exports include a `.godot.zip` beside the PNG. The workbench result exposes `godotPackage`; native export records use `godot_package_path` and download `/v1/jobs/{job_id}/exports/godot`. Inspect its `export.json`, SpriteFrames and texture references, then import its `forge_sprites` tree intact. The pack already contains the selected action's actual frames, mapped animation name, runtime FPS and loop. It includes a visual scene, not a gameplay controller. Older exports may lack this file; stage resources as below in that case.
 
 ## Stage resources
 
@@ -30,7 +30,7 @@ Run from the workbench root, replacing interpreter and output paths as appropria
 python .agents/skills/forge-game-engineering/scripts/stage_assets.py sprite work/hero-input.json --output outputs/hero-handoff-v1 --resource-root Assets/Characters/hero_v1
 ```
 
-The Agent writes the input JSON from verified metadata; users are not expected to enter these fields. Paths below are examples. Supply real SHA-256 values, not the explanatory strings:
+Write the input JSON from the verified metadata. Paths, hashes and numbers below are placeholders:
 
 ```json
 {
@@ -51,19 +51,15 @@ The Agent writes the input JSON from verified metadata; users are not expected t
 }
 ```
 
-Those dimensions, fps and offset are illustrative; derive them from the selected art and actual target actor. Each frame may instead point to its individual PNG, without `region`. Preserve array order. Optional `duration` is a positive **relative** duration multiplier (default 1), not milliseconds. `frameEvents` can map an explicit zero-based frame to a visual cue, e.g. `{"1":"swing_sound"}`. Leave it absent without a source or design decision for that cue.
+Each frame may instead point to its individual PNG, without `region`. Preserve array order. Optional `duration` is a positive **relative** duration multiplier (default 1), not milliseconds. `frameEvents` can map an explicit zero-based frame to a visual cue, e.g. `{"1":"swing_sound"}`. Add it only for a cue the source or design specifies.
 
-The new output contains PNGs, `frames.tres`, `visual.tscn`, the optional `character_visual.gd`, and `handoff.json` with provenance. The `.tres` contains actual Texture2D or AtlasTexture references. Copy the staged `Assets/...` subtree into the authorized target root after checking path collisions; the resource-root passed to the script must match the final path. It deliberately supplies no `project.godot` and never merges into a game. A new export uses a new directory or a reviewed target-resource replacement, not a blind overwrite.
+The new output contains PNGs, `frames.tres`, `visual.tscn`, the optional `character_visual.gd`, and `handoff.json` with provenance. The `.tres` contains actual Texture2D or AtlasTexture references. Copy the staged `Assets/...` subtree into the authorized target root after checking path collisions; the resource-root passed to the script must match the final path. The script writes no `project.godot` and does not merge into a game; give each new export a new directory.
 
 ## Connect to the existing actor
 
-CopyWorms uses `AnimatedSprite2D` named `Sprite` in the formal warrior scene. For a full-set resource replacement, assign the generated SpriteFrames to that node and preserve its controller, node path, visual offset, scale and collision shape. For a single-action update, **merge only those clips** into a copy of the existing SpriteFrames; keep idle/walk/jump and every unselected clip. The included `assets/sprite_frames_merge.gd` exposes `merge_clips(existing, incoming)` and mutates neither input. Save its result to a new resource path, then update the intended actor reference. Inspect shared resources/scene inheritance before deciding whether a change should affect other actors. Do **not** also instantiate a second visual scene or replace its script with the helper. The source faces right; flip `Sprite.flip_h`, keeping CharacterBody2D/colliders unmirrored. Confirm nearest filtering, transparent padding and feet placement with movement/jumps. Enemy and boss cells can be different sizes; 128×128 is not a global requirement.
+Find the target actor's actual animation node, state-to-clip aliases, resource sharing and scene inheritance. For one action, merge only the selected clip(s) into the existing SpriteFrames and preserve every other action. The included `assets/sprite_frames_merge.gd` exposes `merge_clips(existing, incoming)` without mutating either input. Save the result to a new resource path and update the intended actor reference. Check resource sharing and scene inheritance first if other actors use the same SpriteFrames.
 
-`Player_Warrior._get_anim_for_state` maps IDLE→idle, RUN→walk, JUMP/FALL→jump, ATTACK→attack (or attack_in_air when appropriate). Concrete characters refine missing states. Pipeline actions `hurt`/`death` and some project resources `hit`/`defeated` require explicit aliases to actual clips. Inspect the concrete scene; never assume both spellings exist.
-
-`_update_animation` changes playback only when its target clip changes. Calling play+frame=0 on every physics tick prevents visible animation. Repeating an attack while remaining in the same logical state needs a distinct action occurrence/restart from the existing controller. PlayerBase owns attack windup and duration; `_on_attack` / DamageCalculator apply hits. Animation completion does not automatically end attack, apply damage or change player state.
-
-Cyber special actions deliberately return early from normal animation updates while dash/charge/skill sequences own the visual. Keep those gates. The source's jump frame hold and skill frame selections depend on exact clip lengths (including a jump hold at frame 4); revalidate them for replacement art rather than silently importing shorter clips.
+Keep the controller's gameplay state, hit timing, collision and facing. Change playback when the target clip changes and restart it on a new action occurrence; restarting on every physics update freezes the animation on frame 0. Pipeline action names such as `hurt`/`death` may need explicit aliases to the target's clip names. Against the new art, check effective FPS, loop, offsets, foot placement and any logic that references exact frame indices, such as a held jump frame.
 
 ## Optional adapter for a new actor
 
@@ -77,8 +73,8 @@ $Sprite.face_right(facing_right)
 $Sprite.show_action(&"attack", true)
 ```
 
-Do not call the restart line on every update. Missing clips return false without changing playback. Non-loop clips hold the final frame; their visual_finished signal is presentation evidence only. The optional explicit frame_cue signal is for audio/effects by default. If the requested design truly makes a frame authoritative for a hit, adapt the existing gameplay contract deliberately, including interruptions, replay, duplicate-hit guards and pause behavior; never infer hit frames from pixels or QA indices.
+Missing clips return false without changing playback. Non-loop clips hold the final frame and emit visual_finished; frame_cue carries the explicit `frameEvents` for audio and effects. Gameplay hits stay with the existing controller. When the design makes a frame authoritative for a hit, change that gameplay contract explicitly, covering interruption, replay, duplicate-hit guards and pause.
 
-For a new standalone visual test, instantiate `visual.tscn`, call `show_action`, inspect both loop and one-shot actions. For a real controller test, exercise input→state→clip, attack interruption/replay, damage count and pause in the target project. Passing the first does not prove the second.
+For a new standalone visual test, instantiate `visual.tscn`, call `show_action`, inspect both loop and one-shot actions. A controller change also needs input→state→clip, attack interruption/replay, damage count and pause exercised in the target project.
 
 API references for Godot 4.7: [SpriteFrames](https://docs.godotengine.org/en/4.7/classes/class_spriteframes.html), [AnimatedSprite2D](https://docs.godotengine.org/en/4.7/classes/class_animatedsprite2d.html). `animation_finished` is not emitted for looping clips.

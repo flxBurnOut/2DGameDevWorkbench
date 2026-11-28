@@ -7,6 +7,7 @@ import { createServer } from 'vite';
 export function createTestViteServer(options) {
   return createServer({
     ...options,
+    optimizeDeps: { noDiscovery: true, entries: [], ...options.optimizeDeps },
     // These suites load modules explicitly; watching runtime/test outputs creates needless file churn.
     server: { ...options.server, watch: null },
     cacheDir: path.resolve(

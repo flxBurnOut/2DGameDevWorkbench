@@ -2,21 +2,15 @@ import {
   fetchWorkbenchRuntime,
   runtimeUnavailable,
 } from '@/lib/workbench/runtime-proxy';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 async function proxy(request: Request) {
   const url = new URL(request.url),
     action = url.pathname.split('/').pop() || '';
-  if (!['settings', 'select', 'browse', 'pick', 'deliver', 'package'].includes(action))
+  if (!['settings', 'history', 'record', 'select', 'browse', 'pick', 'deliver', 'package'].includes(action))
     return new Response(null, { status: 404 });
-  const origin = request.headers.get('origin');
-  if (
-    request.headers.get('sec-fetch-site') === 'cross-site' ||
-    (origin && origin !== url.origin)
-  )
-    return Response.json(
-      { error: '仅允许从工作台页面选择或写入游戏项目。' },
-      { status: 403 },
-    );
+  const denied = trustedRequest(request, { json: request.method === 'POST' && action !== 'deliver' });
+  if (denied) return denied;
   try {
     const headers = new Headers();
     for (const name of [
@@ -28,7 +22,8 @@ async function proxy(request: Request) {
       const value = request.headers.get(name);
       if (value) headers.set(name, value);
     }
-    const response = await fetchWorkbenchRuntime('/v1/game-export/' + action, {
+    const query = ['history', 'record'].includes(action) ? url.search : '';
+    const response = await fetchWorkbenchRuntime('/v1/game-export/' + action + query, {
       method: request.method,
       headers,
       ...(request.method === 'POST'

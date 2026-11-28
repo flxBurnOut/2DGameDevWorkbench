@@ -23,6 +23,9 @@ const described = structuredClone(
     .properties.project,
 );
 delete described.description;
+// The manifest also lists the retired copyworms field so earlier projects pass task validation.
+assert.equal(described.properties.objects.items.properties.copyworms.type, 'object');
+delete described.properties.objects.items.properties.copyworms;
 const expected = zodToJsonSchema(projectSchema, { $refStrategy: 'none' });
 delete expected.$schema;
 assert.deepEqual(
@@ -32,6 +35,7 @@ assert.deepEqual(
 );
 const p = createProject();
 p.objects = ['inspect', 'toggle', 'pickup', 'sequence'].map(createObject);
+p.objects[2].solid.enabled = true;
 p.objects.forEach((o, i) => {
   o.definitionId = `test-${o.behavior.kind}`;
   o.displayName = `中文 "物件" ${i}\n第二行`;
@@ -104,45 +108,19 @@ const result = await buildGodotPackage(
   { repositoryRoot: root, exportId: 'tests' },
 );
 const zip = await JSZip.loadAsync(result.bytes);
-const original = structuredClone(p);
-p.objects[0].copyworms.objectId = 'notice';
-const compatible = await buildGodotPackage(
-  { project: p, targetProfile: 'copyworms' },
-  { repositoryRoot: root },
-);
-const compatibleZip = await JSZip.loadAsync(compatible.bytes);
-assert.equal(compatible.metadata.targetProfile, 'copyworms');
-assert(compatibleZip.file(compatible.metadata.runtime.replace('res://', '')));
-assert(
-  !Object.keys(compatibleZip.files).some((name) =>
-    name.startsWith('addons/workbench_interaction/'),
-  ),
-);
-assert(!compatibleZip.file('project.godot'));
-const compatibleDefinition = await compatibleZip
-  .file(
-    'addons/workbench_interaction_copyworms/objects/test-inspect/definition.tres',
-  )
-  .async('string');
-assert(compatibleDefinition.includes('"action": "ui_accept"'));
-assert(compatibleDefinition.includes('"actorGroup": "player"'));
-assert(compatibleDefinition.includes('"mask": 4'));
 assert.deepEqual(
-  (await readSourcePackage(compatible.bytes)).objects,
+  (await readSourcePackage(result.bytes)).objects,
   normalizeProject(p).objects,
 );
-assert.equal(
-  p.objects[0].activation.action,
-  original.objects[0].activation.action,
-);
-assert.equal(p.objects[0].detection.mask, original.objects[0].detection.mask);
-await assert.rejects(
-  buildGodotPackage(
-    { project: p, targetProfile: 'invalid' },
-    { repositoryRoot: root },
-  ),
-  /targetProfile/,
-);
+for (const targetProfile of ['invalid', 'copyworms'])
+  await assert.rejects(
+    buildGodotPackage({ project: p, targetProfile }, { repositoryRoot: root }),
+    /targetProfile/,
+  );
+// Projects saved before the compat export was removed still load; the retired field is dropped.
+const legacy = structuredClone(p);
+legacy.objects[0].copyworms = { objectId: 'notice' };
+assert.deepEqual(normalizeProject(legacy), normalizeProject(p));
 assert(!zip.file('project.godot'));
 assert(Object.keys(zip.files).every((n) => !n.endsWith('.uid')));
 for (const o of p.objects)

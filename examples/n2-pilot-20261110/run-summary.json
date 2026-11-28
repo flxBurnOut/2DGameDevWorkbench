@@ -1,0 +1,383 @@
+{
+  "referenceCount": 5,
+  "completedFirstRoundAnimations": 8,
+  "referenceGenerations": 5.0,
+  "animationGenerations": 32.0,
+  "totalGenerations": 37.0,
+  "approxEquivalentUsd": 0.3816,
+  "animations": {
+    "chest": {
+      "1101": {
+        "seed": 1101,
+        "accounted": {
+          "type": "generations",
+          "generations": 4.0
+        },
+        "requested": 16,
+        "returned": 17,
+        "matchedSourcePixels": true,
+        "actualLastFrame": "chest/seed-1101/f17.png",
+        "firstFrameSha256": "908b8aadcf52607b97c0911027d604eccf1f54ee69406f9b13a90d61efcc59fc",
+        "lastFrameSha256": "0ea6c922602ba5c53b802de88409707646371821858173ce36f20f5ac23ac834",
+        "passed": false,
+        "observations": "箱身和脚位置稳定，箱盖平滑抬起，但前扣跟着盖子翻走，最后只开了一部分。"
+      },
+      "2202": {
+        "seed": 2202,
+        "accounted": {
+          "type": "generations",
+          "generations": 4.0
+        },
+        "requested": 16,
+        "returned": 17,
+        "matchedSourcePixels": true,
+        "actualLastFrame": "chest/seed-2202/f17.png",
+        "firstFrameSha256": "908b8aadcf52607b97c0911027d604eccf1f54ee69406f9b13a90d61efcc59fc",
+        "lastFrameSha256": "9bc64c5359d930fc5124ba9a3d2096aa6ffdbd02aa00fe1ee785a64843dd17e6",
+        "passed": false,
+        "observations": "同样能露出空箱腔，盖子未翻至充分打开的位置。金扣由正面移到箱盖上方。"
+      }
+    },
+    "lever": {
+      "1101": {
+        "seed": 1101,
+        "accounted": {
+          "type": "generations",
+          "generations": 4.0
+        },
+        "requested": 16,
+        "returned": 17,
+        "matchedSourcePixels": true,
+        "actualLastFrame": "lever/seed-1101/f17.png",
+        "firstFrameSha256": "2dde97748313f08a41bf0071c7a5e18a9cd4702628e30ded762104f0d441af9c",
+        "lastFrameSha256": "f7240d1d42ef8d0a7aec3078aec2bf01e80ab65e30c3aba2ceeb860b5786da2e",
+        "redKnobCenterByFrame": [
+          [
+            48.0,
+            15.0
+          ],
+          [
+            55.6,
+            14.6
+          ],
+          [
+            62.9,
+            14.6
+          ],
+          [
+            73.5,
+            14.8
+          ],
+          [
+            86.1,
+            19.4
+          ],
+          [
+            103.9,
+            42.8
+          ],
+          [
+            104.1,
+            45.6
+          ],
+          [
+            104.0,
+            47.2
+          ],
+          [
+            103.9,
+            43.2
+          ],
+          [
+            103.5,
+            42.1
+          ],
+          [
+            103.5,
+            42.1
+          ],
+          [
+            103.9,
+            48.0
+          ],
+          [
+            103.9,
+            48.0
+          ],
+          [
+            104.1,
+            47.1
+          ],
+          [
+            104.0,
+            43.0
+          ],
+          null,
+          [
+            22.5,
+            42.9
+          ]
+        ],
+        "passed": false,
+        "observations": "第 3 帧经过近竖直，接着转向右侧，最后两帧突然移至左侧，末帧无法作为中位。"
+      },
+      "2202": {
+        "seed": 2202,
+        "accounted": {
+          "type": "generations",
+          "generations": 4.0
+        },
+        "requested": 16,
+        "returned": 17,
+        "matchedSourcePixels": true,
+        "actualLastFrame": "lever/seed-2202/f17.png",
+        "firstFrameSha256": "2dde97748313f08a41bf0071c7a5e18a9cd4702628e30ded762104f0d441af9c",
+        "lastFrameSha256": "98468fcf4302d3aa5fccf30c6a8518c8a9d947c8cee303df1c14fbd32a30a6b4",
+        "redKnobCenterByFrame": [
+          [
+            48.0,
+            15.0
+          ],
+          [
+            55.5,
+            13.0
+          ],
+          [
+            60.7,
+            13.1
+          ],
+          [
+            71.5,
+            13.2
+          ],
+          [
+            79.6,
+            15.9
+          ],
+          [
+            98.1,
+            35.0
+          ],
+          [
+            100.1,
+            45.2
+          ],
+          [
+            100.0,
+            47.9
+          ],
+          [
+            100.0,
+            50.0
+          ],
+          [
+            100.0,
+            50.0
+          ],
+          [
+            100.1,
+            46.0
+          ],
+          [
+            100.0,
+            43.9
+          ],
+          [
+            99.9,
+            42.9
+          ],
+          [
+            64.7,
+            45.4
+          ],
+          [
+            55.3,
+            46.5
+          ],
+          [
+            26.5,
+            47.3
+          ],
+          [
+            25.9,
+            45.9
+          ]
+        ],
+        "passed": false,
+        "observations": "第 3 帧经过近竖直，此后越过中位，末段红柄绕回左侧，底座位置稳定。"
+      }
+    },
+    "gate": {
+      "1101": {
+        "seed": 1101,
+        "accounted": {
+          "type": "generations",
+          "generations": 4.0
+        },
+        "requested": 16,
+        "returned": 17,
+        "matchedSourcePixels": true,
+        "actualLastFrame": "gate/seed-1101/f17.png",
+        "firstFrameSha256": "d129e71f9b90e254f190424e2ca6b16456ac51c724a97b2318a3293df8145efc",
+        "lastFrameSha256": "fee2ee4a7bd459e614148616f948271f2bee324ab62f48c18f9fc9a6248d9597",
+        "passed": false,
+        "observations": "石框保持稳定，栅条先抬起，后半段倾斜，最终未表现为垂直升起的刚性栅门。"
+      },
+      "2202": {
+        "seed": 2202,
+        "accounted": {
+          "type": "generations",
+          "generations": 4.0
+        },
+        "requested": 16,
+        "returned": 17,
+        "matchedSourcePixels": true,
+        "actualLastFrame": "gate/seed-2202/f17.png",
+        "firstFrameSha256": "d129e71f9b90e254f190424e2ca6b16456ac51c724a97b2318a3293df8145efc",
+        "lastFrameSha256": "5db36ae186b9e8d830f0084da6664dd0f940cbb269a6b82f91b4759e1f8dc056",
+        "passed": false,
+        "observations": "栅条倾斜翻出，末段还能看到栅条穿过顶部石梁。"
+      }
+    },
+    "lamp": {
+      "1101": {
+        "seed": 1101,
+        "accounted": {
+          "type": "generations",
+          "generations": 4.0
+        },
+        "requested": 16,
+        "returned": 17,
+        "matchedSourcePixels": true,
+        "actualLastFrame": "lamp/seed-1101/f17.png",
+        "firstFrameSha256": "2bd019dc48353f527e4a893a5f19d4f9328a762290f65eb7182a2a81d804c4ca",
+        "lastFrameSha256": "419560a02795b61230999ed3918979936c4e49ec12fe5236e14b20956210b524",
+        "lensROI": {
+          "x": 58,
+          "y": 46,
+          "width": 25,
+          "height": 28,
+          "opaquePixelCountByFrame": [
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            0,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700
+          ],
+          "greenPixelCountByFrame": [
+            0,
+            0,
+            0,
+            0,
+            700,
+            700,
+            0,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700
+          ]
+        },
+        "passed": false,
+        "observations": "末帧灯绿且可用，灯壳位置稳定；第 7 帧灯面中部 25×28 区域全部透明，第 8 帧恢复。"
+      },
+      "2202": {
+        "seed": 2202,
+        "accounted": {
+          "type": "generations",
+          "generations": 4.0
+        },
+        "requested": 16,
+        "returned": 17,
+        "matchedSourcePixels": true,
+        "actualLastFrame": "lamp/seed-2202/f17.png",
+        "firstFrameSha256": "2bd019dc48353f527e4a893a5f19d4f9328a762290f65eb7182a2a81d804c4ca",
+        "lastFrameSha256": "898c2147a0f4dbf2dff36669d0f2d53b25d0e4b4c9e744bd508d349a5b39e290",
+        "lensROI": {
+          "x": 58,
+          "y": 46,
+          "width": 25,
+          "height": 28,
+          "opaquePixelCountByFrame": [
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700
+          ],
+          "greenPixelCountByFrame": [
+            0,
+            0,
+            0,
+            203,
+            678,
+            448,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700,
+            700
+          ]
+        },
+        "passed": true,
+        "observations": "灯面由灰过渡到绿色，后半段持续亮绿。高光略有变化，外壳和固定件保持位置，末帧可用。"
+      }
+    }
+  },
+  "runDate": "2026-11-10",
+  "branch": "paper-vbyc",
+  "commit": "69a1587acee00d3912248598a68fab82c0221ab8",
+  "review": {
+    "decision": "本轮不进入 N2",
+    "threshold": {
+      "objectsWithAnyPassRequired": 3,
+      "objectsPassingBothSeedsRequired": 2
+    },
+    "actual": {
+      "clipsPassed": 1,
+      "objectsWithAnyPass": 1,
+      "objectsPassingBothSeeds": 0
+    },
+    "method": "由本次执行的主 Agent 检查同步回放和各段全部 PNG，单独评估真实末帧、过渡和指定固定部件。帧号从 1 起，含返回的首帧。",
+    "optionalChain": "两条拉杆样本都没有合格的实际中位末帧，未触发中位到右倾补测。",
+    "referenceCorrection": "第一张拉杆图已在中位，补生成一张左倾图后才开始该物体首轮；两次动画使用同一补生成的起始图。",
+    "billedUsd": 0,
+    "priceEstimateSource": "https://www.pixellab.ai/pixellab-api"
+  }
+}

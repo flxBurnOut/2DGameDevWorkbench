@@ -10,31 +10,10 @@ import {
   buildAssetImport,
   readAssetPreview,
 } from '../../lib/workbench/asset-catalog.mjs';
-import {
-  createScene,
-  validateScene,
-} from '../../features/scene-composer/model.mjs';
-import { readScenePackage } from '../../features/scene-composer/package.mjs';
 const f = await createImportFixtures();
 let child;
 try {
-  const old = createScene();
-  delete old.view.aidsVersion;
-  old.view.showGrid = false;
-  old.view.showShapes = false;
-  const upgraded = validateScene(old);
-  assert.equal(upgraded.view.showGrid, true);
-  assert.equal(upgraded.view.showShapes, true);
-  upgraded.view.showShapes = false;
-  assert.equal(validateScene(upgraded).view.showShapes, false);
-  assert.ok(
-    ['showGrid', 'showNames', 'showShapes', 'showActor'].every(
-      (key) => createScene().view[key],
-    ),
-  );
   const all = await agentRequest(f.manifest, 'assets', { limit: 100 });
-  const map = all.assets.find((a) => a.kind === 'map');
-  f.ids.map = map.id;
   assert.equal(all.assets.find((a) => a.id === f.ids.prop).kind, 'prop');
   assert.equal(
     all.assets.find((a) => a.id === f.ids.character).kind,
@@ -56,8 +35,6 @@ try {
     [f.ids.prop, 'image'],
     [f.ids.character, 'image'],
     [f.ids.object, 'interactable'],
-    [f.ids.map, 'map'],
-    [f.ids.scene, 'scene'],
     [f.ids.animation, 'animation'],
   ]) {
     const request = await payload(id, purpose);
@@ -85,14 +62,6 @@ try {
         await zip.file(metadata.files[1].path).async('nodebuffer'),
         f.frame2,
       );
-    }
-    if (purpose === 'scene') {
-      const scene = await readScenePackage(
-        await zip.file(metadata.files[0].path).async('uint8array'),
-      );
-      assert.deepEqual(scene.map.collisions, f.scene.map.collisions);
-      assert.deepEqual(scene.map.origin, f.scene.map.origin);
-      assert.deepEqual(scene.map.offset, f.scene.map.offset);
     }
   }
   assert.deepEqual(
@@ -150,7 +119,7 @@ try {
   );
   await assert.rejects(buildAssetImport(f.manifest, stable), /版本|变化/);
   console.log(
-    'Asset imports passed: all five source types, exact candidate order/FPS, project identity, scene collision geometry, default aids migration, old prop classification, HTTP, stale revision rejection, no new tasks or paid calls.',
+    'Asset imports passed: four retained source types, exact candidate order/FPS, project identity, old prop classification, HTTP, stale revision rejection, no new tasks or paid calls.',
   );
 } finally {
   child?.kill();

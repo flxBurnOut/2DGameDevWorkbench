@@ -101,12 +101,17 @@ try {
   assert.equal(engineering.createsTask, false);
   await access(path.join(root, engineering.skill));
   await access(path.join(root, engineering.guide));
-  assert.match(listed.conversationGuidance.text, /AskUserQuestion/);
+  const motionGuide = listed.conversationGuidance.topics.find(topic => topic.id === 'motion');
+  assert.equal(motionGuide.capabilityId, 'sprite-generator');
+  const motion = value(await call('workbench_get_guidance', { topic: motionGuide.id }));
+  assert.equal(motion.text, await readFile(path.join(root, motionGuide.source), 'utf8'));
+  assert.equal(motion.createsTask, false);
   const description = value(
     await call('workbench_describe_capability', {
       capabilityId: 'sprite-generator',
     }),
   );
+  assert(description.guidanceTopics.some(topic => topic.id === motionGuide.id));
   assert(
     description.capability.inputSchema.properties.operation.enum.includes(
       'approve',
@@ -168,9 +173,27 @@ try {
   assert.equal(native.presentation.state,'attention_required');
   const exact = await call('workbench_get_result',{taskId:initial.taskId,candidateIndex:candidate});
   assert(!exact.content[0].text.includes('orderedFrames'));
-  assert(exact.structuredContent.result.orderedFrames.length);
-  const detailed = await call('workbench_get_result',{taskId:initial.taskId,detail:true});
-  assert(JSON.parse(detailed.content[0].text).result.orderedFrames.length);
+  assert.equal(exact.structuredContent.result.orderedFrames, undefined);
+  assert.equal(exact.structuredContent.result.candidates.length, 1);
+  const selectedFrames = await call('workbench_get_result', { taskId: initial.taskId, detail: true, section: '/result/orderedFrames' });
+  const framePage = JSON.parse(selectedFrames.content[0].text).detailPage;
+  assert.equal(framePage.nextOffset, null);
+  const orderedFrames = JSON.parse(framePage.json);
+  assert(orderedFrames.length > 0);
+  const selection = { jobId, candidateIndex: candidate, detail: true };
+  let detailed = value(await call('workbench_get_result', selection)).detailPage;
+  assert.ok(detailed.nextOffset > 0);
+  await call('workbench_get_result', { ...selection, offset: detailed.nextOffset, snapshot: '0'.repeat(64) }, true);
+  await call('workbench_get_result', { ...selection, offset: detailed.nextOffset }, true);
+  await call('workbench_get_result', { jobId, section: '/result/candidates' }, true);
+  let json = detailed.json;
+  while (detailed.nextOffset !== null) {
+    detailed = value(await call('workbench_get_result', { ...selection, offset: detailed.nextOffset, snapshot: detailed.snapshot })).detailPage;
+    assert.ok(detailed.json.length <= 3200);
+    json += detailed.json;
+  }
+  assert.equal(json.length, detailed.totalCharacters);
+  assert.equal(JSON.parse(json).result.candidates[0].frames.length, orderedFrames.length);
   await call('workbench_get_result',{jobId,candidateIndex:999},true);
   await call('workbench_get_result',{taskId:initial.taskId,jobId},true);
   await client.close(); client = await connect();
@@ -178,10 +201,9 @@ try {
   assert.deepEqual(value(await call('workbench_list_tasks',{query:jobId})),beforeInspect);
   report.checks.push('precise native/task candidate links, compact and full results, reconnect/read-only inspection creates no tasks');
 
-  assert(result.result.orderedFrames.length > 0);
   const image = await call('workbench_read_artifact', {
     taskId: initial.taskId,
-    artifactPath: result.result.orderedFrames[0],
+    artifactPath: orderedFrames[0],
   });
   assert(
     image.content.some((c) => c.type === 'image' && c.mimeType === 'image/png'),
@@ -302,6 +324,7 @@ try {
     SPRITE_PIPELINE_DATA_DIR: managedData,
     SPRITE_PIPELINE_EXPORTS_DIR: path.join(managedData, 'exports'),
     SPRITE_PIPELINE_IMPORT_USER_CREDENTIALS: '0',
+    SPRITE_PIPELINE_IMPORT_USER_ASSETS: '0',
   });
   const offline = value(await call('workbench_get_environment'));
   // CI's system Python can run fixture tests without an installed app venv.
@@ -367,7 +390,7 @@ async function freePort() {
   return port;
 }
 async function waitForService(url) {
-  for (let n = 0; n < 100; n++) {
+  for (let n = 0; n < 600; n++) {
     if (startupError)
       throw new Error(
         'SpritePipeline Python 无法启动，请运行 npm run sprite-pipeline:setup。' +

@@ -1,5 +1,6 @@
 /* oxlint-disable react/react-compiler -- This clock-driven imperative simulator deliberately opts out of React memoization. */
 'use client';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import {
   useEffect,
   useMemo,
@@ -8,6 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { RotateCcw, Play } from 'lucide-react';
+import { Tooltip } from '@/components/ui/tooltip';
 import {
   type Asset,
   type Interactable,
@@ -19,9 +21,12 @@ import {
   type InteractionState,
 } from '@/features/interactable-editor/simulator.mjs';
 import { Check } from './property-panels';
+import { documentMediaUrl } from '@/features/editor-documents/browser-media';
+import { parseDocumentMediaReference } from '@/features/editor-documents/media-references.mjs';
 
 export function assetUrl(asset?: Asset) {
   if (!asset) return '';
+  if (parseDocumentMediaReference(asset.source)) return documentMediaUrl(asset.source);
   return asset.source.startsWith('data:')
     ? asset.source
     : `/api/workbench/interactable-assets?path=${encodeURIComponent(asset.source)}`;
@@ -175,16 +180,16 @@ export function Preview({
         <Check label="双物件重叠" value={overlap} onChange={setOverlap} />
       </div>
       <div className="ie-row">
-        <select
+        <NativeSelect
           aria-label="画布拖动目标"
           value={mode}
           onChange={(e) => setMode(e.target.value as typeof mode)}
         >
-          <option value="actor">拖动交互来源</option>
-          <option value="detection">移动感知范围</option>
-          <option value="pointer">移动点击区域</option>
-          <option value="solid">移动实体碰撞</option>
-        </select>
+          <NativeSelectOption value="actor">拖动交互来源</NativeSelectOption>
+          <NativeSelectOption value="detection">移动感知范围</NativeSelectOption>
+          <NativeSelectOption value="pointer">移动点击区域</NativeSelectOption>
+          <NativeSelectOption value="solid">移动实体碰撞</NativeSelectOption>
+        </NativeSelect>
       </div>
       <div className="ie-canvas">
         <svg
@@ -282,7 +287,7 @@ export function Preview({
                         href={assetUrl(asset)}
                         width={dim?.width ?? o.visual.width}
                         height={dim?.height ?? o.visual.height}
-                        style={{ imageRendering: 'pixelated' }}
+                        className="[image-rendering:pixelated]"
                       />
                     </svg>
                   ) : (
@@ -365,9 +370,11 @@ export function Preview({
           <Play size={14} />按 {object.activation.key}
         </button>
         <button onClick={() => sim.request()}>外部调用</button>
-        <button title="重置预览" onClick={() => sim.reset()}>
-          <RotateCcw size={14} />
-        </button>
+        <Tooltip label="重置预览">
+          <button aria-label="重置预览" onClick={() => sim.reset()}>
+            <RotateCcw size={14} />
+          </button>
+        </Tooltip>
       </div>
       <p className="ie-note">
         绿色：感知 · 蓝色：点击 · 橙色：实体碰撞。拖动白色来源可模拟进出范围。

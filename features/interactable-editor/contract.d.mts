@@ -7,6 +7,7 @@ export type Shape = {
   offset: { x: number; y: number };
 };
 export type Appearance = {
+  staticImage?: boolean;
   assetId: string;
   animation: string;
   visible: boolean;
@@ -16,7 +17,7 @@ export type Appearance = {
 export type Feedback =
   | { type: 'show_text'; pages: string[] }
   | { type: 'wait'; seconds: number }
-  | { type: 'play_animation'; animation: string; waitForEnd: boolean }
+  | { type: 'play_animation'; importedTransition?: true; animation: string; waitForEnd: boolean }
   | {
       type: 'play_audio';
       assetId: string;
@@ -30,7 +31,7 @@ export type Entry = {
   feedback: Feedback[];
 };
 export type Kind = 'inspect' | 'toggle' | 'pickup' | 'sequence';
-export type ExportProfile = 'generic' | 'copyworms';
+export type ExportProfile = 'generic';
 export type Clip = {
   name: string;
   fps: number;
@@ -98,7 +99,6 @@ export type Interactable = {
   feedback: Feedback[];
   cooldownSeconds: number;
   completion: 'remain' | 'hide' | 'free';
-  copyworms: { objectId: string };
   memory: {
     scope: 'instance' | 'session' | 'persistent';
     namespace: string;
@@ -123,6 +123,7 @@ export function makeId(prefix?: string): string;
 export function createObject(kind?: Kind): Interactable;
 export function createProject(): InteractableProject;
 export function nextClipName(object: Interactable): string;
+export function appearanceAnimation(appearance: Partial<Appearance>, visual: Interactable['visual']): string;
 export function normalizeProject(input: unknown): InteractableProject;
 export function selectedProject(
   input: unknown,

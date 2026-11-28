@@ -1,0 +1,221 @@
+{
+  "spec": {
+    "object_id": "reference_71f8d547436e2a272e054b51",
+    "object_type": "interactable",
+    "description": "Move the red-tipped lever from its left-leaning starting pose slowly clockwise around the fixed axle until its rod points straight UP at twelve o'clock. Stop at the VERTICAL MIDDLE detent and hold. The knob traces an arc and the rigid rod stays the same length. The base bolts, axle and its screen position are stationary. One motion only, locked camera, transparent canvas.",
+    "ending": "Stop upright in the middle detent and hold the confirmed real endpoint at playback. The remaining account quota permits at most 8 generated frames in a single request. Plan within this limit.",
+    "return_to_reference": false,
+    "loop": false,
+    "fps": 12.0,
+    "timing_mode": "auto",
+    "candidate_count": 1,
+    "seed": 2202,
+    "budget": {
+      "max_planning_calls": 4,
+      "max_generation_calls": 1,
+      "max_review_calls": 20
+    },
+    "provider": "pixellab",
+    "review_protocol": "experts_v1"
+  },
+  "plan": {
+    "title": "三档拉杆转至竖直中档",
+    "animation_name": "lever_to_vertical_detent",
+    "summary": "使用一个连续铰接旋转阶段，在8帧内从左倾参考姿态转至红球位于轴心正上方的竖直中档。保留正交侧视、透明背景、刚性杆长和固定安装结构，不添加回程、过冲或生成式静止保持。",
+    "requirements": [
+      {
+        "text": "红球与刚性拉杆绕固定轴缓慢顺时针旋转，最终杆身正竖直、红球位于十二点钟位置。",
+        "source": "user",
+        "evidence": "Move the red-tipped lever from its left-leaning starting pose slowly clockwise around the fixed axle until its rod points straight UP at twelve o'clock."
+      },
+      {
+        "text": "在竖直中间档位停止，目标首次出现在第8帧。",
+        "source": "user",
+        "evidence": "Stop at the VERTICAL MIDDLE detent and hold."
+      },
+      {
+        "text": "终点保持通过播放已确认的真实末帧实现，不生成静态保持段。",
+        "source": "user",
+        "evidence": "Stop upright in the middle detent and hold the confirmed real endpoint at playback."
+      },
+      {
+        "text": "单次请求最多生成8帧，因此本计划仅安排一个8帧阶段。",
+        "source": "user",
+        "evidence": "The remaining account quota permits at most 8 generated frames in a single request."
+      },
+      {
+        "text": "红球沿圆弧运动，刚性杆长度及球—轴距离保持不变。",
+        "source": "user",
+        "evidence": "The knob traces an arc and the rigid rod stays the same length."
+      },
+      {
+        "text": "底座螺栓、轴及轴心屏幕位置固定；只有一次运动、锁定相机和透明画布。",
+        "source": "user",
+        "evidence": "The base bolts, axle and its screen position are stationary. One motion only, locked camera, transparent canvas."
+      },
+      {
+        "text": "参考为完整可见的正交侧视工业拉杆，红球在左上，宽底座水平固定于下方。",
+        "source": "reference",
+        "evidence": "128×128透明参考图中红球约在(38,23)，杆件向右下连接中央轴部，底座约跨x=18–107、y=98–112。"
+      },
+      {
+        "text": "红球和主刚性杆属于同一运动组件；底座、正面三枚螺栓、固定支座和中央轴部不得随杆摆动。",
+        "source": "reference",
+        "evidence": "红球底部直接连接细杆，杆在中央轴部终止；轴部坐落于固定支座和带三枚正面螺栓的水平底座上。"
+      },
+      {
+        "text": "使用单段是因为运动连续且无需先建立独立中间状态，末帧必须预留给真正的竖直终点。",
+        "source": "expert",
+        "evidence": "单次8帧配额下，第2至7帧建立有序圆弧运动，第8帧完成中档定位。"
+      },
+      {
+        "text": "用户原始动作要求（1）",
+        "source": "user",
+        "evidence": "Move the red-tipped lever from its left-leaning starting pose slowly clockwise around the fixed axle until its rod points straight UP at twelve o'clock. Stop at the VERTICAL MIDDLE detent and hold. The knob traces an arc and the rigid rod stays the same length. The base bolts, axle and its screen po"
+      },
+      {
+        "text": "用户原始动作要求（2）",
+        "source": "user",
+        "evidence": "sition are stationary. One motion only, locked camera, transparent canvas."
+      },
+      {
+        "text": "用户指定结束姿势",
+        "source": "user",
+        "evidence": "Stop upright in the middle detent and hold the confirmed real endpoint at playback. The remaining account quota permits at most 8 generated frames in a single request. Plan within this limit."
+      }
+    ],
+    "stages": [
+      {
+        "name": "左倾至竖直中档",
+        "goal": "从参考图的真实左倾姿态开始，红球和刚性杆绕同一固定轴缓慢顺时针转动；红球逐帧上升并向右沿圆弧移动，第8帧杆身竖直且红球正对轴心上方。",
+        "prompt": "Appearance: Red knob, rigid rod, fixed axle, bolted base, pedestal; transparent background.\nAction: Rotate knob and rod slowly clockwise from original left lean to vertical.\nCamera: Locked orthographic side view, unchanged framing.\nFacing: Lateral prop projection; base horizontal.\nDrive: Knob and rod move together; axle stays fixed.\nSupport: Fixed pedestal and axle.\nPath: Constant-radius upward-right knob arc; unchanged rod length.\nTiming: Eight frames; vertical first on frame 8.\nPoses: Left lean; progressive clockwise angles; final twelve o’clock.\nRelations: Rod remains axle-connected; no stretch, translation, overshoot or return.\nEnd: Rod vertical, knob directly above axle, middle detent.\nBoundary: Settle; playback holds confirmed real endpoint.",
+        "frame_count": 8,
+        "first_frame": "original",
+        "last_frame": "none",
+        "acceptance": [
+          "第8帧为可用的真实竖直中档：杆身竖直，红球位于固定轴心正上方，无继续旋转趋势。",
+          "第1至8帧呈现连续顺时针圆弧，红球逐步上升并右移，杆长、球—轴距离和杆—轴连接保持一致。",
+          "底座、三枚正面螺栓、固定支座及轴心屏幕位置不漂移、不变形，透明背景和锁定构图保持。",
+          "无整体平移、独立轴部旋转、过冲、回程、第二次动作或额外静态保持帧。"
+        ],
+        "checkpoint": {
+          "endpoint": "第8帧首次到达杆身正竖直、红球在轴心正上方的中间档位。",
+          "rhythm": "8帧内均匀而缓慢地推进圆弧，前7帧完成转动，末帧完成定位。",
+          "reason": "这是无中间状态门槛的单次连续铰接旋转；拆段会浪费有限帧数并挤压真实终点。"
+        },
+        "motion": {
+          "camera": "锁定正交侧视与原始构图，透明画布",
+          "orientation": "保持道具侧视投影，底座水平，终点杆身竖直",
+          "trajectory": "红球从左上沿短顺时针圆弧上升并右移至轴心正上方",
+          "support": "宽底座和支座固定承重，轴心屏幕位置始终不变",
+          "drive": "红球与刚性杆作为一体绕固定轴转动，轴和底座不随动",
+          "appearance": "保留暗红球头、细刚性杆、工业轴座、三枚底座螺栓和透明背景",
+          "entry": "第1帧延续参考图的左上红球和左倾刚性杆",
+          "exit": "第8帧杆身正竖直，红球处于十二点钟中档",
+          "boundary": "settle",
+          "holds": [],
+          "generation_hint": "优先保持固定轴心、刚性杆长和逐帧角度顺序；不要生成末帧静止重复。"
+        }
+      }
+    ],
+    "grounded": true,
+    "questions": [],
+    "quality": {
+      "version": 4,
+      "event_contract": "红球与刚性杆绕固定轴单次缓慢顺时针转动，从参考左倾姿态到正上方竖直中档。",
+      "appearance_contract": "保持参考正交侧视、暗红球、刚性细杆、固定工业轴座和水平螺栓底座；背景透明。",
+      "ending_contract": "第8帧首次形成竖直中档并停止；之后仅播放确认的真实末帧，不继续转动或生成保持段。",
+      "rhythm_contract": "8帧连续有序转动，第2至7帧展现缓慢圆弧，第8帧完成定位，无过冲、回程或第二次动作。",
+      "playback_fps": 12.0,
+      "interactable": {
+        "initial_state": "正交侧视下红球位于左上，刚性杆左倾并连接右下中央固定轴；底座和支座静止。",
+        "target_state": "刚性杆正竖直，红球位于固定轴心正上方十二点钟位置，处于竖直中间档位。",
+        "moving_parts": [
+          "暗红球形端头",
+          "与球头连成一体的刚性拉杆"
+        ],
+        "fixed_parts": [
+          "宽大水平底座",
+          "底座正面三枚螺栓",
+          "中央固定轴及其屏幕位置",
+          "下方固定支座和中央垂直接头"
+        ],
+        "motion_type": "hinge_rotation",
+        "endpoint": "目标首次出现在单段第8帧：杆身竖直、红球正对轴心上方，轴和底座保持原位。",
+        "hold": "未指定额外播放tick；停止后由播放已确认的真实第8帧保持，不生成静止段。",
+        "hold_frames": 0,
+        "reference_check": {
+          "viewpoint": {
+            "status": "satisfied",
+            "evidence": "参考图完整呈现透明背景上的正交侧视机构，红球、斜杆、中央轴部和水平底座均清楚可见。"
+          },
+          "initial_state": {
+            "status": "satisfied",
+            "evidence": "红球约在(38,23)，杆件向左上倾斜并延伸至中央轴部；并非竖直或右倾，描述中的45度仅作近似。"
+          },
+          "part_ownership": {
+            "status": "satisfied",
+            "evidence": "红球底端直接连接刚性杆，杆终止于中央轴部；轴部坐落在固定支座和带三枚螺栓的底座上。轴接缝细小，外缘细部仍需生成像素复核。"
+          }
+        },
+        "opaque_regions": [
+          {
+            "name": "固定水平螺栓底座",
+            "box": [
+              18,
+              98,
+              108,
+              113
+            ]
+          },
+          {
+            "name": "底座下方固定中央接头",
+            "box": [
+              59,
+              113,
+              69,
+              120
+            ]
+          }
+        ]
+      },
+      "criteria": [
+        {
+          "dimension": "state_frame",
+          "criterion": "第8帧实际可用且清晰：杆身正竖直，红球位于固定轴心正上方，杆长和连接关系正确，没有右倾、左倾或截断。"
+        },
+        {
+          "dimension": "transition",
+          "criterion": "第1至8帧形成有序、缓慢的单次顺时针圆弧；红球逐帧上升右移，刚性杆不伸缩、不脱节，无整体平移、过冲或回程。"
+        },
+        {
+          "dimension": "fixed_parts",
+          "criterion": "锁定相机下底座、三枚正面螺栓、固定支座、轴心及其屏幕位置保持稳定外观；透明背景不被填入，固定区域未被误扫动。"
+        }
+      ],
+      "key_poses": [
+        {
+          "frame": 1,
+          "description": "参考左倾姿态，红球在左上，杆连接固定轴。"
+        },
+        {
+          "frame": 3,
+          "description": "红球沿圆弧略升高并右移，杆仍明显左倾。"
+        },
+        {
+          "frame": 5,
+          "description": "组件继续顺时针抬升，杆接近较陡的左倾角。"
+        },
+        {
+          "frame": 7,
+          "description": "红球接近轴心正上方，杆仅余很小左倾。"
+        },
+        {
+          "frame": 8,
+          "description": "杆身正竖直，红球在十二点钟竖直中档。"
+        }
+      ]
+    }
+  },
+  "plan_sha256": "d442ff3eedcd141628bb9ab4e641b7d2461659d1d02cc8657d539325a22e679b"
+}

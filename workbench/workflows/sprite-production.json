@@ -4,10 +4,10 @@
   "capabilityId": "sprite-generator",
   "name": "序列帧生产流水线",
   "steps": [
-    { "id": "validate", "name": "校验动作描述与尺寸", "kind": "validation" },
-    { "id": "prepare", "name": "整理帧序与循环点", "kind": "expert" },
-    { "id": "execute", "name": "通过本地适配器调用 SpritePipeline", "kind": "connector" },
-    { "id": "verify", "name": "核对帧数与输出清单", "kind": "validation" },
-    { "id": "handoff", "name": "写入项目产物目录", "kind": "handoff" }
+    { "id": "validate", "name": "准备与描述：角色、原始要求与预算", "kind": "validation" },
+    { "id": "prepare", "name": "查看制作方案：专家协作与用户确认", "kind": "expert" },
+    { "id": "execute", "name": "自动制作：逐段检查实际姿势，确认锚点后继续", "kind": "connector" },
+    { "id": "verify", "name": "检查与调整：完整动作、接缝与人工播放采用", "kind": "validation" },
+    { "id": "handoff", "name": "导出与使用：真实素材与 Godot 项目交付", "kind": "handoff" }
   ]
 }

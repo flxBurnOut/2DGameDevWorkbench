@@ -19,5 +19,3 @@ export type GodotPackageManifest = {
 export function prepareGodotPackage(
   bytes: Uint8Array,
 ): Promise<{ bytes: Uint8Array<ArrayBuffer>; manifest: GodotPackageManifest }>;
-
-export function unwrapGodotMapZip(zip: import('jszip')): import('jszip');

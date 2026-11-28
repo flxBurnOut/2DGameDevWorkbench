@@ -1,6 +1,7 @@
 import '../helpers/runtime-workspace.mjs';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import sharp from 'sharp';
 import JSZip from 'jszip';
@@ -71,7 +72,12 @@ const server = createServer(async (req, res) => {
       status === 'completed'
         ? { status, image: image.toString('base64') }
         : { status, error: 'Mock provider failed' };
-  else if (req.url === '/v1/reference-art/import') {
+  else if (req.url === '/v1/reference-art/transfer-prop') {
+    assert.ok(body.sourceTaskId);
+    assert.equal(body.image, undefined);
+    imports++;
+    value = {objectId: 'reference_' + createHash('sha256').update(body.sourceTaskId).digest('hex').slice(0,24), objectType:'interactable'};
+  } else if (req.url === '/v1/reference-art/import') {
     imports++;
     value = { characterId: body.characterId };
   } else if (req.url === '/v1/artworks')
@@ -178,14 +184,13 @@ try {
   );
   assert(png);
   assert.deepEqual(await png.async('nodebuffer'), image);
-  await assert.rejects(
-    runConnector(manifest, capability, {
-      operation: 'transfer',
-      sourceTaskId: task.id,
-    }),
-    /角色原图/,
-  );
   assert.equal(imports, 0);
+  const transferred = await runConnector(manifest, capability, {operation:'transfer', sourceTaskId:task.id});
+  assert.equal(transferred.task.status, 'completed');
+  const handoff = JSON.parse(await readFile(transferred.task.outputs.find(p => p.endsWith('/result.json')), 'utf8'));
+  assert.equal(handoff.href, '/tools/interactable-motion?object=' + handoff.objectId);
+  assert.equal(handoff.sourceTaskId, task.id);
+  assert.equal(imports, 1);
   const request = async (url) => {
     if (url.startsWith('/api/workbench/tasks/'))
       return Response.json({ task: await readTask(manifest, task.id) });
@@ -303,10 +308,13 @@ try {
   );
   disconnect = true;
   const count = submits;
-  await assert.rejects(
-    runConnector(manifest, capability, input),
-    /未自动重试|无法确认/,
-  );
+  const missingReply = (await runConnector(manifest, capability, input)).task;
+  assert.equal(missingReply.adapter.referenceStage, 'checking_receipt');
+  missingReply.adapter.lastPolledAt = 0;
+  await persistTask(manifest, missingReply);
+  const unknown = (await refreshTask(manifest, missingReply.id)).task;
+  assert.equal(unknown.status, 'attention_required');
+  assert.match(unknown.error, /无法确认/);
   assert.equal(submits, count + 1);
   console.log(
     JSON.stringify(
@@ -315,7 +323,7 @@ try {
         sharedCredentials: 'passed',
         resumeWithoutResubmit: 'passed',
         propInventoryAndPngDownload: 'passed',
-        characterTransferRejected: 'passed',
+        propAnimationTransfer: 'passed',
         adoptionIntegrityAndIsolation: 'passed',
         sourceAndGodotRoundtrip: 'passed',
         failureAndAmbiguousSubmission: 'passed',

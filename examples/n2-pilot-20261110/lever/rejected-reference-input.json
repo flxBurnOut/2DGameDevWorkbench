@@ -1,0 +1,8 @@
+{
+  "operation": "generate",
+  "subject": "prop",
+  "size": 128,
+  "name": "三档拉杆",
+  "seed": 402,
+  "prompt": "A single three-position mechanical floor lever at rest in its LEFT position. Direct orthographic side view. One rigid long silver rod leaning 45 degrees up and LEFT from one round visible fixed axle near the bottom, with one red round knob at its top; squat wide bolted gray base centered at bottom. Keep generous empty space above and on both sides for the throw. Clean, readable pixel-art sprite."
+}

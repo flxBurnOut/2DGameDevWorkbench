@@ -22,7 +22,7 @@ def _slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", value)[:60].strip("_") or "sprite"
 
 
-def build_godot_package(sheet_path: str | Path, destination: str | Path, recipe: dict[str, Any], *, anchor_x: int, ground_y: int, facing: str) -> dict[str, Any]:
+def build_godot_package(sheet_path: str | Path, destination: str | Path, recipe: dict[str, Any], *, anchor_x: int, ground_y: int, facing: str | None) -> dict[str, Any]:
     """Use exact exported regions; the caller publishes ZIP and sheet together.
 
     No original frame or game is edited. No Godot installation is required.
@@ -55,7 +55,9 @@ def build_godot_package(sheet_path: str | Path, destination: str | Path, recipe:
         raise ValueError("Godot playback FPS must be positive and finite")
     if not isinstance(recipe["loop"], bool):
         raise ValueError("Godot loop must be an explicit boolean")
-    if not 0 <= anchor_x < cell_width or not 0 <= ground_y < cell_height or facing not in ("left", "right"):
+    object_type = recipe.get("object_type", "character")
+    valid_facing = (object_type == "character" and facing in ("left", "right")) or (object_type == "interactable" and facing is None)
+    if not 0 <= anchor_x < cell_width or not 0 <= ground_y < cell_height or not valid_facing:
         raise ValueError("Godot visual anchor/facing does not match the character contract")
     animation = recipe.get("manifest_action_name") or recipe["action_id"]
     if not isinstance(animation, str) or not animation.strip() or any(ord(c) < 32 for c in animation):
@@ -67,7 +69,9 @@ def build_godot_package(sheet_path: str | Path, destination: str | Path, recipe:
         "character_id": recipe["character_id"], "action_id": recipe["action_id"],
         "animation": animation, "frame_count": count, "fps": fps, "loop": recipe["loop"],
         "cell_size": [cell_width, cell_height], "source_region_px": regions,
-        "source_facing": facing, "anchor": [anchor_x, ground_y], "visual_offset": offset,
+        **({"source_facing": facing} if facing is not None else {}),
+        **({key: recipe[key] for key in ("object_id", "object_type")} if "object_id" in recipe else {}),
+        "anchor": [anchor_x, ground_y], "visual_offset": offset,
         "sheet_sha256": sheet_sha, "diagnostic_only": recipe.get("diagnostic_only", False),
     }
     identity = hashlib.sha256(json.dumps(contract, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
@@ -100,7 +104,7 @@ def build_godot_package(sheet_path: str | Path, destination: str | Path, recipe:
 
 已有角色若需要保留其他动作，请合并此动作到原 SpriteFrames 的副本，不要用单动作资源直接替换整套动画。Forge 工程 Skill 提供单动作合并方法。请核对包内动作名与现有控制器的映射。
 
-纹理保持原始画布、透明像素和朝向（{facing}），不逐帧裁切或自动居中。示例 Sprite 的脚底原点依据预设锚点 ({anchor_x}, {ground_y}) 设置；只替换 SpriteFrames 时不改变原节点的偏移或碰撞。使用 nearest 过滤以保持像素清晰。
+纹理保持原始画布、透明像素和图像方向（{facing if facing is not None else "以参考图为准"}），不逐帧裁切或自动居中。示例 Sprite 的脚底原点依据预设锚点 ({anchor_x}, {ground_y}) 设置；只替换 SpriteFrames 时不改变原节点的偏移或碰撞。使用 nearest 过滤以保持像素清晰。
 
 包目录按作业、候选与内容区分，多个候选可共存。请保留资源路径；重命名或移动时使用 Godot 文件系统面板，让引擎更新引用。本包不含 project.godot，不修改项目配置，不附带战斗控制器或伤害触发逻辑。
 """

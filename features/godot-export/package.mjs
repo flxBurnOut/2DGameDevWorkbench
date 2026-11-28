@@ -65,7 +65,7 @@ export async function readGodotZip(bytes) {
 
 /** Makes current exports ready for an existing project's root. Never executes packaged scripts. */
 export async function prepareGodotPackage(bytes) {
-  let files = await readGodotZip(bytes);
+  const files = await readGodotZip(bytes);
   const text = (name) => decoder.decode(files.get(name));
   const json = (name) => JSON.parse(text(name));
   let kind,
@@ -73,11 +73,8 @@ export async function prepareGodotPackage(bytes) {
     spriteFrames = [],
     runtime = null,
     details = {};
-  const sceneManifest = [...files.keys()].find((p) =>
-    /^scenes\/[^/]+\/scene-manifest.json$/.test(p),
-  );
   const objectManifest = [...files.keys()].find((p) =>
-    /^addons\/workbench_interaction(?:_copyworms)?\/packages\/[^/]+\/package-manifest.json$/.test(
+    /^addons\/workbench_interaction\/packages\/[^/]+\/package-manifest.json$/.test(
       p,
     ),
   );
@@ -94,21 +91,6 @@ export async function prepareGodotPackage(bytes) {
     ({ kind, entryScenes, spriteFrames, runtime, details } = m);
     // Rebuild hashes and structural checks; metadata in an uploaded ZIP is not trusted evidence.
     files.delete(portable);
-  } else if (sceneManifest) {
-    const m = json(sceneManifest);
-    if (m.format !== 'workbench-scene-godot')
-      throw new Error('场景包清单无效。');
-    kind = 'scene';
-    entryScenes = [m.scene];
-    runtime =
-      'res://addons/workbench_interaction/runtime/v1/interaction_runtime_2d.tscn';
-    details = {
-      sceneId: m.sceneId,
-      instances: m.instances,
-      actorSlot: 'ActorSlot',
-      actorZIndex: m.actorZIndex,
-      runtimeIncludedInScene: true,
-    };
   } else if (objectManifest) {
     const m = json(objectManifest);
     if (m.format !== 'workbench-interaction-kit')
@@ -147,61 +129,12 @@ export async function prepareGodotPackage(bytes) {
       jobId: contract?.job_id,
       frameRegions: contract?.source_region_px,
     };
-  } else if (
-    files.has('map_scene.tscn') &&
-    files.has('map_export.json') &&
-    json('map_export.json').format === 'frame-ronin-engine-package'
-  ) {
-    kind = 'map';
-    const identity = await digest(
-      encoder.encode(
-        (
-          await Promise.all(
-            [...files.entries()]
-              .filter(([p]) => p.endsWith('.png') || p === 'regions.json')
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(async ([p, b]) => p + ':' + (await digest(b))),
-          )
-        ).join('\n'),
-      ),
-    );
-    const root = 'forge_maps/map-' + identity.slice(0, 20);
-    const renamed = new Map();
-    for (const [name, data] of files) {
-      if (name === 'project.godot' || name === 'INSTALL.md') continue;
-      let contents = data;
-      if (/\.(tscn|tres|gd)$/.test(name)) {
-        let source = decoder
-          .decode(data)
-          .replace(
-            /res:\/\/([^"\s)]+)/g,
-            (_, p) => 'res://' + root + '/' + safePackagePath(p),
-          );
-        // Per-map region helper is a preloadable script, not a conflicting global class.
-        if (name === 'frame_ronin_regions.gd')
-          source = source.replace(/^class_name FrameRoninRegions\r?\n/m, '');
-        contents = encoder.encode(source);
-      }
-      renamed.set(root + '/' + name, contents);
-    }
-    const regions = json('regions.json');
-    files = renamed;
-    entryScenes = ['res://' + root + '/map_scene.tscn'];
-    details = {
-      coordinateSystem: regions.coordinateSystem,
-      canvas: regions.canvas,
-      collisionCount: regions.regions?.filter((r) => r.layer === 'collision')
-        .length,
-      sourcePackage: files.has(root + '/source_state.zip')
-        ? root + '/source_state.zip'
-        : null,
-    };
   } else
     throw new Error(
-      '没有找到可用的 Godot 场景或 SpriteFrames。请先在原工具导出 Godot 包。',
+      '没有找到可用的交互物或 SpriteFrames。请先在原工具导出 Godot 包。',
     );
   if (
-    !['map', 'scene', 'interactable', 'animation'].includes(kind) ||
+    !['interactable', 'animation'].includes(kind) ||
     !Array.isArray(entryScenes) ||
     !Array.isArray(spriteFrames)
   )
@@ -242,7 +175,7 @@ export async function prepareGodotPackage(bytes) {
     )
       throw new Error('Godot 素材包不能包含项目配置、缓存或 Agent 指令。');
     if (
-      !/^(scenes|addons\/workbench_interaction(?:_copyworms)?|forge_sprites|forge_maps|forge_packages)\//.test(
+      !/^(addons\/workbench_interaction|forge_sprites|forge_packages)\//.test(
         name,
       )
     )
@@ -293,21 +226,4 @@ export async function prepareGodotPackage(bytes) {
     }),
     manifest,
   };
-}
-
-/** The editing readers keep their original map origin/layer contract. */
-export function unwrapGodotMapZip(zip) {
-  const maps = Object.keys(zip.files).filter((p) =>
-    /^forge_maps\/[^/]+\/map_export.json$/.test(p),
-  );
-  if (!maps.length) return zip;
-  if (maps.length !== 1) throw new Error('请选择只包含一张地图的源包。');
-  const prefix = maps[0].slice(0, -'map_export.json'.length),
-    result = new JSZip();
-  for (const [name, entry] of Object.entries(zip.files))
-    if (!entry.dir && name.startsWith(prefix)) {
-      const local = safePackagePath(name.slice(prefix.length));
-      result.file(local, entry.async('uint8array'));
-    }
-  return result;
 }

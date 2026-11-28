@@ -1,8 +1,27 @@
 import { sites } from '@openai/sites-vite-plugin';
 import tailwindcss from '@tailwindcss/postcss';
 import vinext from 'vinext';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
+import { workspaceIdentity } from './lib/workbench/workspace-identity.mjs';
 import hostingConfig from './.openai/hosting.json';
+import { syncUiManifest } from './scripts/sync-ui-manifest.mjs';
+
+// Pages import lib/workbench/ui-manifest.json (brand, navigation, routes)
+// instead of the full capability manifest; keep it current while building.
+function workbenchUiManifest(): Plugin {
+  return {
+    name: 'workbench-ui-manifest',
+    async buildStart() {
+      await syncUiManifest();
+    },
+    configureServer(server) {
+      server.watcher.add('workbench/manifest.json');
+      server.watcher.on('change', (file) => {
+        if (/[\\/]workbench[\\/]manifest\.json$/.test(file)) void syncUiManifest();
+      });
+    },
+  };
+}
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   '00000000-0000-4000-8000-000000000000';
@@ -34,7 +53,17 @@ const localBindingConfig = {
     : [],
 };
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ command }) => {
+  const localVars: Record<string, string> = {};
+  if (command === 'serve') {
+    for (const key of ['WORKBENCH_FRONTEND_URL', 'WORKBENCH_RUNTIME_URL', 'WORKBENCH_RUNTIME_PORT', 'WORKBENCH_RUNTIME_WORKSPACE_ID', 'SPRITE_PIPELINE_API_URL']) {
+      const value = process.env[key];
+      if (value) localVars[key] = value;
+    }
+  }
+  const testRun = process.env.WORKBENCH_TEST_RUN;
+  if (testRun && !/^[a-z0-9][a-z0-9_-]{0,79}$/i.test(testRun))
+    throw new Error('WORKBENCH_TEST_RUN must be a simple isolated build identifier.');
   // Keep Wrangler and Miniflare state project-local. These are non-secret tool
   // settings; application environment belongs in ignored `.env*` files.
   process.env.WRANGLER_WRITE_LOGS ??= 'false';
@@ -45,6 +74,9 @@ export default defineConfig(async () => {
   const { cloudflare } = await import('@cloudflare/vite-plugin');
 
   return {
+    // Vinext’s CommonJS transform recognizes prebundled ESM by node_modules/.vite.
+    ...(testRun ? { cacheDir: `work/test-runs/${testRun}/node_modules/.vite` } : {}),
+    define: { __FORGE_WORKSPACE_ID__: JSON.stringify(workspaceIdentity(import.meta.dirname)) },
     css: { postcss: { plugins: [tailwindcss()] } },
     server: {
       strictPort: true,
@@ -63,11 +95,12 @@ export default defineConfig(async () => {
       },
     },
     plugins: [
+      workbenchUiManifest(),
       vinext(),
       sites(),
       cloudflare({
         viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] },
-        config: localBindingConfig,
+        config: { ...localBindingConfig, ...(command === 'serve' ? { vars: localVars } : {}) },
       }),
     ],
   };

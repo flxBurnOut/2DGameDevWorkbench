@@ -1,5 +1,7 @@
 'use client';
-import type { ReactNode } from 'react';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import { useState, type ReactNode } from 'react';
+import { appearanceAnimation } from '@/features/interactable-editor/contract.mjs';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 import {
   type Asset,
@@ -9,6 +11,36 @@ import {
   type Shape,
   type Appearance,
 } from '@/features/interactable-editor/contract.mjs';
+
+/**
+ * Tint as a swatch plus an editable hex value. White means "no tint", so it
+ * is labelled instead of showing an empty white bar.
+ */
+export function ColorField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const plain = value.toLowerCase() === '#ffffff';
+  return (
+    <div className="ie-color-field">
+      <span className="ie-field-label">颜色</span>
+      <span className="ie-color">
+        <input type="color" aria-label="选择颜色" value={value} onChange={(e) => { setDraft(null); onChange(e.target.value); }} />
+        <input
+          aria-label="颜色值"
+          value={draft ?? value}
+          maxLength={7}
+          spellCheck={false}
+          onChange={(e) => {
+            const next = e.target.value.startsWith('#') ? e.target.value : `#${e.target.value}`;
+            setDraft(next);
+            if (/^#[0-9a-f]{6}$/i.test(next)) onChange(next.toLowerCase());
+          }}
+          onBlur={() => setDraft(null)}
+        />
+        {plain && <small>不着色</small>}
+      </span>
+    </div>
+  );
+}
 
 export function Field({
   label,
@@ -108,16 +140,16 @@ export function AssetSelect({
 }) {
   return (
     <Field label={label}>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">未设置</option>
+      <NativeSelect value={value} onChange={(e) => onChange(e.target.value)}>
+        <NativeSelectOption value="">未设置</NativeSelectOption>
         {assets
           .filter((a) => a.mime.startsWith(media))
           .map((a) => (
-            <option key={a.id} value={a.id}>
+            <NativeSelectOption key={a.id} value={a.id}>
               {a.name}
-            </option>
+            </NativeSelectOption>
           ))}
-      </select>
+      </NativeSelect>
     </Field>
   );
 }
@@ -134,14 +166,14 @@ export function ClipSelect({
 }) {
   return (
     <Field label={label}>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">未设置</option>
+      <NativeSelect value={value} onChange={(e) => onChange(e.target.value)}>
+        <NativeSelectOption value="">未设置</NativeSelectOption>
         {object.visual.clips.map((c) => (
-          <option key={c.name} value={c.name}>
+          <NativeSelectOption key={c.name} value={c.name}>
             {c.name}
-          </option>
+          </NativeSelectOption>
         ))}
-      </select>
+      </NativeSelect>
     </Field>
   );
 }
@@ -156,14 +188,14 @@ export function ShapeFields({
   return (
     <>
       <Field label="形状">
-        <select
+        <NativeSelect
           value={value.type}
           onChange={(e) => patch({ type: e.target.value as Shape['type'] })}
         >
-          <option value="rectangle">矩形</option>
-          <option value="circle">圆形</option>
-          <option value="capsule">胶囊</option>
-        </select>
+          <NativeSelectOption value="rectangle">矩形</NativeSelectOption>
+          <NativeSelectOption value="circle">圆形</NativeSelectOption>
+          <NativeSelectOption value="capsule">胶囊</NativeSelectOption>
+        </NativeSelect>
       </Field>
       <div className="ie-row">
         {value.type === 'circle' ? (
@@ -230,7 +262,7 @@ export function FeedbackFields({
     <>
       <div className="ie-row">
         <strong>反馈步骤</strong>
-        <select
+        <NativeSelect
           aria-label="添加反馈步骤"
           value=""
           onChange={(e) => {
@@ -251,12 +283,12 @@ export function FeedbackFields({
             onChange([...value, step]);
           }}
         >
-          <option value="">＋ 添加步骤</option>
-          <option value="show_text">文本</option>
-          <option value="play_animation">动画</option>
-          <option value="play_audio">音效</option>
-          <option value="wait">等待</option>
-        </select>
+          <NativeSelectOption value="">＋ 添加步骤</NativeSelectOption>
+          <NativeSelectOption value="show_text">文本</NativeSelectOption>
+          <NativeSelectOption value="play_animation">动画</NativeSelectOption>
+          <NativeSelectOption value="play_audio">音效</NativeSelectOption>
+          <NativeSelectOption value="wait">等待</NativeSelectOption>
+        </NativeSelect>
       </div>
       {value.map((s, i) => (
         <div className="ie-card" key={i}>
@@ -352,11 +384,15 @@ function AppearanceFields({
   onChange,
   assets,
   object,
+  onEditImage,
+  imageBusy,
 }: {
   value: Appearance;
   onChange: (a: Appearance) => void;
   assets: Asset[];
   object: Interactable;
+  onEditImage?: () => void;
+  imageBusy?: boolean;
 }) {
   return (
     <>
@@ -365,10 +401,13 @@ function AppearanceFields({
         value={value.assetId}
         onChange={(assetId) => onChange({ ...value, assetId })}
       />
+      {onEditImage && <><button type="button" disabled={imageBusy || !(value.assetId || object.visual.assetId) || !!appearanceAnimation(value, object.visual)} onClick={onEditImage}>局部调整此状态图片</button><p className="ie-note">{appearanceAnimation(value, object.visual) ? '此状态使用动画，静态图片调整只读；请先明确选择静态外观。' : !value.assetId ? '当前继承默认图片；采用仅覆盖此状态，默认图片与其他状态保留。' : '仅调整此状态图片；行为、动画片段和其他状态保留。'}</p></>}
+      <Check label="使用静态状态图" value={!!value.staticImage} onChange={staticImage =>
+        onChange({ ...value, staticImage, animation: staticImage ? '' : value.animation })} />
       <ClipSelect
         object={object}
         value={value.animation}
-        onChange={(animation) => onChange({ ...value, animation })}
+        onChange={(animation) => onChange({ ...value, animation, staticImage: false })}
       />
       <div className="ie-row">
         <Check
@@ -381,13 +420,7 @@ function AppearanceFields({
           value={value.solidEnabled}
           onChange={(solidEnabled) => onChange({ ...value, solidEnabled })}
         />
-        <Field label="颜色">
-          <input
-            type="color"
-            value={value.tint}
-            onChange={(e) => onChange({ ...value, tint: e.target.value })}
-          />
-        </Field>
+        <ColorField value={value.tint} onChange={(tint) => onChange({ ...value, tint })} />
       </div>
     </>
   );
@@ -397,11 +430,15 @@ export function EntryFields({
   onChange,
   assets,
   object,
+  onEditImage,
+  imageBusy,
 }: {
   value: Entry;
   onChange: (e: Entry) => void;
   assets: Asset[];
   object: Interactable;
+  onEditImage?: () => void;
+  imageBusy?: boolean;
 }) {
   return (
     <>
@@ -420,6 +457,8 @@ export function EntryFields({
         onChange={(appearance) => onChange({ ...value, appearance })}
         assets={assets}
         object={object}
+        onEditImage={onEditImage}
+        imageBusy={imageBusy}
       />
       <details>
         <summary>本条目反馈</summary>
@@ -437,10 +476,14 @@ export function BehaviorPanel({
   object,
   assets,
   edit,
+  onEditImage,
+  imageBusy,
 }: {
   object: Interactable;
   assets: Asset[];
   edit: (fn: (o: Interactable) => void) => void;
+  onEditImage?: (slot: 'toggle-state' | 'sequence-entry', index: number) => void;
+  imageBusy?: boolean;
 }) {
   const b = object.behavior;
   const addEntry = () =>
@@ -513,6 +556,8 @@ export function BehaviorPanel({
                 }
                 object={object}
                 assets={assets}
+                onEditImage={onEditImage ? () => onEditImage('toggle-state', i) : undefined}
+                imageBusy={imageBusy}
               />
             </details>
           ))}
@@ -521,7 +566,7 @@ export function BehaviorPanel({
       {b.kind === 'sequence' && (
         <>
           <Field label="最后一步之后">
-            <select
+            <NativeSelect
               value={b.onEnd}
               onChange={(e) =>
                 edit((o) => {
@@ -529,10 +574,10 @@ export function BehaviorPanel({
                 })
               }
             >
-              <option value="stop">完成并停止</option>
-              <option value="loop">循环到第一步</option>
-              <option value="stay_last">继续显示最后一步</option>
-            </select>
+              <NativeSelectOption value="stop">完成并停止</NativeSelectOption>
+              <NativeSelectOption value="loop">循环到第一步</NativeSelectOption>
+              <NativeSelectOption value="stay_last">继续显示最后一步</NativeSelectOption>
+            </NativeSelect>
           </Field>
           {b.entries.map((s, i) => (
             <details key={i} open>
@@ -575,6 +620,8 @@ export function BehaviorPanel({
                 }
                 object={object}
                 assets={assets}
+                onEditImage={onEditImage ? () => onEditImage('sequence-entry', i) : undefined}
+                imageBusy={imageBusy}
               />
             </details>
           ))}
@@ -612,7 +659,7 @@ export function BehaviorPanel({
         (b.kind === 'inspect' && !b.repeat) ||
         (b.kind === 'sequence' && b.onEnd === 'stop')) && (
         <Field label="最终完成后">
-          <select
+          <NativeSelect
             value={object.completion}
             onChange={(e) =>
               edit((o) => {
@@ -620,10 +667,10 @@ export function BehaviorPanel({
               })
             }
           >
-            <option value="remain">保留外观</option>
-            <option value="hide">隐藏</option>
-            <option value="free">释放节点</option>
-          </select>
+            <NativeSelectOption value="remain">保留外观</NativeSelectOption>
+            <NativeSelectOption value="hide">隐藏</NativeSelectOption>
+            <NativeSelectOption value="free">释放节点</NativeSelectOption>
+          </NativeSelect>
         </Field>
       )}
     </>

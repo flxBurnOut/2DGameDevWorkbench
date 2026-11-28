@@ -316,7 +316,7 @@ def test_hunyuan_ordered_images_and_fail_closed(setup,monkeypatch,finish,content
             assert result["provider"]=="hunyuan" and result["model"]=="hy-vision-2.0-instruct"
             assert "hy-test-secret" not in json.dumps(result)
         else:
-            with pytest.raises(ValidationHarnessError,match="未取得有效结论"):
+            with pytest.raises(ValidationHarnessError,match="输出未完成" if finish == 'length' else "未取得有效结论"):
                 VisionReviewer(s.settings).review(paths,"attack",f.reference_path)
         assert client.post.call_count==(2 if should_pass else 1)
         call=client.post.call_args_list[0]

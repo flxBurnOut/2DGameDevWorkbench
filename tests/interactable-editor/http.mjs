@@ -76,6 +76,8 @@ try {
         '0',
         '--var',
         `WORKBENCH_RUNTIME_URL:${base}`,
+        '--var',
+        `WORKBENCH_FRONTEND_URL:${webUrl}`,
       ],
       {
         cwd: process.cwd(),
@@ -93,9 +95,9 @@ try {
     );
     for (const stream of [web.stdout, web.stderr])
       stream.on('data', (chunk) => {
-        webLog += chunk;
+        webLog = (webLog + chunk).slice(-6000);
       });
-    let loaded = false;
+    let loaded = false, lastStatus = null, lastBody = '', lastError = '', serverFailures = 0;
     for (let n = 0; n < 90; n++) {
       if (web.exitCode !== null) throw new Error(webLog);
       try {
@@ -103,24 +105,45 @@ try {
           signal: AbortSignal.timeout(2000),
         });
         const html = await page.text();
+        lastStatus = page.status;
+        lastBody = html.replace(/<style[\s\S]*?<\/style>/g, '').replace(/<script[\s\S]*?<\/script>/g, '').replace(/<[^>]+>/g, ' ').slice(0, 2000) + '\nPayload tail: ' + html.slice(-1800);
+        if (page.status >= 500) serverFailures++; else serverFailures = 0;
         if (page.ok && html.includes('ie-workspace')) {
           assert(
-            html.includes('导出 copyWorms 兼容版'),
-            'Compatible export button must be rendered.',
+            !html.includes('copyWorms'),
+            'The retired compatible export must not be rendered.',
           );
           loaded = true;
           break;
         }
-      } catch {
-        /* compiler starting */
+      } catch (error) {
+        lastError = error.message;
       }
+      if (serverFailures >= 3) break;
       await new Promise((resolve) => setTimeout(resolve, 300));
     }
-    assert(loaded, webLog || 'Web page did not compile');
+    assert(loaded, `Production editor readiness failed. Last HTTP status: ${lastStatus}; error: ${lastError}\nResponse: ${lastBody}\nLog tail: ${webLog}`);
     api = `${webUrl}/api/workbench`;
     console.log(
       `Isolated production editor served at ${webUrl}/tools/interactable-editor`,
     );
+    const create = await fetch(`${api}/documents`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'interactable', name: 'Web proxy project', commandId: 'web-create' }) });
+    assert.equal(create.status, 200, await create.clone().text());
+    const shared = (await create.json()).document;
+    const applied = await fetch(`${api}/documents/${shared.id}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: shared.revision, commandId: 'web-rename', commands: [{ type: 'rename', name: 'Shared web revision' }] }) });
+    assert.equal(applied.status, 200, await applied.clone().text());
+    const updated = (await applied.json()).document;
+    const metadata = await fetch(`${api}/documents/${shared.id}?metadataOnly=true`).then(value => value.json());
+    assert.equal(metadata.document.revision, updated.revision);
+    assert.equal(metadata.document.content, undefined);
+    const old = await fetch(`${api}/documents/${shared.id}?revision=1`).then(value => value.json());
+    assert.equal(old.document.name, 'Web proxy project');
+    const conflict = await fetch(`${api}/documents/${shared.id}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: 1, commandId: 'web-stale', commands: [{ type: 'rename', name: 'Stale' }] }) });
+    assert.equal(conflict.status, 409);
+    const settings = await fetch(`${api}/image-assets/settings`);
+    assert.equal(settings.status, 200);
+    assert.ok((await settings.json()).providers.some(provider => provider.id === 'gpt-image-2.6'));
+    console.log('Production document proxies passed: streamed create/apply, metadata, historical read, CAS conflict and Image 2.6 settings.');
   }
   const png = await sharp({
     create: { width: 12, height: 16, channels: 4, background: '#77ffbb' },
@@ -172,8 +195,7 @@ try {
   project.objects[0].content.pages = ['中文 "文本"\n第二行'];
   project.objects.push(createObject('pickup'));
   const selected = project.objects[0].definitionId;
-  for (const targetProfile of ['generic', 'copyworms']) {
-    project.objects[0].copyworms.objectId = 'notice';
+  for (const targetProfile of ['generic']) {
     const response = await fetch(`${api}/tasks`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -192,17 +214,8 @@ try {
     assert.equal(task.status, 'completed');
     const output = task.outputs.find((p) => p.endsWith('.zip'));
     assert(output);
-    assert(
-      output.endsWith(
-        targetProfile === 'copyworms'
-          ? '/interactables-copyworms.zip'
-          : '/interactables.zip',
-      ),
-    );
-    const kitRoot =
-      targetProfile === 'copyworms'
-        ? 'addons/workbench_interaction_copyworms'
-        : 'addons/workbench_interaction';
+    assert(output.endsWith('/interactables.zip'));
+    const kitRoot = 'addons/workbench_interaction';
     const download = await fetch(
       `${api}/artifacts?path=${encodeURIComponent(output)}`,
     );

@@ -17,53 +17,162 @@ import {
   readInteractableAsset,
 } from '../lib/workbench/interactable-assets.mjs';
 
+import { agentRequest } from '../lib/workbench/agent-api.mjs';
+import { isPaidTask } from '../lib/workbench/paid-operations.mjs';
 import {
-  agentRequest,
   archiveTaskHistory,
-  findCapability,
+  commandTaskId,
   listTaskPage,
-  loadManifest,
-  repositoryRoot,
+  prepareAgentTask,
+  publicTaskRecord,
   runConnector,
   refreshTask,
   readTask,
   summarizeTask,
-} from '../lib/workbench/runtime.mjs';
+} from '../lib/workbench/task-runtime.mjs';
+import { findCapability, loadManifest, repositoryRoot } from '../lib/workbench/workbench-manifest.mjs';
 import {
-  getPublicMapGenerationSettings,
-  updateMapGenerationSettings,
-} from '../lib/workbench/map-generation-settings.mjs';
+  getPublicImageGenerationSettings,
+  updateImageGenerationSettings,
+} from '../lib/workbench/image-generation-settings.mjs';
 
-import { referenceServiceRequest } from '../lib/workbench/adapters/reference-art.mjs';
-import { exportSceneRequest } from '../lib/workbench/scene-export.mjs';
+import { previewPropConversion, referenceServiceRequest } from '../lib/workbench/adapters/reference-art.mjs';
 import { frontendHeartbeat } from '../lib/workbench/preview-follow.mjs';
 
+import { workspaceIdentity } from '../lib/workbench/workspace-identity.mjs';
+import { paidWorkspaceIdentity } from '../lib/workbench/paid-workspace.mjs';
+import { bridgeProtocolVersion, pairedBridgePrefix, paidBridgePrefix, paidWorkspacePath } from '../lib/workbench/service-endpoints.mjs';
 import {randomUUID} from 'node:crypto';
-import {selectedGameProject,selectGameProject,deliverGodotPackage,listGameExports,readGamePackageRequest} from '../lib/workbench/game-export.mjs';
+import {selectedGameProject,selectGameProject,deliverGodotPackage,listGameExports,readGameExportSummary,readGamePackageRequest} from '../lib/workbench/game-export.mjs';
+import {gameExportInputs} from '../lib/workbench/game-export-contract.mjs';
 import {browseGameProjects} from '../lib/workbench/game-project-browser.mjs';
 import {prepareGodotPackage} from '../features/godot-export/package.mjs';
 import {requestBinary, endpointUrl, bearerHeaders} from '../lib/workbench/adapters/http.mjs';
+const workspaceId = workspaceIdentity(repositoryRoot);
 const gameExportToken=randomUUID();
 const requireGameToken=request=>{if(request.headers['x-forge-game-token']!==gameExportToken)throw new Error('项目导出会话已失效，请关闭导出窗口后重试。');};
 
-import { readMapProject, saveMapProjectRequest } from '../lib/workbench/map-projects.mjs';
+import { documentRequest, readDocumentMedia, uploadDocumentMedia } from '../lib/workbench/editor-documents.mjs';
+import { readImageEditReceipt, sessionMedia } from '../lib/workbench/image-edits.mjs';
+import { MAX_DOCUMENT_MEDIA_BYTES } from '../lib/workbench/document-media.mjs';
+import { inspectAssetPackage, commitAssetPackages, readAssetPackageCommit, readAssetPackagePreview } from '../lib/workbench/asset-packages.mjs';
+import { ASSET_PACKAGE_LIMITS } from '../lib/workbench/asset-package-contract.mjs';
+import { configuredFrontendUrl, createRuntimeRequestPolicy, runtimeRequestFailure, jsonRequestFailure } from '../lib/workbench/request-security.mjs';
 
 const host = process.env.WORKBENCH_RUNTIME_HOST || '127.0.0.1';
 const port = readPort(process.env.WORKBENCH_RUNTIME_PORT, 8790);
 const maxRequestBytes = 50 * 1024 * 1024;
+const requestPolicy = createRuntimeRequestPolicy({
+  host, port, runtimeUrl: process.env.WORKBENCH_RUNTIME_URL?.trim(),
+  frontendUrl: configuredFrontendUrl(),
+});
 
 const server = http.createServer(async (request, response) => {
   try {
+    const failure = runtimeRequestFailure(request, requestPolicy);
+    if (failure) { sendJson(response, failure.status, { error: failure.error }); return; }
+    if (request.headers['x-forge-workspace'] && request.headers['x-forge-workspace'] !== workspaceId) {
+      sendJson(response, 409, { code: 'WORKSPACE_MISMATCH', error: 'Bridge 正在服务另一份工作区。请核对连接地址。' });
+      return;
+    }
     const url = new URL(
       request.url ?? '/',
       `http://${request.headers.host ?? `${host}:${port}`}`,
     );
+    const paired = url.pathname.startsWith(pairedBridgePrefix + '/');
+    if (paired) {
+      if (request.headers['x-forge-workspace'] !== workspaceId) {
+        sendJson(response, 409, { code: 'WORKSPACE_MISMATCH', error: '请求缺少匹配的工作区指纹。' });
+        return;
+      }
+      url.pathname = url.pathname.slice(pairedBridgePrefix.length);
+    }
+    const paid = paired && url.pathname.startsWith(paidBridgePrefix + '/');
+    if (paid || (request.method === 'GET' && url.pathname === paidWorkspacePath)) {
+      const paidWorkspaceId = await paidWorkspaceIdentity(repositoryRoot, await loadManifest(), workspaceId);
+      if (!paid) {
+        sendJson(response, 200, { service: '2d-game-workbench-runtime', version: bridgeProtocolVersion, workspaceId, paidWorkspaceId });
+        return;
+      }
+      if (request.headers['x-forge-paid-workspace'] !== paidWorkspaceId) {
+        sendJson(response, 409, { code: 'WORKSPACE_MISMATCH', error: '付费任务数据目录已切换。请切回原工作区恢复。' });
+        return;
+      }
+      response.setHeader('x-forge-paid-workspace', paidWorkspaceId);
+      url.pathname = url.pathname.slice(paidBridgePrefix.length);
+    }
     if (request.method === 'GET' && url.pathname === '/health') {
       sendJson(response, 200, {
         ok: true,
-        version: 1,
+        version: bridgeProtocolVersion,
+        workspaceId,
         service: '2d-game-workbench-runtime',
       });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/v1/image-edit/receipt') {
+      sendJson(response, 200, await readImageEditReceipt(repositoryRoot, await loadManifest(),
+        url.searchParams.get('commandId'), url.searchParams.get('requestHash')));
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/v1/image-edit/media') {
+      const media = await sessionMedia(repositoryRoot, await loadManifest(), Object.fromEntries(url.searchParams));
+      response.writeHead(200, { 'content-type': media.mime, 'content-length': media.bytes.length,
+        'cache-control': 'private, no-store', etag: '"' + media.sha256 + '"', 'x-content-type-options': 'nosniff' });
+      response.end(media.bytes);
+      return;
+    }
+    if (url.pathname.startsWith('/v1/document-media/')) {
+      try {
+        const manifest = await loadManifest(), key = url.pathname.slice('/v1/document-media/'.length);
+        if (request.method === 'PUT') {
+          const chunks = []; let total = 0;
+          for await (const chunk of request) {
+            total += chunk.length;
+            if (total > MAX_DOCUMENT_MEDIA_BYTES) throw Object.assign(new Error('媒体超过 256 MB。'), { status: 413 });
+            chunks.push(chunk);
+          }
+          const mime = (request.headers['content-type'] || '').split(';')[0];
+          sendJson(response, 200, { media: await uploadDocumentMedia(repositoryRoot, manifest, key, mime, Buffer.concat(chunks)) });
+        } else if (['GET', 'HEAD'].includes(request.method)) {
+          const result = await readDocumentMedia(repositoryRoot, manifest, key, { metadataOnly: request.method === 'HEAD' });
+          response.writeHead(200, { 'content-type': result.metadata.mime, 'content-length': String(result.metadata.bytes),
+            'cache-control': 'private, max-age=31536000, immutable', etag: `"${result.metadata.sha256}"`, 'x-content-type-options': 'nosniff' });
+          response.end(result.bytes);
+        } else sendJson(response, 405, { error: 'Unsupported media method.' });
+      } catch (error) { sendJson(response, error.status || 400, documentFailure(error)); }
+      return;
+    }
+    if (url.pathname === '/v1/documents' || url.pathname.startsWith('/v1/documents/')) {
+      try {
+        const manifest = await loadManifest();
+        let operation, input;
+        if (url.pathname === '/v1/documents') {
+          if (request.method === 'GET') {
+            operation = 'documents';
+            input = { ...(url.searchParams.has('kind') ? { kind: url.searchParams.get('kind') } : {}), ...(url.searchParams.has('limit') ? { limit: Number(url.searchParams.get('limit')) } : {}), ...(url.searchParams.has('offset') ? { offset: Number(url.searchParams.get('offset')) } : {}) };
+          } else if (request.method === 'POST') { operation = 'document-create'; input = await readJsonBody(request, 350 * 1024 * 1024); }
+        } else {
+          const parts = url.pathname.slice('/v1/documents/'.length).split('/');
+          const documentId = decodeURIComponent(parts[0]);
+          if (parts.length === 1 && request.method === 'GET') {
+            operation = 'document-get'; input = { documentId, ...(url.searchParams.has('revision') ? { revision: Number(url.searchParams.get('revision')) } : {}), ...(['metadata', 'metadataOnly'].some(key => url.searchParams.get(key) === 'true') ? { metadataOnly: true } : {}) };
+          } else if (parts.length === 2 && request.method === 'GET' && parts[1] === 'motion-bindings') {
+            operation = 'document-motion-bindings'; input = { documentId, ...(url.searchParams.has('definitionId') ? { definitionId: url.searchParams.get('definitionId') } : {}) };
+          } else if (parts.length === 2 && request.method === 'POST' && ['apply', 'save', 'restore', 'validate', 'simulate', 'adopt-image'].includes(parts[1])) {
+            operation = `document-${parts[1]}`; input = { ...await readJsonBody(request, 350 * 1024 * 1024), documentId };
+          }
+        }
+        if (!operation) { sendJson(response, 405, { error: 'Unsupported document route or method.' }); return; }
+        sendJson(response, 200, await documentRequest(repositoryRoot, manifest, operation, input, { media: url.searchParams.get('media') === 'references' ? 'references' : 'embedded' }));
+      } catch (error) { sendJson(response, error.status || 400, documentFailure(error)); }
+      return;
+    }
+    if (url.pathname === '/v1/image-assets/settings' && ['GET', 'POST'].includes(request.method)) {
+      try {
+        const { connector } = findCapability(await loadManifest(), 'image-assets');
+        sendJson(response, 200, request.method === 'GET' ? getPublicImageGenerationSettings(connector) : updateImageGenerationSettings(connector, await readJsonBody(request)));
+      } catch (error) { sendJson(response, error.status || 400, { error: error.message }); }
       return;
     }
     if(url.pathname.startsWith('/v1/game-export/')) {
@@ -72,6 +181,20 @@ const server = http.createServer(async (request, response) => {
         const manifest=await loadManifest();
         const action=url.pathname.slice('/v1/game-export/'.length);
         if(request.method==='GET' && action==='settings') {sendJson(response,200,{token:gameExportToken,project:await selectedGameProject(repositoryRoot,manifest),...(await listGameExports(repositoryRoot,manifest,{pendingOnly:false,limit:10}))});return;}
+        if(request.method==='GET' && action==='history') {
+          const query = Object.fromEntries(url.searchParams);
+          if(query.pendingOnly !== undefined && !['true','false'].includes(query.pendingOnly)) throw new Error('无效的交付记录筛选。');
+          const input = gameExportInputs['game-exports'].parse({ ...query,
+            pendingOnly: query.pendingOnly === 'true',
+            ...(query.offset !== undefined ? { offset: Number(query.offset) } : {}),
+            ...(query.limit !== undefined ? { limit: Number(query.limit) } : {}),
+          });
+          sendJson(response,200,await listGameExports(repositoryRoot,manifest,input));return;
+        }
+        if(request.method==='GET' && action==='record') {
+          const input = gameExportInputs['game-export'].parse(Object.fromEntries(url.searchParams));
+          sendJson(response,200,await readGameExportSummary(repositoryRoot,manifest,input));return;
+        }
         if(request.method!=='POST')throw new Error('Unsupported method.');
         requireGameToken(request);
         if(action==='browse') {sendJson(response,200,await browseGameProjects(repositoryRoot,await readJsonBody(request)));return;}
@@ -100,7 +223,41 @@ const server = http.createServer(async (request, response) => {
           response.writeHead(200,{'content-type':'application/zip','cache-control':'no-store','content-length':prepared.bytes.length});response.end(prepared.bytes);return;
         }
         throw new Error('Unknown game export action.');
-      } catch(error) {sendJson(response,400,{error:error.message});}
+      } catch (error) {
+        sendJson(response, error.status || (error.code === 'ENOENT' ? 404 : 400), {
+          error: error.message,
+          ...(error.status && error.code ? { code: error.code } : {}),
+        });
+      }
+      return;
+    }
+    if (url.pathname.startsWith('/v1/assets/packages/')) {
+      try {
+        const manifest = await loadManifest();
+        if (request.method === 'POST' && url.pathname === '/v1/assets/packages/inspect') {
+          const length = Number(request.headers['content-length']);
+          if (Number.isFinite(length) && length > ASSET_PACKAGE_LIMITS.uploadBytes) throw Object.assign(new Error('素材包超过 768 MiB 上传上限。'), { status: 413 });
+          const chunks = []; let total = 0;
+          for await (const chunk of request) {
+            total += chunk.length;
+            if (total > ASSET_PACKAGE_LIMITS.uploadBytes) throw Object.assign(new Error('素材包超过 768 MiB 上传上限。'), { status: 413 });
+            chunks.push(chunk);
+          }
+          const filename = decodeURIComponent(String(request.headers['x-forge-filename'] || 'forge-assets.zip'));
+          const bytes = Buffer.concat(chunks);
+          chunks.length = 0;
+          sendJson(response, 200, await inspectAssetPackage(repositoryRoot, manifest, { bytes, filename }));
+        } else if (request.method === 'POST' && url.pathname === '/v1/assets/packages/commit') {
+          sendJson(response, 200, await commitAssetPackages(repositoryRoot, manifest, await readJsonBody(request, 1024 * 1024)));
+        } else if (request.method === 'GET' && url.pathname === '/v1/assets/packages/commit') {
+          const commit = await readAssetPackageCommit(repositoryRoot, manifest, url.searchParams.get('commandId'));
+          sendJson(response, commit ? 200 : 404, commit?.result || { error: '没有找到此导入命令。' });
+        } else if (request.method === 'GET' && url.pathname === '/v1/assets/packages/preview') {
+          const preview = await readAssetPackagePreview(repositoryRoot, manifest, { inspectionId: url.searchParams.get('inspectionId'), candidateId: url.searchParams.get('candidateId'), frame: Number(url.searchParams.get('frame') || 0) });
+          response.writeHead(200, { 'content-type': preview.mime, 'content-length': preview.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+          response.end(preview.bytes);
+        } else sendJson(response, 405, { error: 'Unsupported package route or method.' });
+      } catch (error) { sendJson(response, error.status || 400, { error: error.message }); }
       return;
     }
     if (request.method === 'POST' && url.pathname === '/v1/assets/import') {
@@ -140,28 +297,15 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/v1/assets/preview') {
       const assetId = url.searchParams.get('assetId');
       if (!assetId || assetId.length > 500) throw new Error('Invalid assetId.');
-      const preview = await readAssetPreview(await loadManifest(), assetId, url.searchParams.get('projectRevision') ?? undefined);
+      const preview = await readAssetPreview(await loadManifest(), assetId, {
+        task: url.searchParams.get('task'), batch: url.searchParams.get('batch'), origin: url.searchParams.get('origin'),
+      });
       response.writeHead(200, {
         'Content-Type': preview.mime,
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
       });
       response.end(preview.bytes);
-      return;
-    }
-    if (
-      request.method === 'POST' &&
-      url.pathname === '/v1/scene-composer/export'
-    ) {
-      try {
-        sendJson(
-          response,
-          200,
-          await exportSceneRequest(request, repositoryRoot),
-        );
-      } catch (error) {
-        sendJson(response, 400, { error: error.message });
-      }
       return;
     }
     if (request.method === 'POST' && url.pathname === '/v1/frontend/heartbeat') {
@@ -172,34 +316,29 @@ const server = http.createServer(async (request, response) => {
       }
       return;
     }
-    if (url.pathname.startsWith('/v1/map-stitcher/projects/') && ['GET', 'PUT'].includes(request.method)) {
-      try {
-        const id = decodeURIComponent(url.pathname.slice('/v1/map-stitcher/projects/'.length));
-        if (request.method === 'PUT') sendJson(response, 200, await saveMapProjectRequest(request, repositoryRoot, id));
-        else {
-          const { bytes, record } = await readMapProject(repositoryRoot, await loadManifest(), id);
-          response.writeHead(200, { 'Content-Type': 'application/zip', 'Cache-Control': 'no-store',
-            'X-Map-Revision': String(record.revision), 'X-Content-Type-Options': 'nosniff' });
-          response.end(bytes);
-        }
-      } catch (error) { sendJson(response, error.status || 400, { error: error.message }); }
-      return;
-    }
-    if (request.method === 'POST' && url.pathname.startsWith('/v1/agent/')) {
-      const operation = url.pathname.slice('/v1/agent/'.length);
+    const webImageEdit = url.pathname === '/v1/web/image-edit/paid' || url.pathname === '/v1/web/image-edit/local';
+    if (request.method === 'POST' && (webImageEdit || url.pathname.startsWith('/v1/agent/'))) {
+      const operation = webImageEdit ? 'image-edit' : url.pathname.slice('/v1/agent/'.length);
       if(['export-to-game','install-game-export','complete-game-export'].includes(operation))requireGameToken(request);
       try {
+        const input = await readJsonBody(request, operation.startsWith('document-') ? 350 * 1024 * 1024 : maxRequestBytes);
+        if (webImageEdit && input?.operation?.type === 'ai-edit' &&
+            (url.pathname !== '/v1/web/image-edit/paid' || !paid)) {
+          sendJson(response, 409, { code: 'IMAGE_SUBMISSION_UNKNOWN', error: '请刷新页面，在原工作区恢复 AI 修改请求。' });
+          return;
+        }
         sendJson(
           response,
           200,
           await agentRequest(
             await loadManifest(),
             operation,
-            await readJsonBody(request),
+            input,
+            { documentAuthority: true },
           ),
         );
       } catch (error) {
-        sendJson(response, 400, { error: error.message });
+        sendJson(response, error.status || 400, documentFailure(error));
       }
       return;
     }
@@ -240,6 +379,15 @@ const server = http.createServer(async (request, response) => {
         sendJson(response, 400, {
           error: error instanceof Error ? error.message : String(error),
         });
+      }
+      return;
+    }
+    if (url.pathname === '/v1/reference-art/convert-prop/preview' && request.method === 'POST') {
+      try {
+        const capability = findCapability(await loadManifest(), 'reference-art');
+        sendJson(response, 200, await previewPropConversion(capability.connector, await readJsonBody(request)));
+      } catch (error) {
+        sendJson(response, error.status || 400, { error: error.message });
       }
       return;
     }
@@ -285,15 +433,17 @@ const server = http.createServer(async (request, response) => {
       }
       return;
     }
-    if (request.method === 'GET' && url.pathname.startsWith('/v1/tasks/')) {
+    if (request.method === 'GET' && (url.pathname.startsWith('/v1/tasks/') ||
+        (url.pathname === '/v1/tasks' && url.searchParams.has('commandId')))) {
       const manifest = await loadManifest();
-      const id = decodeURIComponent(url.pathname.slice('/v1/tasks/'.length));
+      const id = url.pathname === '/v1/tasks' ? commandTaskId(url.searchParams.get('commandId')) :
+        decodeURIComponent(url.pathname.slice('/v1/tasks/'.length));
       const result =
         url.searchParams.get('refresh') === 'true'
           ? await refreshTask(manifest, id)
           : { task: await readTask(manifest, id) };
       sendJson(response, 200, {
-        task: result.task,
+        task: publicTaskRecord(result.task, url.searchParams.get('detail') === 'true'),
         ...(result.refreshError ? { refreshError: result.refreshError } : {}),
       });
       return;
@@ -308,52 +458,25 @@ const server = http.createServer(async (request, response) => {
       const manifest = await loadManifest();
       const limit = Number(url.searchParams.get('limit') ?? 30);
       const refresh = url.searchParams.get('refresh') === 'true';
-      sendJson(response, 200, await listTaskPage(manifest, {
+      const detail = url.searchParams.get('detail') === 'true';
+      const page = await listTaskPage(manifest, {
         limit,
         offset: Number(url.searchParams.get('offset') ?? 0),
         query: url.searchParams.get('query') ?? '',
         capabilityId: url.searchParams.get('capabilityId') || undefined,
         status: url.searchParams.get('status') || undefined,
         snapshot: url.searchParams.get('snapshot') || undefined,
+        since: url.searchParams.get('since') || undefined,
         refresh,
-      }));
+        detail,
+      });
+      sendJson(response, 200, { ...page, tasks: page.tasks.map(task => publicTaskRecord(task, detail)) });
       return;
     }
-    if (
-      request.method === 'GET' &&
-      url.pathname === '/v1/map-stitcher/settings'
-    ) {
-      const manifest = await loadManifest();
-      const capability = findCapability(manifest, 'map-stitcher');
-      sendJson(
-        response,
-        200,
-        getPublicMapGenerationSettings(capability.connector),
-      );
-      return;
-    }
-    if (
-      request.method === 'POST' &&
-      url.pathname === '/v1/map-stitcher/settings'
-    ) {
-      const body = await readJsonBody(request);
-      const manifest = await loadManifest();
-      const capability = findCapability(manifest, 'map-stitcher');
-      try {
-        sendJson(
-          response,
-          200,
-          updateMapGenerationSettings(capability.connector, body),
-        );
-      } catch (error) {
-        sendJson(response, 400, {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return;
-    }
-    if (request.method === 'POST' && url.pathname === '/v1/tasks') {
-      const body = await readJsonBody(request);
+    if (request.method === 'POST' && ['/v1/tasks', '/v1/tasks/prepare', '/v1/web/tasks'].includes(url.pathname)) {
+      // Image task inputs permit 80 MiB of raw reference media; JSON base64
+      // overhead fits within 120 MiB. Each adapter retains its narrower limits.
+      const body = await readJsonBody(request, 120 * 1024 * 1024);
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         sendJson(response, 400, {
           status: 'failed',
@@ -368,11 +491,17 @@ const server = http.createServer(async (request, response) => {
         });
         return;
       }
+      // An older tab can retain a journal after this origin switches workspaces.
+      if ((url.pathname === '/v1/web/tasks' || (paired && !paid && url.pathname === '/v1/tasks')) &&
+          body.commandId && isPaidTask(body.capabilityId, body.input.operation)) {
+        sendJson(response, 409, { code: 'WORKSPACE_REQUIRED', error: '请刷新页面，在原工作区恢复付费任务。' });
+        return;
+      }
       const manifest = await loadManifest();
       const capability = findCapability(manifest, body.capabilityId);
-      const result = summarizeTask(
-        await runConnector(manifest, capability, body.input),
-      );
+      const options = { commandId: body.commandId };
+      const execute = url.pathname.endsWith('/prepare') ? prepareAgentTask : runConnector;
+      const result = summarizeTask(await execute(manifest, capability, body.input, options));
       const status =
         result.status === 'running' ||
         result.status === 'awaiting_configuration'
@@ -391,9 +520,11 @@ const server = http.createServer(async (request, response) => {
     const validation =
       message.startsWith('Input validation failed:') ||
       message.startsWith('Unknown capability');
-    sendJson(response, validation ? 400 : 500, {
+    sendJson(response, error.status || (validation ? 400 : 500), {
       status: 'failed',
       error: message,
+      ...(error.status && error.code ? { code: error.code } : {}),
+      ...(error.taskId ? { taskId: error.taskId } : {}),
     });
   }
 });
@@ -416,19 +547,25 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => server.close(() => process.exit(0)));
 }
 
-async function readJsonBody(request) {
+async function readJsonBody(request, maximumBytes = maxRequestBytes) {
+  const failure = jsonRequestFailure(request.headers);
+  if (failure) throw Object.assign(new Error(failure.error), { status: failure.status });
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {
     total += chunk.length;
-    if (total > maxRequestBytes) throw new Error('Request body exceeds 50 MB.');
+    if (total > maximumBytes) throw Object.assign(new Error('Request body exceeds the permitted size.'), { status: 413 });
     chunks.push(chunk);
   }
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } catch {
-    throw new Error('Request body must be valid JSON.');
+    throw Object.assign(new Error('Request body must be valid JSON.'), { status: 400, code: 'INVALID_JSON' });
   }
+}
+
+function documentFailure(error) {
+  return { error: error.message, ...(error.code ? { code: error.code } : {}), ...(error.currentRevision !== undefined ? { currentRevision: error.currentRevision } : {}), ...(error.expectedRevision !== undefined ? { expectedRevision: error.expectedRevision } : {}), ...(error.editId ? { editId: error.editId } : {}), ...(error.taskId ? { taskId: error.taskId } : {}) };
 }
 
 async function sendArtifact(response, requestedPath) {
@@ -444,6 +581,11 @@ async function sendArtifact(response, requestedPath) {
   const relative = path.relative(outputRoot, resolved);
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     sendJson(response, 403, { error: 'Artifact path is outside outputs/.' });
+    return;
+  }
+  // Runtime recovery files can contain the active worker's private lease.
+  if (/^\.(?:background-lease|task-publication)\.json(?:\.|$)/i.test(path.basename(resolved))) {
+    sendJson(response, 403, { error: 'This file is reserved for task recovery.' });
     return;
   }
   const info = await stat(resolved);

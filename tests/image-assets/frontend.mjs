@@ -1,0 +1,90 @@
+import assert from 'node:assert/strict';
+import sharp from 'sharp';
+import { createHash } from 'node:crypto';
+import {
+  imageAssetKind, imageAssetPath, imageReferenceUpload, readImageAsset, storeTaskImageReference, storeInlineTaskImages,
+} from '../../features/image-assets/browser-client.mjs';
+import { readImagePropAsset, applyPropArt } from '../../features/interactable-editor/prop-art.mjs';
+import { createProject } from '../../features/interactable-editor/contract.mjs';
+import { buildGodotPackage } from '../../features/interactable-editor/godot-builder.mjs';
+import { readSourcePackage } from '../../features/interactable-editor/source-package.mjs';
+
+const png = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: '#00000000' } })
+  .composite([{ input: await sharp({ create: { width: 40, height: 60, channels: 4, background: '#f6b63f' } }).png().toBuffer(), left: 480, top: 470 }]).png().toBuffer();
+const sha256 = createHash('sha256').update(png).digest('hex');
+let taskId = 'image-prop-fixture', kind = 'prop', status = 'completed', tamper = false, width = 1024, transparent = true, local = false;
+const calls = [];
+const task = () => ({ id: taskId, capabilityId: 'image-assets', status, input: { operation: local ? 'process-image' : kind === 'prop' ? 'generate-prop' : 'edit-image', ...(local || kind !== 'prop' ? { kind } : {}), name: '宝箱' }, outputs: [`outputs/image-assets/${taskId}/image.png`, `outputs/image-assets/${taskId}/result.json`] });
+const request = async (url, options) => {
+  calls.push([url, options?.method || 'GET']);
+  if (url.startsWith('/api/workbench/tasks/')) return Response.json({ task: task() });
+  const path = new URL(url, 'http://localhost').searchParams.get('path');
+  if (path.endsWith('/result.json')) return Response.json({ image: 'image.png', kind, width, height: 1024, sha256, hasAlpha: true, hasTransparency: transparent, provider: 'gpt-image-2.6', model: 'gpt-image-2.6' });
+  if (path.endsWith('/image.png')) return new Response(tamper ? Buffer.concat([png, Buffer.from('changed')]) : png, { headers: { 'content-type': 'image/png' } });
+  throw new Error(`Unexpected request: ${url}`);
+};
+assert.equal(imageAssetKind(task()), 'prop');
+assert.equal(imageAssetKind({ capabilityId: 'image-assets', input: { operation: 'generate-background' } }), undefined);
+assert.match(imageAssetPath(task()), /image\.png$/);
+const image = await readImageAsset(taskId, 'prop', request);
+assert.deepEqual(image.generation, { sourceTaskId: taskId, sha256 });
+assert.equal(image.width, 1024, 'new prop images retain their real size');
+assert.deepEqual(Buffer.from(image.bytes), png);
+const asset = await readImagePropAsset(taskId, request);
+const project = createProject(), object = project.objects[0];
+object.visual.idleAnimation = 'old_idle'; object.visual.focusAnimation = 'old_focus';
+const behavior = structuredClone(object.behavior);
+const original = JSON.stringify(project);
+const adopted = applyPropArt(project, { projectId: project.projectId, definitionId: object.definitionId, previousAssetId: object.visual.assetId }, asset);
+assert.equal(JSON.stringify(project), original);
+assert.equal(adopted.projectId, project.projectId);
+assert.equal(adopted.objects[0].definitionId, object.definitionId);
+assert.equal(adopted.objects[0].visual.assetId, asset.id);
+assert.equal(adopted.objects[0].visual.idleAnimation, '');
+assert.equal(adopted.objects[0].visual.focusAnimation, '');
+assert.deepEqual(adopted.objects[0].behavior, behavior);
+assert.deepEqual(adopted.assets.find((item) => item.id === asset.id).generation, image.generation);
+assert.throws(() => applyPropArt(adopted, { projectId: project.projectId, definitionId: object.definitionId, previousAssetId: object.visual.assetId }, asset), /图片已被修改/);
+taskId = 'image-prop-another';
+const other = await readImagePropAsset(taskId, request);
+assert.notEqual(other.id, asset.id, 'equal bytes from different tasks keep distinct provenance');
+local = true; taskId = 'image-prop-local';
+const localAsset = await readImagePropAsset(taskId, request);
+assert.equal(localAsset.generation.sourceTaskId, taskId, 'Local processing keeps its own derived task identity on adoption.');
+local = false;
+tamper = true;
+await assert.rejects(readImageAsset(taskId, 'prop', request), /文件已变化/);
+tamper = false; width = 1536;
+await assert.rejects(readImageAsset(taskId, 'prop', request), /尺寸/);
+width = 1024; transparent = false;
+await assert.rejects(readImageAsset(taskId, 'prop', request), /透明背景/);
+transparent = true; kind = 'background';
+await assert.rejects(readImageAsset(taskId, 'prop', request), /类型正确/);
+status = 'running';
+await assert.rejects(readImageAsset(taskId, 'background', request), /已完成/);
+assert(calls.every(([, method]) => method === 'GET'), 'adoption never submits generation');
+assert.match(await imageReferenceUpload(new File([png], 'ref.png', { type: 'image/png' })), /^data:image\/png;base64,/);
+await assert.rejects(imageReferenceUpload(new File(['no'], 'ref.svg', { type: 'image/svg+xml' })), /PNG/);
+const mediaRef = `/api/workbench/document-media/${sha256}.png`;
+let imageUploads = 0;
+const upload = async (url, init) => {
+  assert.equal(url, mediaRef);
+  assert.equal(init.method, 'PUT');
+  assert.equal(init.headers['content-type'], 'image/png');
+  assert.deepEqual(Buffer.from(init.body), png);
+  imageUploads++;
+  return Response.json({ media: { reference: url } });
+};
+assert.equal(await storeTaskImageReference(new File([png], 'ref.png', { type: 'image/png' }), upload), mediaRef);
+const inline = `data:image/png;base64,${png.toString('base64')}`;
+assert.deepEqual(await storeInlineTaskImages({ operation: 'generate-prop', references: [inline, mediaRef] }, upload), {
+  operation: 'generate-prop', references: [mediaRef, mediaRef],
+});
+assert.equal(imageUploads, 2, 'An existing media reference does not upload the image again.');
+const archive = await buildGodotPackage({ project: adopted });
+const restored = await readSourcePackage(archive.bytes);
+assert.deepEqual(restored.assets.find(item => item.id === asset.id).generation, image.generation);
+const changed = structuredClone(adopted);
+changed.assets.find(item => item.id === asset.id).generation.sha256 = '0'.repeat(64);
+await assert.rejects(buildGodotPackage({ project: changed }), /已变化/);
+console.log('Image-assets frontend adoption: variable-size transparent props, exact task/type, SHA and dimensions, target guards, reference uploads and interactable provenance roundtrip passed. No paid generation.');

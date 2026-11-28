@@ -1,22 +1,73 @@
-# 交互物品原图生成
+# 交互物品原图生成与转换
 
-> 当前能力：reference-art / generate / subject=prop。地图制作仍由用户在前端完成。
+> 默认物品生图能力：`image-assets`（`generate-prop` / `edit-image` / `process-image`）；128×128 物品动画参考支持 PixelLab 生成、本地 PNG 导入与 `PixelProp` 转换（`reference-art`）。
 
-## 前端流程
+## 1. GPT Image 2.6 生图与采用
 
-进入“场景 → 制作交互物”，选择要编辑的物件，展开右侧“生成物品原图”。输入单个物品的描述，例如“深蓝金属外壳的复古工业电池，黄色指示灯，清晰轮廓”。默认使用 PixelLab Pixflux，输出 128×128、侧视、透明背景 PNG。
+在交互物编辑器右侧 **外观 → 获取图片 → 生成透明物件** 中输入单件物品描述，默认用 `gpt-image-2.6-sunburst` 生成 1024×1024 透明 PNG，最多附 8 张参考图（PNG/JPEG/WebP）。本流程只需 Web 与 Bridge，无需启动 SpritePipeline。
 
-PixelLab 设置与角色原图、序列帧共用同一服务和受保护的 Key。已有 Key 自动复用；面板可以保存 Key 或刷新连接，已有 Key 不回显。需要完整工作台服务（`npm run dev`）；`dev:interactable` 不启动 Python，只有已运行 / 配置了 SpritePipeline 时才能生图。导入已有图片、保存交互物和导出仍可不依赖 PixelLab。
+- **尺寸规则**：支持方形/横向/竖向预设及自定义宽高（须为 16 的倍数、总像素 655,360–8,294,400、最长边 ≤ 3840、宽高比 1:3–3:1）。重开历史记录自动回填原尺寸。
+- **凭据**：使用受保护本机 Key 或 `OPENAI_API_KEY`（兼容旧 GPT Image 2 Key，界面不回显）；纯文本走 Images generations，有源图或参考图走 Images edits。
+- **异步执行与异常恢复**：提交后立刻持久化 `running` 任务；等待时可离开页面并在制作记录或资产库恢复，关闭页面不取消已发请求。若超时、进程退出或租约失效，刷新返回派生的 `attention_required`（保留底层记录以便承接迟到结果，不自动重发付费请求）。
+- **校验与产物**：服务端解码校验尺寸、真实透明背景与可见内容（拒绝纯色底和空图），分别保存 `provider-response.png`（`rawSha256`）、`image.png`（`sha256`）、`processing-report.json`、`image-metadata.json` 与 `provider-usage.json`（记录时间、耗时、HTTP、白名单 token 用量与返回档位，缺失项为 `null`）。
+- **采用规则**：点击“采用到物件”时重读完成任务并校验 SHA-256，保留工程/物件 ID、行为与状态专用图，替换默认图并清空默认待机/聚焦动画。`generation.sourceTaskId` 与 `generation.sha256` 随工程保留。
 
-每次生成是新的付费请求。等待期间可以离开页面，从制作记录、资产库的“物品原图”或面板中的最近记录恢复；查询只跟踪原任务，断线不自动重新提交。原图不会自动覆盖物件。
+## 2. MCP 与本地无模型处理
 
-预览确认后可下载 PNG，或点击“采用到「物件名称」”。采用时重新读取完成任务、校验图片与结果记录的 SHA-256，然后作为内嵌 PNG 加入项目。它保留项目 / 物件 ID、其他图片、动画帧和交互行为，替换默认图片并清空默认待机 / 聚焦动画选择。状态专用图片仍保持各自配置。若目标项目 / 物件已经删除或默认图在读取期间被更换，采用失败并保留现有内容。
+### 生成与蒙版编辑
 
-采用后沿用本机草稿自动保存；如需跨机器交接，保存源文件或导出 Godot 包。素材的 `generation.sourceTaskId` 和 `generation.sha256` 会随源文件及源包保留。保存 / 导出发现已登记的生成图片内容变化会拒绝；有意修改图片时，应作为新素材导入，不能继续冒充原始生成结果。
+```json
+{
+  "capabilityId": "image-assets",
+  "input": {
+    "operation": "generate-prop",
+    "provider": "gpt-image-2.6",
+    "name": "备用电池",
+    "prompt": "blue metal battery, yellow indicator light, clear silhouette",
+    "width": 1024,
+    "height": 1024
+  }
+}
+```
 
-## MCP 使用
+- `prompt` 上限 12,000 字；`edit-image` 需传 `image`（`kind="prop"`），可配 `references` 与同尺寸 `mask`（仅 `Alpha=0` 可编辑，`Alpha=1–255` 逐字节保留源图 RGBA8）。
+- 产物资产 ID 为 `image:<task-id>`（`kind=prop`），`get_result` 链接指向 `/tools/interactable-editor?imageTask=<task-id>`，`requiresAdoption=true`。
 
-先发现 reference-art 的当前 schema。调用示例：
+### 本地处理（`process-image`）
+
+无需 Key、不联网，可对已有候选执行透明噪点清理或成对 `preserveFrom` + `mask` 后合成（保留原尺寸，最长边 ≤ 3840）：
+
+```json
+{
+  "operation": "process-image",
+  "kind": "prop",
+  "image": "outputs/candidate/image.png",
+  "preserveFrom": "outputs/original/image.png",
+  "mask": "work/edit-mask.png",
+  "alphaCleanupThreshold": 1
+}
+```
+
+- `alphaCleanupThreshold` 取 `0–16`（prop 默认 1、background 默认 0），将 `0 < Alpha ≤ 阈值` 归零；有蒙版时仅清理可编辑区。
+- 网页预览提供 **清理透明噪点（本地）** 按钮，产出独立 `provider=local` 变体（采用新任务 `sha256`，不覆盖原图）。
+
+## 导入与转换为动画原图
+
+交互物编辑器“获取图片”、交互物动画面板及 GPT 物品候选页均提供 **导入 PNG / 从物品图转换** 入口（支持历史 GPT 物品任务或上传图片，提供 1×/4× 与多背景实时预览）。
+
+- **本地导入 128 px PNG（`reference-art` `import`）**：传 `subject=prop`、`prompt` 及 `sourceImagePath`/`sourceImage`，仅接受 ≤ 2 MB、128×128、有可见像素与透明背景的 PNG（记录颜色数与半透明诊断，不阻断导入）。
+- **大图确定性转换（`reference-art` `convert-prop`）**：传 `prompt` 及 `sourceTaskId`（已完成的 `image-assets` prop 任务）、`sourceImagePath`、`sourceImage` 三选一，文件最长边 ≤ 4096、≤ 30 MB，固定输出 128 px（无透明底时需选抠色）。转换调用独立 `forge-pixel-prop` 包（经 SpritePipeline，需服务在线；独立 CLI 为 `npm run pixel-prop -- convert <源图> -o <输出>`），支持 `area`/`dominant`/`nearest`、颜色数 `0` 或 `2–64`、外部调色板或 `object:<ID>` 等配方参数，默认配方见 [PixelProp 说明](../Tools/PixelProp/README.zh-CN.md)。实时预览走 `POST /v1/reference-art/convert-prop/preview`（不建任务、不写文件）。
+
+```json
+{"operation":"convert-prop","sourceImagePath":"Tools/PixelProp/examples/battery.png","prompt":"侧视电池，完整电极与黄色指示灯","recipe":{"colors":24,"resample":"area","padding":4}}
+```
+
+- **确认与移送（`transfer`）**：导入产出 `reference.png`/`result.json`，转换另存 `compare.png`、`recipe.json`、`report.json`（均 `providerCalled=false`）。检查视角、初始状态、部件完整和透明背景后，调 `transfer` 并提交至少 4 字的 `confirmation: {note}`（未委托 Agent 确认时先用 `workbench_present` 展示对比图）。
+- **重算核验与来源追踪**：移送时核对产物与哈希；转换来源会按原配方重算并以解码像素哈希 `pixelSha256` 比对（不受跨平台 PNG 压缩差异影响，算法版本 1 需在版本 2 下重转）。重复移送复用同一 `reference_<哈希前24位>` 对象。来源摘要保存在对象旁的 `provenance.json`（`pixellab` / `import` / `convert-prop`），规划新作品时冻结记录供界面展示与实验筛选。
+
+## 旧 PixelLab 流程
+
+`reference-art` 的 `generate`（`subject: "prop"`）保留 PixelLab Pixflux 128×128 侧视物品生成（共用 SpritePipeline 受保护 Key，提示词上限 1,800 字，服务端自动附加侧视/独立物品/透明底约束，记录在 `adapter.effectivePrompt`）：
 
 ```json
 {
@@ -30,39 +81,9 @@ PixelLab 设置与角色原图、序列帧共用同一服务和受保护的 Key�
 }
 ```
 
-原始物品提示词最多 1800 字符。服务端附加固定的独立非人物品、侧视、完整轮廓、透明背景、无场景和文字约束；不调用第二个模型、不自动翻译。实际请求描述记录在任务的 `adapter.effectivePrompt` 中。
-
-随后使用 get_task 查询原任务。完成后 get_result 的链接直达 `/tools/interactable-editor?artTask=<task-id>`；它打开该原图预览，不自动把图采用到任意已有物件。list_assets 的 `kind=prop` 用于查找物品原图，角色原图仍是 kind=character。下载 ZIP 包含真实 prop.png。
-
-用户只要图片时，在图片交付处结束。需要完整交互物时，读取真实 PNG 和结果 metadata，将其绑定到原项目中正确物件的 visual.assetId；资产 source 使用实际工作区路径或内嵌 data URL，可附 generation 来源字段，再执行 interactable-editor 的 save-project / export-godot。沿用 projectId / definitionId，不新建同名物件代替原目标。默认图更新不应静默覆盖状态专用图片。
-
-物品图不是角色预设，transfer 会拒绝。生成一张 PNG 也不表示已经配置拾取、开关、动画、碰撞或游戏逻辑。
-
-## 兼容与输出
-
-省略 subject 的旧角色请求继续按 character 执行，角色页记录不混入物品。仍复用已有 `/v1/reference-art/jobs` 网关及 protected settings，不增加服务、依赖或另一份 Key。
-
-成功输出仍为任务目录的 reference.png 与 result.json；result 增加 subject。物品保持独立任务身份，资产 ID 为 reference:<task-id>，其分类和编辑入口按 subject 区分。旧角色元数据没有 subject 也继续兼容。
+- 产出 `reference.png` 与 `result.json`，资产 ID 为 `reference:<task-id>`（`kind=prop`），预览链接 `/tools/interactable-editor?artTask=<task-id>`。
+- 已完成的 128×128 PixelLab 物品图可直接点击 **移送到交互物动画** 或调用 `reference-art transfer` 创建交互物预设，随后在 `/tools/interactable-motion?object=` 规划动画。
 
 ## 验证
 
-`npm run test:prop-art` 使用模拟网关、隔离任务目录与真实 MCP 协议，检查生成 / 原任务恢复、共享配置、正确分类与 PNG 下载、禁止角色移送、采用的完整性及目标保护、保存与 Godot 包往返、失败及不确定提交不自动重试。该测试不证明真实模型的画面质量，也不产生真实生图费用。
-
-人工验收：
-
-1. 在已有 PixelLab Key 的环境中打开面板，确认自动显示已配置，未生成空任务。
-2. 给一个明确物品提交一次生成，查看等待、成功预览和 PNG 下载。
-3. 采用到指定物件，确认预览、ID、交互行为及其他物件保持正确。
-4. 刷新后检查草稿和生成记录，再保存源文件并导入，检查图像和来源保留。
-5. 返回角色原图页，确认物品不出现在角色历史；在资产库用物品原图分类找到并打开同一张图片。
-6. 对已有动画 / 状态图的物件，检查默认动画停用与状态专用图片保留符合预期。
-
-最后记录本次采用是否经过真实 PixelLab 验证；没有真实模型调用时，明确记为模拟链路验收。
-
-### 本地验收记录（2026-09-09）
-
-模拟网关下的 MCP 生成、恢复、物品分类、PNG 下载、角色移送隔离、来源哈希与采用保护、保存及 Godot 源包往返已通过。相同像素来自不同生成任务时仍保留独立来源身份。
-
-独立 Edge 无头浏览器通过实际前端执行描述、生成、预览、采用、刷新恢复，确认每次操作仅提交一个模拟生成任务；深浅色与 430px 窄屏已检查，无未处理页面错误。截图与本机报告保存在忽略的 work/prop-art-ui/；它们使用测试图片，不代表真实 PixelLab 画面质量。原图、交互物、工作台、适配器、HTTP、MCP、资产、展示和 Agent 回归，以及 lint、typecheck、构建、两个 Skill 校验均已通过。
-
-本次没有真实 PixelLab 调用，也未做新游戏的 Godot 引擎验收。已运行的 Runtime Bridge 需要重启以加载服务端修改；仅刷新网页不会更新已加载的 Node 适配器。
+运行 `npm run test:image-assets`、`npm run test:prop-art` 与 `npm run test:pixel-prop`（均使用模拟服务与隔离目录）。

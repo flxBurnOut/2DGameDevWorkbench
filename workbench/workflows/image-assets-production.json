@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "image-assets-production",
+  "name": "物品图片素材",
+  "capabilityId": "image-assets",
+  "steps": [
+    { "id": "brief", "name": "描述与参考图", "kind": "expert" },
+    { "id": "generate", "name": "生成图片", "kind": "connector" },
+    { "id": "inspect", "name": "检查实际图片与透明区域", "kind": "validation" },
+    { "id": "adopt", "name": "采用到编辑器", "kind": "handoff" }
+  ]
+}

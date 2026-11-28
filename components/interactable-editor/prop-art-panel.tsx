@@ -1,5 +1,6 @@
 'use client';
 /* oxlint-disable next/no-img-element -- Preserve original pixel-art PNGs. */
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Download,
@@ -9,7 +10,9 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
-import type { StoredTask } from '@/lib/workbench/work-items';
+import { referenceProgress, type StoredTask } from '@/lib/workbench/work-items';
+import { usePaidTask } from '@/features/workbench/use-paid-task';
+import { propProvenanceLabel } from './prop-reference-tools';
 import type { Asset } from '@/features/interactable-editor/contract.mjs';
 import {
   isPropArtTask,
@@ -23,9 +26,12 @@ const labels: Record<string, string> = {
   running: '正在生成',
   completed: '原图已保存',
   failed: '生成失败',
+  attention_required: '需要核对原请求',
+  not_submitted: '未提交',
   awaiting_configuration: '等待配置',
   prepared: '尚未生成',
 };
+const taskStatus = (task: StoredTask) => referenceProgress(task) || labels[task.status] || task.status;
 const taskName = (task: StoredTask) =>
   typeof task.input?.name === 'string' ? task.input.name : '物品原图';
 const artifactUrl = (path: string) =>
@@ -51,10 +57,13 @@ export function PropArtPanel({
   onBusy: (busy: boolean) => void;
 }) {
   const { tasks, refresh } = useWorkbench();
+  const paid = usePaidTask('reference-prop');
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState('');
+  const [confirmation, setConfirmation] = useState('');
   const [selected, setSelected] = useState<StoredTask | null>(null);
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [motionTarget, setMotionTarget] = useState<{source: string; id: string} | null>(null);
   const [apiKey, setApiKey] = useState('');
   const [message, setMessage] = useState('');
   const [settingsMessage, setSettingsMessage] = useState('');
@@ -91,6 +100,7 @@ export function PropArtPanel({
       if (!alive.current || epoch !== selectionEpoch.current) return;
       if (!isPropArtTask(task)) throw new Error('这不是物品原图生成记录。');
       setSelected(task);
+      setConfirmation('');
       setPrompt(
         typeof task.input?.prompt === 'string' ? task.input?.prompt : '',
       );
@@ -160,9 +170,7 @@ export function PropArtPanel({
     if (
       actionLock.current ||
       disabled ||
-      !prompt.trim() ||
-      configured !== true ||
-      selected?.status === 'running'
+      (!paid.pending && (!prompt.trim() || configured !== true || selected?.status === 'running'))
     )
       return;
     actionLock.current = true;
@@ -170,23 +178,11 @@ export function PropArtPanel({
     onBusy(true);
     setMessage('');
     try {
-      await beforeGenerate();
-      const result = await propArtJson<{ taskId: string; status: string }>(
-        '/api/workbench/tasks',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            capabilityId: 'reference-art',
-            input: {
-              operation: 'generate',
-              subject: 'prop',
-              prompt: prompt.trim(),
-              name: objectName.slice(0, 80) || '物品原图',
-            },
-          }),
-        },
-      );
+      if (!paid.pending) await beforeGenerate();
+      const result = await paid.run(paid.pending ? undefined : { capabilityId: 'reference-art', input: {
+        operation: 'generate', subject: 'prop', prompt: prompt.trim(), name: objectName.slice(0, 80) || '物品原图',
+      } });
+      if (!result) return;
       if (alive.current) await selectTask(result.taskId);
       void refresh();
     } catch (e) {
@@ -197,6 +193,31 @@ export function PropArtPanel({
         setBusy(false);
         onBusy(false);
       }
+    }
+  };
+  const transfer = async () => {
+    if (actionLock.current || disabled || !selected || !png) return;
+    actionLock.current = true;
+    setBusy(true);
+    onBusy(true);
+    try {
+      const result = await propArtJson<{status: string; outputs: string[]; error?: string}>('/api/workbench/tasks', {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify({capabilityId: 'reference-art', input: {operation: 'transfer', sourceTaskId: selected.id,
+          ...(selected.input?.operation !== 'generate' ? {confirmation: {note: confirmation.trim()}} : {})}}),
+      });
+      const file = result.outputs?.find(value => value.endsWith('/result.json'));
+      if (result.status !== 'completed' || !file) throw new Error(result.error || '物品移送未完成。');
+      const handoff = await propArtJson<{objectId: string; sourceTaskId: string}>(artifactUrl(file));
+      if (handoff.sourceTaskId !== selected.id || !/^reference_[a-f0-9]{24}$/.test(handoff.objectId))
+        throw new Error('物品移送响应无效。');
+      if (alive.current) setMotionTarget({source: selected.id, id: handoff.objectId});
+      void refresh();
+    } catch (error) {
+      if (alive.current) setMessage((error as Error).message);
+    } finally {
+      actionLock.current = false;
+      if (alive.current) { setBusy(false); onBusy(false); }
     }
   };
   const adopt = async () => {
@@ -278,9 +299,7 @@ export function PropArtPanel({
             disabled={
               disabled ||
               busy ||
-              !prompt.trim() ||
-              configured !== true ||
-              selected?.status === 'running'
+              (!paid.pending && (!prompt.trim() || configured !== true || selected?.status === 'running'))
             }
             onClick={() => void generate()}
           >
@@ -289,8 +308,8 @@ export function PropArtPanel({
             ) : (
               <Paintbrush size={16} />
             )}
-            {selected?.status === 'running'
-              ? '正在生成物品原图'
+            {paid.pending ? '恢复原生成请求' : selected?.status === 'running'
+              ? referenceProgress(selected) || '正在生成物品原图'
               : '生成一张物品原图'}
           </button>
           <small>
@@ -334,13 +353,14 @@ export function PropArtPanel({
           {settingsMessage && <output>{settingsMessage}</output>}
           {selected && (
             <span aria-live="polite">
-              {labels[selected.status] || selected.status}
+              {taskStatus(selected)}
             </span>
           )}
           {png && (
             <>
               <div className="ie-prop-preview">
                 <img
+                  decoding="async"
                   src={artifactUrl(png)}
                   alt="生成的物品原图"
                   width={128}
@@ -348,11 +368,17 @@ export function PropArtPanel({
                 />
               </div>
               <div className="ie-row">
+                <span>{propProvenanceLabel(selected?.input?.operation === 'generate' ? 'pixellab' : String(selected?.input?.operation))}</span>
                 <a href={artifactUrl(png)} download>
                   <Download size={14} />
                   下载 PNG
                 </a>
+                {motionTarget && motionTarget.source === selectedId
+                  ? <a href={`/tools/interactable-motion?object=${motionTarget.id}`} target="_blank" rel="noreferrer">打开交互物动画</a>
+                  : <button disabled={busy || disabled || (selected?.input?.operation !== 'generate' && confirmation.trim().length < 4)} onClick={() => void transfer()}>移送到交互物动画</button>}
               </div>
+              {selected?.input?.operation !== 'generate' && <label>移送确认说明<textarea aria-label="历史原图移送确认说明" rows={3} maxLength={1000} value={confirmation} disabled={busy || disabled} onChange={e => setConfirmation(e.target.value)} placeholder="核对视角、初始状态、部件完整与透明背景后填写（至少 4 字）" /></label>}
+              {selected?.outputs?.find(p => p.endsWith('/compare.png')) && <a href={artifactUrl(selected.outputs.find(p => p.endsWith('/compare.png'))!)} target="_blank" rel="noreferrer">查看转换对比图</a>}
               <button
                 className="ie-primary"
                 disabled={busy || disabled}
@@ -370,7 +396,7 @@ export function PropArtPanel({
           )}
           <label>
             最近物品原图
-            <select
+            <NativeSelect
               aria-label="最近物品原图"
               value={selectedId || ''}
               disabled={busy}
@@ -378,18 +404,18 @@ export function PropArtPanel({
                 if (e.target.value) void selectTask(e.target.value);
               }}
             >
-              <option value="">选择已保存的生成记录</option>
+              <NativeSelectOption value="">选择已保存的生成记录</NativeSelectOption>
               {selected && !tasks.some((t) => t.id === selected.id) && (
-                <option value={selected.id}>
-                  {taskName(selected)} · {labels[selected.status]}
-                </option>
+                <NativeSelectOption value={selected.id}>
+                  {taskName(selected)} · {taskStatus(selected)}
+                </NativeSelectOption>
               )}
               {tasks.filter(isPropArtTask).map((task) => (
-                <option key={task.id} value={task.id}>
-                  {taskName(task)} · {labels[task.status] || task.status}
-                </option>
+                <NativeSelectOption key={task.id} value={task.id}>
+                  {taskName(task)} · {taskStatus(task)}
+                </NativeSelectOption>
               ))}
-            </select>
+            </NativeSelect>
           </label>
           <small>
             可以离开页面，稍后从制作记录继续查看；结果不会自动覆盖物件。

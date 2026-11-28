@@ -1,4 +1,5 @@
 import { probeSpritePipelineUi } from '@/lib/workbench/sprite-pipeline-supervisor.mjs';
+import { trustedRequest } from '@/lib/workbench/request-security.mjs';
 
 const DEFAULT_API_URL = 'http://127.0.0.1:7860';
 
@@ -6,7 +7,9 @@ function endpointUrl(baseUrl: string) {
   return `${baseUrl.trim().replace(/\/+$/, '')}/health`;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = trustedRequest(request);
+  if (denied) return denied;
   const baseUrl = process.env.SPRITE_PIPELINE_API_URL?.trim() || DEFAULT_API_URL;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_500);

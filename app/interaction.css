@@ -1,0 +1,309 @@
+/* Shared interaction states for every workbench surface: motion, elevation,
+   press, selection, disabled, busy, checkboxes, switches and segmented
+   controls. Module stylesheets keep their own layout and colours; the states
+   that make a control feel responsive live here so every page behaves alike. */
+
+:root {
+  --ui-duration: 120ms;
+  --ui-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Elevation: cards sit just above the page, floating layers clearly above.
+     Dark mode drops card shadows (they read as smudges) and keeps borders. */
+  --ui-shadow-color: light-dark(rgb(15 23 42 / 0.07), rgb(0 0 0 / 0.45));
+  --ui-shadow-card: light-dark(rgb(15 23 42 / 0.05), transparent);
+  --ui-shadow-sm: 0 1px 2px var(--ui-shadow-card);
+  --ui-shadow-md: 0 4px 14px var(--ui-shadow-color);
+  --ui-shadow-lg: 0 14px 36px var(--ui-shadow-color);
+
+  --ui-hover-bg: var(--theme-surface);
+  --ui-press-bg: color-mix(in srgb, var(--theme-surface), var(--theme-text) 7%);
+  --ui-primary-press: color-mix(in srgb, var(--theme-primary-hover), #000 14%);
+
+  --ui-selected-bg: var(--theme-accent-soft);
+  --ui-selected-fg: var(--theme-accent);
+  --ui-selected-border: color-mix(in srgb, var(--theme-accent) 45%, var(--theme-border));
+
+  --ui-disabled-bg: var(--theme-surface);
+  --ui-disabled-fg: var(--theme-placeholder);
+  --ui-disabled-border: var(--theme-border);
+
+  --ui-focus: var(--theme-accent);
+}
+
+/* Motion: colour changes ease in; transforms are left alone so canvas handles
+   positioned with transforms never lag behind the pointer. */
+:where(button, a, summary, input, select, textarea, [role='menuitem'], [role='tab']) {
+  transition-property: background-color, border-color, color, box-shadow, opacity;
+  transition-duration: var(--ui-duration);
+  transition-timing-function: var(--ui-ease);
+}
+
+/* Press: a one-pixel drop for every button-like control. Menu triggers are
+   excluded because their popup anchors to the trigger. */
+:is(.wb-app, .wb-dialog) :is(button, a.wb-button, a.wb-tool-card, a.wb-recent-row):not(:disabled, [aria-haspopup], [data-no-press]):active {
+  transform: translateY(1px);
+}
+:is(.wb-app, .wb-dialog) :is(.wb-primary, .ie-primary, .motion-primary):not(:disabled):active {
+  background: var(--ui-primary-press);
+  border-color: var(--ui-primary-press);
+}
+
+/* Disabled primaries turn neutral: a faded brand colour reads as a lighter
+   button style, not as "unavailable". */
+:is(.wb-app, .wb-dialog) :is(.wb-primary, .ie-primary, .motion-primary):disabled,
+:is(.wb-app, .wb-dialog) [data-slot='button'].bg-primary:disabled {
+  opacity: 1;
+  color: var(--ui-disabled-fg);
+  background: var(--ui-disabled-bg);
+  border-color: var(--ui-disabled-border);
+  box-shadow: none;
+}
+:is(.wb-app, .wb-dialog) :is(button, [role='menuitem']):disabled {
+  cursor: not-allowed;
+}
+
+/* Busy: set aria-busy="true" on a button while its action runs. The label
+   stays, a spinner takes the place of the icon, and the width does not jump. */
+:is(.wb-app, .wb-dialog) button[aria-busy='true'] {
+  cursor: progress;
+  pointer-events: none;
+}
+:is(.wb-app, .wb-dialog) button[aria-busy='true']::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ui-spin 0.7s linear infinite;
+}
+:is(.wb-app, .wb-dialog) button[aria-busy='true']:disabled {
+  opacity: 0.8;
+}
+:is(.wb-app, .wb-dialog) button[aria-busy='true'] > svg:first-child {
+  display: none;
+}
+@keyframes ui-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Checkbox: one look for every native checkbox, keeping native semantics. */
+input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-content: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  vertical-align: -3px;
+  border: 1.5px solid var(--theme-control-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--theme-panel) center / 12px 12px no-repeat;
+  cursor: pointer;
+}
+input[type='checkbox']:hover:not(:disabled) {
+  border-color: var(--theme-accent);
+}
+input[type='checkbox']:checked,
+input[type='checkbox']:indeterminate {
+  border-color: var(--theme-primary);
+  background-color: var(--theme-primary);
+}
+input[type='checkbox']:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.2 5 8.6l4.5-5'/%3E%3C/svg%3E");
+}
+input[type='checkbox']:indeterminate {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='white' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M3 6h6'/%3E%3C/svg%3E");
+}
+input[type='checkbox']:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+
+/* Switch: add class ui-switch to a checkbox that turns a setting on or off. */
+input[type='checkbox'].ui-switch {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+  border-color: transparent;
+  background: var(--theme-control-border);
+  vertical-align: -4px;
+}
+input[type='checkbox'].ui-switch::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transform: translateX(-6px);
+  transition: transform var(--ui-duration) var(--ui-ease);
+}
+input[type='checkbox'].ui-switch:checked {
+  background: var(--theme-primary);
+  background-image: none;
+}
+input[type='checkbox'].ui-switch:checked::before {
+  transform: translateX(6px);
+}
+
+/* Segmented control: a group of aria-pressed buttons that picks one view.
+   Selection is a raised chip, never the filled primary style. */
+:is(.wb-app, .wb-dialog) .ui-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--theme-surface);
+}
+:where(fieldset.ui-segmented) {
+  margin: 0;
+  min-inline-size: 0;
+}
+:is(.wb-app, .wb-dialog) .ui-segmented > button {
+  min-height: calc(var(--ui-control-height) - 6px);
+  padding: 3px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-md);
+  color: var(--theme-muted);
+  background: transparent;
+  box-shadow: none;
+}
+:is(.wb-app, .wb-dialog) .ui-segmented > button:hover:not(:disabled) {
+  color: var(--theme-text);
+  background: transparent;
+  border-color: transparent;
+}
+:is(.wb-app, .wb-dialog) .ui-segmented > button:is([aria-pressed='true'], [aria-selected='true']),
+:is(.wb-app, .wb-dialog) .ui-segmented > button:is([aria-pressed='true'], [aria-selected='true']):hover:not(:disabled) {
+  color: var(--theme-text);
+  background: var(--theme-panel);
+  border-color: var(--theme-border);
+  box-shadow: var(--ui-shadow-sm);
+  font-weight: 600;
+}
+
+/* Tooltip and toast surfaces (components/ui/tooltip.tsx, toast.tsx). */
+.ui-tooltip {
+  max-width: 260px;
+  padding: 5px 8px;
+  border-radius: var(--ui-radius-md);
+  color: var(--theme-panel);
+  background: var(--theme-text);
+  font-size: var(--ui-text-xs);
+  line-height: 1.45;
+  box-shadow: var(--ui-shadow-md);
+  transition: opacity var(--ui-duration) var(--ui-ease);
+}
+.ui-tooltip[data-starting-style],
+.ui-tooltip[data-ending-style] {
+  opacity: 0;
+}
+.ui-toast-viewport {
+  position: fixed;
+  z-index: 60;
+  /* Clear of the agent follow panel, which sits at the bottom right. */
+  left: 50%;
+  bottom: 20px;
+  width: min(380px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+}
+.ui-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-border);
+  border-radius: var(--ui-radius-lg);
+  color: var(--theme-text);
+  background: var(--theme-panel);
+  box-shadow: var(--ui-shadow-lg);
+  font-size: var(--ui-text-sm);
+  line-height: 1.5;
+  transition:
+    opacity 160ms var(--ui-ease),
+    transform 160ms var(--ui-ease);
+}
+.ui-toast[data-starting-style],
+.ui-toast[data-ending-style] {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.ui-toast > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--theme-success);
+}
+.ui-toast[data-type='error'] > svg {
+  color: var(--theme-danger);
+}
+.ui-toast-body {
+  flex: 1;
+  min-width: 0;
+}
+.ui-toast-body strong {
+  display: block;
+  font-weight: 600;
+}
+.ui-toast-body p {
+  margin: 2px 0 0;
+  color: var(--theme-muted);
+}
+.ui-toast-close {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ui-radius-sm);
+  color: var(--theme-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.ui-toast-close:hover {
+  color: var(--theme-text);
+  background: var(--ui-hover-bg);
+}
+
+/* Icons: one stroke weight for every lucide icon. */
+svg.lucide {
+  stroke-width: 1.75;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.wb-app, .wb-dialog) :is(button, a):active {
+    transform: none !important;
+  }
+  :is(.wb-app, .wb-dialog) button[aria-busy='true']::before {
+    animation-duration: 2s;
+  }
+  .ui-toast,
+  .ui-tooltip,
+  input[type='checkbox'].ui-switch::before {
+    transition: none;
+  }
+}

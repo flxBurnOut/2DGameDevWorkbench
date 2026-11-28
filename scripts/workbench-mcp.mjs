@@ -4,39 +4,73 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod/v4';
 import { assetInputs, assetTools } from '../lib/workbench/asset-contract.mjs';
+import { documentInputs, documentTools } from '../lib/workbench/document-contract.mjs';
+import { imageEditInputs, imageEditTools } from '../lib/workbench/image-edit-contract.mjs';
 import { mcpContent } from '../lib/workbench/presentation.mjs';
 import { previewInputs, previewTools } from '../lib/workbench/preview-follow-contract.mjs';
 import { WorkBuddyPreview } from '../lib/workbench/workbuddy-preview.mjs';
+import { guidanceTopics } from '../lib/workbench/agent-guidance.mjs';
 import { queuePresentation } from '../lib/workbench/preview-follow.mjs';
 import { KINDS } from '../features/interactable-editor/contract.mjs';
 
+import { repositoryRoot, findAgentCapability, agentCapabilities, loadManifest } from '../lib/workbench/workbench-manifest.mjs';
+import { agentRequest } from '../lib/workbench/agent-api.mjs';
 import {
-  repositoryRoot,
-  agentRequest,
-  findAgentCapability,
-  agentCapabilities,
-  loadManifest,
-  prepareTask,
+  commandIdPattern,
+  commandTaskId,
+  currentTaskPresentation,
+  prepareAgentTask,
+  publicTaskRecord,
   publicCapability,
   refreshTask,
   runConnector,
   summarizeTask,
-} from '../lib/workbench/runtime.mjs';
+} from '../lib/workbench/task-runtime.mjs';
 
 import {gameExportInputs,gameExportTools} from '../lib/workbench/game-export-contract.mjs';
 
 const server = new McpServer(
   {
     name: '2d-game-workbench',
-    version: '0.11.0',
+    version: '0.12.1',
   },
   {
-    instructions:
-      'WorkBuddy preview first: list/get_environment/present return preview with a session-specific hostAction. Discover the host-native present_files schema and open preview.hostAction.arguments before production. workbench_run_task returns preview_required with createsTask=false and providerCalled=false until THIS session has a visible page; then run automatically enables following. This is not a failed generation: retry the same run only after opening the page. Use previewPolicy=user-declined or user-dismissed only when the user has declined/closed the preview in this conversation; host-unavailable only after verifying the native host tool is absent or failed and reporting that limitation. Never silently opt out to bypass preview. Never reopen a dismissed preview on reconnection. Other clients stay headless unless they explicitly present. Game integration: check workbench_list_game_exports for pending deliveries when continuing an authorized game task. Use get_game_export to inspect the exact package and selected target, read agentAssets.engineering.skill, install_game_export for verified file placement, then use host file tools to complete mounts, clip merges and gameplay signal wiring according to the actual project. Record real file and engine evidence with complete_game_export. A waiting delivery never means the host Agent was automatically started. Preserve user-modified files, other animation clips, existing controllers and project.godot. Map/scene production remains manual; consuming an existing export is permitted. WorkBuddy session startup: on the first user message, read workbench_get_environment and its preview. Start offline frontend services once and poll readiness for at most 60 seconds; stop on conflicts. Use workbench_present for a known artwork to get its exact preview.hostAction. Discover the host-native present_files schema and pass preview.hostAction.arguments unchanged, including previewSession. Confirm a visible matching page with workbench_get_frontend_context. Do not replace the session URL with the plain homepage or a result URL. This is a first-conversation Agent workflow, not a handshake browser side effect. Only the host tool can confirm that the page opened; if unavailable, report that limitation and show the URL. Never open the OS default browser as a substitute. Do not apply WorkBuddy browser startup to other MCP clients or diagnostic clients. Continue the original user request after this local setup; it authorizes no generation or provider charges. For vague production requests, follow conversationGuidance returned by list_capabilities: inspect context and existing assets before asking, use the host-native AskUserQuestion only if currently available after inspecting its schema, otherwise ask concisely in chat. Do not create placeholder tasks while clarifying or mistake unanswered questions for consent. Map stitching and map generation are manual frontend workflows and cannot be prepared or run through MCP. For interactables, get a template without creating a task, edit its project, save-project for frontend continuation, then export-godot when requested. This server exposes the capabilities of the current 2D game workbench project. List capabilities before selecting one, then inspect its schema. Use prepare_task only for explicitly requested input validation. Resolve authorization before external execution; planning or clarification creates no task. Call run_task only when execution is authorized. get_task safely refreshes running adapter jobs before returning their persisted state. An awaiting_configuration task is not complete. Never invent outputs, and keep exact task IDs and paths in structured details; normal replies lead with the outcome and exact artwork link, without dumping JSON or IDs. Use get_environment and start_services for local readiness, list_presets for real IDs, list_tasks for earlier work, and get_result/read_artifact to inspect actual outputs. Review candidate frames before approve, recording visual evidence in reviewNote; check/approve/export are separate operations. Asset inventory: use list_assets for actual artwork, not list_tasks; filter candidateCount and candidateIndex and sortBy createdAt for the latest multi-candidate generation. Follow pagination to avoid missing old work. get_asset verifies the selected files; get_asset_manifest produces a handoff without modifying sources. Browser-only drafts are outside the server inventory; incomplete coverage is not proof an asset is gone. Presentation: before the first execution step call workbench_present with the discovered capabilityId or exact selected task/job/asset identity to arm page following for this MCP connection. Subsequent run_task/get_task responses automatically publish their current step; call workbench_present again when intentionally selecting another artwork or candidate through read-only result/asset tools. Check workbench_get_frontend_context with requestId to confirm displayed, never infer display from queued/pending or a returned URL. Follow the original task across generation, review, save and export with a short stage update; do not wait until the final answer to show the result. Repeated same-step polling must not reload the page. Respect paused/blocked states and never force host navigation around them. This channel navigates the existing frontend, it does not open a browser; the host-native present_files is only for the first preview. Context includes page identity and editing state, not map pixels or draft contents. Presentation: prefer presentation.summary and viewUrl. Reply with a short outcome, preview/link and one next step; show technical details only when asked or necessary for troubleshooting. Navigate an existing host preview only when supported and editing is safely saved; otherwise offer the exact link. A returned URL or browserOpened:false never proves the browser opened. Do not reopen a dismissed preview. AskUserQuestion is host-owned: discover it and read its schema, ask one material choice at a time, and never treat cancellation as consent. For ambiguous generation failures inspect the saved remoteJobId and recover the original job instead of resubmitting.',
+    instructions: [
+      'Forge provides asset production, versioned editing and Godot delivery. Discover an unfamiliar capability and its schema; reuse confirmed schemas during the session.',
+      'list_capabilities returns a short overview and topic index. Read workbench_get_guidance(topic) only for the current task; production and engineering are workflow routers.',
+      'Continue within the user\'s existing scope and budget, including delegated inspection and selection. Ask for unresolved consequential choices or scope changes. Read-only discussion creates no production task; prepare_task optionally saves input validation for authorized work.',
+      'Poll the original task/job. Resolve unknown paid submissions using their saved receipts and provider IDs before a new attempt. Shared editing uses current version/hash guards and stable commandId.',
+      'On the first WorkBuddy user message, check workbench_get_environment; start offline frontend services once, poll readiness for at most 60 seconds and stop on conflicts. Follow guidance topic presentation for host opening. WorkBuddy requires a visible preview for this session before production: discover the host present_files schema, open preview.hostAction and confirm the session page. preview_required creates no task or provider call; continue with the same parameters after connecting. Use previewPolicy only for an explicit user refusal/dismissal or verified host-tool failure. Use workbench_present at step/selection changes and workbench_get_frontend_context to confirm arrival. Respect paused, closed and unsaved pages. Other clients remain headless unless they present. Page acknowledgement confirms arrival, not artwork quality.',
+      'Explicit webpage requests can use available host browser tools. Report actual assets, checks and target-engine evidence with appropriate detail.',
+    ].join(' '),
   },
 );
 
 function success(value, name) {
+  if (value.plan?.previewPng) {
+    const {previewPng,localPreviewPng,softReferencePreviewPng,...plan}=value.plan;
+    const images=[{role:'writable-area',data:previewPng,mimeType:'image/png'}];
+    if (softReferencePreviewPng) images.push({role:'rgb-control',data:softReferencePreviewPng,mimeType:'image/png'});
+    if (localPreviewPng) images.push({role:'clean-crop',data:localPreviewPng,mimeType:'image/png'});
+    return success({...value,plan,images},name);
+  }
+  if(value.check?.views?.some(view=>view.png)){
+    const views=value.check.views;
+    return success({...value,check:{...value.check,views:views.map(({png:_png,...metadata})=>metadata)},
+      images:views.map(view=>({role:view.role,data:view.png,mimeType:'image/png'}))},name);
+  }
+  if (value.part?.views?.some(view => view.png)) {
+    const { views, suggestion, ...context } = value.part;
+    const images = views.map(view => ({ role: view.role, data: view.png, mimeType: 'image/png' }));
+    const { previewPng, ...fields } = suggestion ?? {};
+    if (previewPng) images.push({ role: 'suggested-scope', data: previewPng, mimeType: 'image/png' });
+    const part = { ...context, views: views.map(({ png: _png, ...view }) => view), ...(suggestion ? { suggestion: fields } : {}) };
+    return success({ ...value, part, images }, name);
+  }
+  if (Array.isArray(value.images) && value.images.some(image => image.data)) {
+    const metadata = { ...value, images: value.images.map(({ data: _data, ...image }) => image) };
+    return { content: [{ type: 'text', text: mcpContent(name, metadata) }, ...value.images.filter(image => image.data).map(image => ({ type: 'image', data: image.data, mimeType: image.mimeType }))], structuredContent: metadata };
+  }
   return {
     content: [{ type: 'text', text: mcpContent(name, value) }],
     structuredContent: value,
@@ -63,6 +97,10 @@ function failure(error) {
     structuredContent: {
       error: {
         message,
+        ...(error.code ? { code: error.code } : {}),
+        ...(error.status ? { status: error.status } : {}),
+        ...(error.currentRevision !== undefined ? { currentRevision: error.currentRevision } : {}),
+        ...(error.taskId ? { taskId: error.taskId } : {}),
         ...(message.match(/^Task ([a-z0-9_-]+) failed:/i)
           ? {
               taskId: message.match(/^Task ([a-z0-9_-]+) failed:/i)[1],
@@ -87,7 +125,8 @@ async function followResult(value) {
   }
 }
 function registerTool(name, options, handler) {
-  server.registerTool(name, options, async (input) => {
+  const inputSchema = typeof options.inputSchema.safeParse === 'function' ? options.inputSchema : z.strictObject(options.inputSchema);
+  server.registerTool(name, { ...options, inputSchema }, async (input) => {
     try {
       if (name === 'workbench_run_task' && workbuddyPreview.enabled) {
         workbuddyPreview.configure(input.previewPolicy);
@@ -97,10 +136,41 @@ function registerTool(name, options, handler) {
         if (blocked) return success(blocked, name);
         following = !workbuddyPreview.disabledReason;
       }
+      if (workbuddyPreview.enabled && (name === 'workbench_request_candidate_check' || name === 'workbench_request_part_suggestion' || (name === 'workbench_edit_image_region' && input.operation?.type === 'ai-edit'))) {
+        workbuddyPreview.configure(input.previewPolicy);
+        const manifest = await loadManifest();
+        let targetId = input.targetId;
+        if (name === 'workbench_request_part_suggestion') targetId = (await agentRequest(manifest, 'image-part-get', {partRef:input.partRef})).part.targetId;
+        if (name === 'workbench_request_candidate_check') targetId = (await agentRequest(manifest,'image-critic-get',{reviewRef:input.reviewRef})).check.targetId;
+        const target = await agentRequest(manifest, 'image-inspect', targetId ? { targetId } : { target: input.target });
+        const kind = target.target.targetRef.kind;
+        const moduleId = 'interactable-editor';
+        const route = kind === 'image-task' ? manifest.agentAssets.assetCatalog.route : [...manifest.capabilities, ...manifest.editorModules].find(module => module.id === moduleId)?.ui?.route;
+        const blocked = await workbuddyPreview.beforeRun(manifest, route || '/');
+        if (blocked) return success(blocked, name);
+        following = !workbuddyPreview.disabledReason;
+      }
       let value = await handler(input);
-      if (['workbench_run_task', 'workbench_get_task'].includes(name)) value = await followResult(value);
-      if (['workbench_list_capabilities','workbench_describe_capability','workbench_present','workbench_run_task','workbench_get_task','workbench_get_frontend_context'].includes(name)) {
+      if (['workbench_run_task', 'workbench_get_task', 'workbench_edit_image_region', 'workbench_get_image_edit'].includes(name)) value = await followResult(value);
+      if (['workbench_list_capabilities','workbench_describe_capability','workbench_present','workbench_run_task','workbench_get_task','workbench_get_frontend_context','workbench_edit_image_region','workbench_get_image_edit'].includes(name)) {
         value = await workbuddyPreview.decorate(await loadManifest(), value, value.frontendPresentation?.viewPath || value.presentation?.actions?.[0]?.viewPath || value.presentation?.viewPath || value.viewPath || value.capability?.ui?.route || '/');
+      }
+      if (value.imageBase64 || value.edit?.pixels?.imageBase64 || value.edit?.comparison) {
+        const { imageBase64, ...metadata } = value;
+        const images = imageBase64 ? [{ data: imageBase64, mimeType: value.imageMimeType || 'image/png' }] : [];
+        if (value.edit?.pixels?.imageBase64) {
+          const { imageBase64: candidateImage, ...pixels } = value.edit.pixels;
+          metadata.edit = { ...value.edit, pixels };
+          images.push({ data: candidateImage, mimeType: value.edit.pixels.imageMimeType || 'image/png' });
+        }
+        if (value.edit?.comparison) {
+          const { beforePng, afterPng, ...comparison } = value.edit.comparison;
+          metadata.edit = { ...metadata.edit, comparison };
+          images.push({ data: beforePng, mimeType: 'image/png' }, { data: afterPng, mimeType: 'image/png' });
+        }
+        const result = success(metadata, name);
+        result.content.push(...images.map(image => ({ type: 'image', ...image })));
+        return result;
       }
       return success(value, name);
     } catch (error) {
@@ -123,7 +193,7 @@ registerTool(
   {
     title: 'List 2D workbench capabilities',
     description:
-      'List the production capabilities and local adapters registered in this project, including optional external-service configuration and the conversation guide for turning vague requests into executable tasks.',
+      'List registered production capabilities, a short workflow overview and the on-demand guidance topic index.',
     inputSchema: {},
     annotations: {
       readOnlyHint: true,
@@ -139,6 +209,17 @@ registerTool(
       conversationGuidance: await agentRequest(manifest, 'guidance'),
     };
   },
+);
+
+registerTool(
+  'workbench_get_guidance',
+  {
+    title: 'Read a workbench guidance topic',
+    description: 'Read one registered workflow or reference without creating tasks or contacting a provider. Omit topic for the overview and topic index.',
+    inputSchema: { topic: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).optional().describe('Topic ID returned by list_capabilities, or overview.') },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  async input => agentRequest(await loadManifest(), 'guidance', input),
 );
 
 registerTool(
@@ -159,7 +240,8 @@ registerTool(
   },
   async ({ capabilityId }) => {
     const manifest = await loadManifest();
-    return { capability: findAgentCapability(manifest, capabilityId) };
+    return { capability: findAgentCapability(manifest, capabilityId),
+      guidanceTopics: guidanceTopics(manifest).filter(topic => topic.capabilityId === capabilityId) };
   },
 );
 
@@ -168,6 +250,7 @@ const taskInputSchema = {
   input: z
     .record(z.string(), z.unknown())
     .describe('Input object matching the capability input schema.'),
+  commandId: z.string().regex(commandIdPattern).optional().describe('Stable caller command ID for finding or resuming the same request. Reuse with identical capability and input.'),
 };
 
 registerTool(
@@ -184,15 +267,13 @@ registerTool(
       openWorldHint: false,
     },
   },
-  async ({ capabilityId, input }) => {
+  async ({ capabilityId, input, commandId }) => {
     const manifest = await loadManifest();
     const capability = findAgentCapability(manifest, capabilityId);
-    const execution = await prepareTask(manifest, capability, input);
+    const execution = await prepareAgentTask(manifest, capability, input, { commandId });
     return {
       ...summarizeTask(execution),
-      presentation: (
-        await agentRequest(manifest, 'result', { taskId: execution.task.id })
-      ).presentation,
+      presentation: currentTaskPresentation(manifest, execution.task),
     };
   },
 );
@@ -211,15 +292,13 @@ registerTool(
       openWorldHint: true,
     },
   },
-  async ({ capabilityId, input }) => {
+  async ({ capabilityId, input, commandId }) => {
     const manifest = await loadManifest();
     const capability = findAgentCapability(manifest, capabilityId);
-    const execution = await runConnector(manifest, capability, input);
+    const execution = await runConnector(manifest, capability, input, { commandId });
     return {
       ...summarizeTask(execution),
-      presentation: (
-        await agentRequest(manifest, 'result', { taskId: execution.task.id })
-      ).presentation,
+      presentation: currentTaskPresentation(manifest, execution.task),
     };
   },
 );
@@ -229,9 +308,11 @@ registerTool(
   {
     title: 'Get a 2D workbench task',
     description:
-      'Read a workbench task. If its adapter job is still running, poll that existing job once and persist the refreshed status and artifacts without starting new generation.',
+      'Poll the existing task by taskId or commandId. Default reads return a compact record and saved progress. Use detail:true to include the original input. Follow workbench_get_result for evidence and exact next actions.',
     inputSchema: {
-      taskId: z.string().min(1).describe('Task ID returned by this server.'),
+      taskId: z.string().min(1).optional().describe('Task ID returned by this server.'),
+      commandId: z.string().regex(commandIdPattern).optional().describe('Caller command ID from the original prepare or run.'),
+      detail: z.boolean().optional(),
     },
     annotations: {
       readOnlyHint: false,
@@ -240,13 +321,14 @@ registerTool(
       openWorldHint: true,
     },
   },
-  async ({ taskId }) => {
+  async ({ taskId, commandId, detail }) => {
+    if (Boolean(taskId) === Boolean(commandId)) throw new Error('Provide exactly one of taskId or commandId.');
     const manifest = await loadManifest();
-    const refreshed = await refreshTask(manifest, taskId);
+    const refreshed = await refreshTask(manifest, taskId || commandTaskId(commandId));
     return {
-      task: refreshed.task,
-      presentation: (await agentRequest(manifest, 'result', { taskId }))
-        .presentation,
+      presentation: currentTaskPresentation(manifest, refreshed.task),
+      task: publicTaskRecord(refreshed.task, detail),
+      ...(detail ? { detailIncluded: true } : {}),
       ...(refreshed.refreshError
         ? { refreshError: refreshed.refreshError }
         : {}),
@@ -299,12 +381,13 @@ const discoveryTools = [
       limit: z.number().int().min(1).max(200).optional(),
       offset: z.number().int().min(0).optional(),
       snapshot: z.string().max(2000).optional(),
+      detail: z.boolean().optional().describe('Include full task inputs. Detail pages follow the ordered matches across checkpoints. A row updated during its read has detailChanged:true.'),
     },
   ],
   [
     'workbench_get_result',
     'result',
-    'Read a workbench taskId OR a native sprite jobId (exactly one). Optional candidateIndex selects an existing candidate. Returns a concise presentation and exact viewUrl plus structured results. Does not refresh, generate, create tasks or open a browser.',
+    'Read a saved taskId or a native sprite jobId (exactly one). Sprite results default to a compact summary with next actions, issues and available stage tokens. Request detail:true for bounded technical pages. This read creates no tasks or generation.',
     {
       taskId: z.string().min(1).optional(),
       jobId: z.string().min(1).max(200).optional(),
@@ -313,8 +396,11 @@ const discoveryTools = [
         .boolean()
         .optional()
         .describe(
-          'Return full technical JSON in text content for clients without structuredContent; use for frame review or debugging.',
+          'Fetch one technical page for sprite results. Concatenate detailPage.json across pages before parsing. Other capabilities return their full technical result.',
         ),
+      section: z.string().max(2000).optional().describe('Sprite detail JSON Pointer, e.g. /result/orderedFrames, /result/stage/review, /result/work/plan, or /artifacts. Omit for the complete detail document.'),
+      offset: z.number().int().min(0).optional().describe('Sprite detail starts at 0. For the next page, send detailPage.nextOffset and detailPage.snapshot with the same selection.'),
+      snapshot: z.string().regex(/^[a-f0-9]{64}$/).optional().describe('detailPage.snapshot for a continuation of the same sprite detail selection.'),
     },
   ],
   [
@@ -325,11 +411,17 @@ const discoveryTools = [
   ],
 ];
 for (const [name,operation,description] of gameExportTools) {
-  registerTool(name,{description,inputSchema:gameExportInputs[operation].shape,annotations:{readOnlyHint:['game-exports','game-export'].includes(operation),destructiveHint:false,idempotentHint:true,openWorldHint:false}},async input=>agentRequest(await loadManifest(),operation,input));
+  registerTool(name,{description,inputSchema:gameExportInputs[operation],annotations:{readOnlyHint:['game-exports','game-export'].includes(operation),destructiveHint:false,idempotentHint:true,openWorldHint:false}},async input=>agentRequest(await loadManifest(),operation,input));
+}
+for (const [name, operation, description] of documentTools) {
+  registerTool(name, { description, inputSchema: documentInputs[operation], annotations: { readOnlyHint: ['documents', 'document-get', 'document-validate', 'document-simulate', 'document-motion-bindings'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: false } }, async input => agentRequest(await loadManifest(), operation, input));
+}
+for (const [name, operation, description] of imageEditTools) {
+  registerTool(name, { description, inputSchema: imageEditInputs[operation], annotations: { readOnlyHint: ['image-inspect', 'image-session-get', 'image-plan-get', 'image-part-get', 'image-critic-get'].includes(operation), destructiveHint: false, idempotentHint: true, openWorldHint: ['image-edit', 'image-part-suggest', 'image-critic-run'].includes(operation) } }, async input => agentRequest(await loadManifest(), operation, input));
 }
 for (const [name, operation, description] of previewTools) {
   registerTool(name, {
-    description, inputSchema: previewInputs[operation].shape,
+    description, inputSchema: previewInputs[operation],
     annotations: { readOnlyHint: operation !== 'present', destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => {
     const result = await agentRequest(await loadManifest(), operation, input, { previewSessionId: workbuddyPreview.enabled ? workbuddyPreview.sessionId : undefined });
@@ -342,7 +434,7 @@ for (const [name, operation, description] of assetTools) {
     name,
     {
       description,
-      inputSchema: assetInputs[operation].shape,
+      inputSchema: assetInputs[operation],
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -359,7 +451,7 @@ for (const [name, operation, description, inputSchema] of discoveryTools) {
     name,
     {
       description,
-      inputSchema,
+      inputSchema: z.strictObject(inputSchema),
       annotations: {
         readOnlyHint: !['start', 'frontend'].includes(operation),
         destructiveHint: false,

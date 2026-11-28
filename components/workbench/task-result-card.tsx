@@ -71,13 +71,11 @@ export function TaskResultCard({ taskId }: { taskId: string }) {
       {p.preview && (
         <figure>
           <img
+            loading="lazy"
+            decoding="async"
             src={p.preview.url}
             alt={p.preview.kind === 'animation' ? '动画预览' : '作品预览'}
-            style={{
-              maxWidth: '100%',
-              maxHeight: 320,
-              imageRendering: 'pixelated',
-            }}
+            className="max-h-80 max-w-full [image-rendering:pixelated]"
           />
           <figcaption>
             {p.preview.kind === 'animation'

@@ -1,5 +1,6 @@
 /* oxlint-disable next/no-img-element -- User-uploaded local data URLs must retain their original bytes. */
 'use client';
+import { NativeSelect, NativeSelectOption, NativeSelectOptGroup } from '@/components/ui/native-select';
 import {offerGodotExport} from '@/lib/workbench/godot-export';
 import {
   useCallback,
@@ -10,7 +11,8 @@ import {
   useState,
   type SetStateAction,
 } from 'react';
-import { Box, Plus, Copy, Download, Upload, Save, Trash2 } from 'lucide-react';
+import { Box, Plus, Copy, Download, FolderOpen, Save, Trash2, ChevronDown, Upload } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import {
   createProject,
   createObject,
@@ -43,14 +45,33 @@ import {
   markEditorSaved,
 } from '@/lib/workbench/editor-session';
 import { listWorkItems, readWorkspaceDraft } from '@/lib/workbench/browser-store';
-import { AssetImportPicker } from '@/components/workbench/asset-import-picker';
-import { clearImportQuery, readEditorHandoff, storeEditorHandoff, type ImportBundle, type ImportPurpose } from '@/lib/workbench/asset-import';
+import { AssetImportPicker } from '@/components/workbench/lazy-dialogs';
+import { clearImportQuery, libraryAnimationTiming, readEditorHandoff, type ImportBundle, type ImportPurpose, type LibraryAsset } from '@/lib/workbench/asset-import';
 import { normalizeProject } from '@/features/interactable-editor/contract.mjs';
-import { useWorkbench } from '@/components/workbench/workbench-provider';
+import { projectSchema } from '@/features/interactable-editor/contract.mjs';
+import { portableProject } from '@/features/interactable-editor/portable-project';
+import { applyDocument, readDocument } from '@/features/editor-documents/client';
+import { useSharedDocument } from '@/features/editor-documents/use-shared-document';
+import { documentFingerprint, type DocumentSavedSnapshot } from '@/features/editor-documents/sync-controller.mjs';
+import { ImageEditWorkspace } from '@/components/image-edit/lazy-image-edit-workspace';
+import type { ImageTargetRef } from '@/features/image-edit/client';
+import { imageTargetEquals, readImageEdit } from '@/features/image-edit/client';
+import { clearImageEditNavigation, readImageEditNavigation, writeImageEditNavigation, type ImageEditNavigation } from '@/features/image-edit/navigation';
+import { DocumentSyncStatus } from '@/components/workbench/document-sync-status';
+import { SourceAssetLink } from '@/components/workbench/shared-navigation';
+import { SharedDocumentPicker } from '@/components/workbench/shared-document-picker';
+import { sharedDocumentHref } from '@/features/editor-documents/library';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { toast } from '@/components/ui/toast';
+import type { WorkItem } from '@/lib/workbench/work-items';
+import { useWorkbenchActions } from '@/components/workbench/workbench-provider';
 import { isUntouchedStarterProject } from '@/features/interactable-editor/draft-activity';
 import { Field, Numeric, Check, BehaviorPanel } from './property-panels';
 import { VisualPanel } from './visual-panel';
 import { PropArtPanel } from './prop-art-panel';
+import { ImagePropPanel } from './image-prop-panel';
+import { PropReferenceTools } from './prop-reference-tools';
 import { applyPropArt } from '@/features/interactable-editor/prop-art.mjs';
 import { Preview, assetUrl } from './preview';
 import './interactable-editor.css';
@@ -67,18 +88,30 @@ async function flushPendingDrafts(pass: () => Promise<boolean>) {
   }
 }
 export function InteractableEditor() {
-  const { navigate } = useWorkbench();
-  const [library, setLibrary] = useState<{purposes: ImportPurpose[]; assetId?: string} | null>(null);
+  const { navigate } = useWorkbenchActions();
+  type MotionTarget = {target: 'toggle-state' | 'sequence-entry'; index: number; definitionId: string;
+    source: 'state' | 'transition'; guard: DocumentSavedSnapshot<InteractableProject>};
+  const [library, setLibrary] = useState<{purposes: ImportPurpose[]; assetId?: string; motion?: MotionTarget} | null>(null);
+  const [importDestination, setImportDestination] = useState('default');
+  const [openProject, setOpenProject] = useState(false), [sharedOpen, setSharedOpen] = useState(false);
+  const [localProjects, setLocalProjects] = useState<WorkItem[]>([]), [localProjectsError, setLocalProjectsError] = useState('');
+  const [localProjectsLoading, setLocalProjectsLoading] = useState(false);
   const importStarted = useRef(false);
-  const [handoffUrl, setHandoffUrl] = useState('');
   const [project, setProjectState] =
       useState<InteractableProject>(createProject),
     [selected, setSelected] = useState(''),
     [exportIds, setExportIds] = useState<string[]>([]),
     [tab, setTab] = useState('visual');
   const [started, setStarted] = useState(false);
+  const imageEditing = useRef(false);
+  const [imageOpening, setImageOpening] = useState(false);
+  const [imageEdit, setImageEdit] = useState<{ target: ImageTargetRef; guard: DocumentSavedSnapshot<InteractableProject> | null; navigation?: ImageEditNavigation } | null>(null);
+  const editNavigationConsumed = useRef(false);
+  const imageEditRef = useRef(imageEdit);
+  useLayoutEffect(() => { imageEditRef.current = imageEdit; }, [imageEdit]);
   const setProject = useCallback(
     (value: SetStateAction<InteractableProject>) => {
+      if (imageEditing.current) return;
       setStarted(true);
       setProjectState(value);
     },
@@ -95,6 +128,16 @@ export function InteractableEditor() {
     outputs: string[];
   } | null>(null);
   const [draftWritable, setDraftWritable] = useState(true);
+  useEffect(() => {
+    if (!openProject) return;
+    let alive = true;
+    // oxlint-disable-next-line react/react-compiler -- Loading browser-only project summaries is tied to this picker session.
+    setLocalProjectsLoading(true); setLocalProjectsError(''); setLocalProjects([]);
+    void listWorkItems().then(items => {
+      if (alive) setLocalProjects([...new Map(items.filter(item => item.capabilityId === 'interactable-editor' && item.draftKey).map(item => [item.scopeId || item.draftKey, item])).values()]);
+    }).catch(cause => { if (alive) setLocalProjectsError(cause instanceof Error ? cause.message : '本机草稿列表暂时不可读。'); }).finally(() => { if (alive) setLocalProjectsLoading(false); });
+    return () => { alive = false; };
+  }, [openProject]);
   const assetInput = useRef<HTMLInputElement>(null),
     projectInput = useRef<HTMLInputElement>(null),
     framesInput = useRef<HTMLInputElement>(null);
@@ -123,7 +166,7 @@ export function InteractableEditor() {
       if (!value.draftWritable) {
         if (value.project === unreadableFallback.current) return false;
         throw new Error(
-          '原草稿暂时无法读取。请先保存当前源文件或导入项目，再离开页面。',
+          '原草稿暂时无法读取。请先保存当前源文件或打开工程，再离开页面。',
         );
       }
       if (savedProject.current === value.project) return false;
@@ -145,11 +188,53 @@ export function InteractableEditor() {
       }
     });
   }, []);
+  const shared = useSharedDocument({
+    id: project.projectId,
+    kind: 'interactable',
+    value: project,
+    enabled: ready && started && draftWritable,
+    busy: busy || Boolean(imageEdit),
+    prepare: portableProject,
+    saveLocal: async () => { await persist(); },
+    applyRemote: async (incoming) => {
+      const next = normalizeProject(incoming);
+      const previous = latest.current.project;
+      await writeChain.current.catch(() => undefined);
+      if (latest.current.busy) throw new Error('交互物正在处理内容，共享修改暂未替换本机草稿。');
+      if (latest.current.project !== previous) throw new Error('读取期间本机工程已变化，修改已保留。');
+      // Apply synchronously after the controller's identity guard; later local edits remain a new draft.
+      latest.current = { ...latest.current, project: next, started: true };
+      setProjectState(next);
+      setStarted(true);
+      completedIds.current = [];
+      setExportIds([]);
+      const writing = writeChain.current.catch(() => undefined).then(() => saveDraft(next));
+      writeChain.current = writing;
+      await writing;
+      savedProject.current = next;
+      savedAt.current = new Date().toISOString();
+      setDraftStatus('共享修改已保存到本机');
+    },
+    backupLocal: async (snapshot) => {
+      const backup = { ...structuredClone(snapshot), projectId: makeId('project'), name: `${snapshot.name.slice(0, 180)}（本机备份）` };
+      await saveDraft(backup);
+      return backup.name;
+    },
+  });
   useEffect(() => {
     let alive = true;
     const params = new URLSearchParams(location.search);
     const taskId = params.get('task');
-    (taskId ? loadTaskProject(taskId) : loadDraft(params.get('project') || undefined))
+    const documentId = params.get('document');
+    const loadShared = async () => {
+      const local = await readWorkspaceDraft<InteractableProject>(`interactable-project:${documentId}`);
+      if (local) return projectSchema.parse(local);
+      const { document } = await readDocument<InteractableProject>(documentId!);
+      if (document.kind !== 'interactable' || document.id !== documentId)
+        throw new Error('共享工程身份或类型不匹配。');
+      return projectSchema.parse(document.content);
+    };
+    (taskId ? loadTaskProject(taskId) : documentId ? loadShared() : loadDraft(params.get('project') || undefined))
       .then(async (p) => {
         if (!p) {
           if (alive) setDraftStatus('开始编辑后自动保存');
@@ -171,7 +256,7 @@ export function InteractableEditor() {
             )
             .map((object) => object.definitionId);
           savedAt.current = existing?.savedAt || '';
-          setStarted(Boolean(existing) || !isUntouchedStarterProject(p));
+          setStarted(Boolean(documentId) || Boolean(existing) || !isUntouchedStarterProject(p));
           setDraftStatus(
             existing || !isUntouchedStarterProject(p)
               ? '草稿已恢复'
@@ -249,10 +334,10 @@ export function InteractableEditor() {
       capabilityId: 'interactable-editor',
       items,
       dirty,
-      busy,
+      busy: busy || imageOpening || Boolean(imageEdit),
       save: persist,
       beforeLeave: () => {
-        if (latest.current.busy)
+        if (latest.current.busy || imageEditing.current)
           throw new Error('交互物正在提交、采用或导出，请完成后再切换页面。');
       },
     });
@@ -265,6 +350,8 @@ export function InteractableEditor() {
     busy,
     started,
     persist,
+    imageOpening,
+    imageEdit,
   ]);
   useEffect(() => () => removeEditorSession('interactable-editor'), []);
   const edit = (fn: (o: Interactable) => void) =>
@@ -342,13 +429,12 @@ export function InteractableEditor() {
       });
       setMessage(`已导入 ${imported.length} 个素材`);
     });
-  const doExport = (targetProfile: 'generic' | 'copyworms') =>
+  const doExport = () =>
     run(async () => {
       setMessage('正在生成 Godot 包…');
       const task = await exportProject(
         project,
         exportIds.length ? exportIds : [current.definitionId],
-        targetProfile,
       );
       setResult(task);
       if (latest.current.project === project) {
@@ -370,6 +456,53 @@ export function InteractableEditor() {
     setProject(next); setDraftWritable(true); setSelected(definitionId || next.objects[0]?.definitionId || ''); setExportIds([]); setResult(null);
     setMessage('项目与素材已导入；原项目保留。');
   };
+  const slotEntries = current.behavior.kind === 'toggle' ? current.behavior.states :
+    current.behavior.kind === 'sequence' ? current.behavior.entries : [];
+  const openLibrary = async () => {
+    try {
+      if (importDestination === 'default' || !slotEntries.length) {
+        setLibrary({purposes:['image','animation']});
+        return;
+      }
+      const [mode, position] = importDestination.split(':');
+      const index = Number(position);
+      if (!slotEntries[index]) throw new Error('请重新选择当前物件的导入位置。');
+      const fingerprint = await documentFingerprint(await portableProject(project));
+      await persist(true);
+      const guard = await shared.flushSaved();
+      if (guard.fingerprint !== fingerprint) throw new Error('工程已变化，请核对导入位置后重选。');
+      const source = mode === 'state' ? 'state' : 'transition';
+      setLibrary({purposes:[source === 'state' ? 'image' : 'animation'], motion:{
+        definitionId:current.definitionId, index, source, guard,
+        target:current.behavior.kind === 'toggle' ? 'toggle-state' : 'sequence-entry'}});
+    } catch (cause) {setError(true); setMessage(describeError(cause));}
+  };
+  // The state-animation panel writes back through the shared document, so save it first and pass its identity.
+  const openStateMotion = async () => {
+    try {
+      await persist(true);
+      const guard = await shared.flushSaved();
+      await navigate('/tools/interactable-motion?' + new URLSearchParams({document: guard.document.id, definition: current.definitionId}));
+    } catch (cause) {setError(true); setMessage(describeError(cause));}
+  };
+  const importMotion = async (asset: LibraryAsset) => {
+    const slot = library?.motion;
+    if (!slot || asset.motionSource !== slot.source) throw new Error('请选择当前用途的状态链素材。');
+    const {guard, target, index, definitionId} = slot;
+    if (await documentFingerprint(await portableProject(latest.current.project)) !== guard.fingerprint)
+      throw new Error('选择期间本机工程已变化，请重新打开资产库。');
+    const response = await fetch('/api/workbench/assets?' + new URLSearchParams({assetId:asset.id}), {cache:'no-store'});
+    const { asset: detail } = await response.json() as { asset?: LibraryAsset };
+    if (!response.ok || detail?.id !== asset.id || detail.motionSource !== slot.source ||
+      detail.checkpointToken !== asset.checkpointToken || detail.planSha256 !== asset.planSha256 ||
+      detail.stateSha256 !== asset.stateSha256 || !detail.revision) throw new Error('源素材已变化，请刷新后重新选择。');
+    const command = {type:'import-motion-asset', definitionId, target, index, assetId:asset.id, assetRevision:detail.revision};
+    const commandId = 'motion-' + await documentFingerprint([guard.document.id, guard.document.revision, command]);
+    const result = await applyDocument<InteractableProject>(guard.document.id, guard.document.revision, [command], commandId);
+    await shared.acceptAdopted(result.document, guard);
+    setError(false);
+    setMessage(slot.source === 'state' ? '已写入所选条目的状态图。' : '已绑定过渡，进入所选条目时播放一次。');
+  };
   const importFromLibrary = async (bundle: ImportBundle) => {
     if (latest.current.busy) throw new Error('请等待当前操作完成。');
     const target = {projectId: latest.current.project.projectId, definitionId: current.definitionId, previousAssetId: current.visual.assetId};
@@ -377,6 +510,7 @@ export function InteractableEditor() {
     try {
       if (bundle.purpose === 'interactable') await adoptImportedProject(await importProject(bundle.files[0].file), bundle.asset.definitionId);
       else {
+        const timing = bundle.purpose === 'animation' ? libraryAnimationTiming(bundle.asset, bundle.files.length) : null;
         const imported: Asset[] = [];
         for (const {file,sha256} of bundle.files) {
           const asset = await importAsset(file);
@@ -390,23 +524,14 @@ export function InteractableEditor() {
         if (next.projectId!==target.projectId || !object || object.visual.assetId!==target.previousAssetId) throw new Error('目标物件已变化，请重新选择导入目标。');
         for (const asset of imported) { const previous=next.assets.find(a=>a.id===asset.id); if(previous&&previous.source!==asset.source)throw new Error('素材身份冲突。'); if(!previous)next.assets.push(asset); }
         if (bundle.purpose === 'animation') {
-          if (!bundle.asset.fps || typeof bundle.asset.loop!=='boolean') throw new Error('动画缺少播放设置。');
           const name=nextClipName(object);
-          object.visual.clips.push({name,fps:bundle.asset.fps,loop:bundle.asset.loop,frames:imported.map(a=>({assetId:a.id,duration:1}))});
+          object.visual.clips.push({name,fps:timing!.fps,loop:timing!.loop,frames:imported.map((a,index)=>({assetId:a.id,duration:timing!.durations[index]}))});
           object.visual.idleAnimation=name;
         } else {object.visual.assetId=imported[0].id;object.visual.idleAnimation='';object.visual.focusAnimation='';}
         setProject(next);setMessage(bundle.purpose==='animation'?'动画帧与播放设置已导入当前物件。':'原图已用于当前物件；其他状态图片和交互行为保留。');
       }
     } finally { setBusy(false); }
   };
-  const sendToScene = () => void run(async () => {
-    await persist(true);
-    const href=await storeEditorHandoff('scene-composer','interactable',{project:latest.current.project,definitionIds:exportIds.length?exportIds:[current.definitionId]});
-    setHandoffUrl(href);
-  });
-  useEffect(()=>{
-    if(!busy && handoffUrl) queueMicrotask(()=>{setHandoffUrl('');void navigate(handoffUrl);});
-  },[busy,handoffUrl,navigate]);
   const consumeImport = useEffectEvent(()=>{
     const params=new URLSearchParams(location.search),assetId=params.get('importAsset'),purpose=params.get('importPurpose');
     if(assetId&&['image','animation','interactable'].includes(purpose||'')){queueMicrotask(()=>setLibrary({purposes:[purpose as ImportPurpose],assetId}));clearImportQuery();}
@@ -414,15 +539,53 @@ export function InteractableEditor() {
   });
   useEffect(()=>{if(!ready||importStarted.current)return;importStarted.current=true;queueMicrotask(()=>consumeImport());},[ready]);
   const used = new Set(referencedAssets(project).map((a) => a.id));
+  const openImageEdit = async (selection?: Extract<ImageTargetRef, { kind: 'interactable' }>, navigation?: ImageEditNavigation) => {
+    if (latest.current.busy || imageEditing.current) return;
+    imageEditing.current = true;
+    setImageOpening(true);
+    try {
+      const original = await documentFingerprint(await portableProject(latest.current.project));
+      await persist(true);
+      const guard = await shared.flushSaved();
+      if (original !== guard.fingerprint) throw new Error('保存期间项目或状态条目发生变化，请重新选择图片位置。');
+      if (selection && selection.documentId !== guard.document.id) throw new Error('图片会话不属于当前项目。');
+      const object = guard.document.content.objects.find(object => object.definitionId === (selection?.definitionId || current.definitionId));
+      if (!object) throw new Error('当前物件已不存在。');
+      const slot = selection?.slot || 'visual', index = selection?.index;
+      const entry = slot === 'toggle-state' && object.behavior.kind === 'toggle' ? object.behavior.states[index ?? -1] : slot === 'sequence-entry' && object.behavior.kind === 'sequence' ? object.behavior.entries[index ?? -1] : undefined;
+      if (slot !== 'visual' && !entry) throw new Error('指定状态或序列条目已变化，请重新选择。');
+      if (!(entry?.appearance.assetId || object.visual.assetId)) throw new Error('当前图片位置没有静态源图片。');
+      const next = { target: { kind: 'interactable', documentId: guard.document.id, definitionId: object.definitionId, slot, ...(slot !== 'visual' ? { index } : {}) } as ImageTargetRef, guard, navigation };
+      imageEditRef.current = next;
+      setImageEdit(next);
+      setError(false);
+    } catch (error) {
+      if (selection && navigation) {
+        const next = { target: selection, guard: null, navigation };
+        imageEditRef.current = next; setImageEdit(next);
+      } else imageEditing.current = false;
+      setMessage(describeError(error));
+      setError(true);
+    } finally { setImageOpening(false); }
+  };
+  const resumeImageEdit = useEffectEvent(() => {
+    const navigation = readImageEditNavigation(); if (!navigation) return;
+    void readImageEdit(navigation.editId).then(({ edit }) => {
+      if (edit.target.targetRef.kind !== 'interactable') throw new Error('图片会话不是交互物外观。');
+      return openImageEdit(edit.target.targetRef, navigation);
+    }).catch(error => { setMessage(describeError(error)); setError(true); });
+  });
+  useEffect(() => { if (!ready || editNavigationConsumed.current) return; editNavigationConsumed.current = true; resumeImageEdit(); }, [ready]);
   return (
-    <main className="ie-workspace">
+    <>
+    <main className="ie-workspace" inert={imageOpening || Boolean(imageEdit)}>
       {!ready && (
         <output className="wb-loading-veil">正在恢复交互物草稿…</output>
       )}
-      <AssetImportPicker open={!!library} onClose={()=>setLibrary(null)} purposes={library?.purposes || ['interactable']} initialAsset={library?.assetId} onImport={importFromLibrary} />
+      <AssetImportPicker open={!!library} onClose={()=>setLibrary(null)} purposes={library?.purposes || ['interactable']} initialAsset={library?.assetId} motionSource={library?.motion?.source} onImportMotion={importMotion} onImport={importFromLibrary} />
       <header className="ie-toolbar">
         <Box color="var(--theme-cyan)" />
-        <strong>交互物编辑器</strong>
+        <strong>交互物编辑</strong>
         <input
           aria-label="项目名称"
           value={project.name}
@@ -431,44 +594,56 @@ export function InteractableEditor() {
         <span className="ie-note">
           {draftWritable
             ? draftStatus
-            : '原草稿保留，请保存源文件；导入项目可恢复自动保存'}
+            : '原草稿保留，请保存源文件；打开工程可恢复自动保存'}
         </span>
+        <SourceAssetLink />
         <span className="ie-spacer" />
-        <button disabled={busy || !ready} onClick={()=>setLibrary({purposes:['interactable']})}>从资产库打开项目</button>
-        <button disabled={busy || !ready || !draftWritable} onClick={()=>void run(async()=>{await saveProjectToLibrary(latest.current.project);await persist(true);setMessage('交互物源项目已保存到资产库，可直接导入场景；尚未导出 Godot。');})}>保存到资产库</button>
-        <button disabled={busy || !ready || !draftWritable} onClick={sendToScene}>用于制作场景</button>
-        <button disabled={busy} onClick={() => projectInput.current?.click()}>
-          <Upload size={16} />
-          导入项目
-        </button>
-        <button
-          onClick={() => {
-            downloadJson(project);
-            void persist(true).catch(() => undefined);
-          }}
-        >
-          <Save size={16} />
-          保存源文件
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<button type="button" aria-label="打开" disabled={busy || !ready} />}>
+            <FolderOpen size={16} />
+            打开
+            <ChevronDown size={14} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="ie-menu">
+            <DropdownMenuItem disabled={imageOpening || Boolean(imageEdit)} onClick={() => setOpenProject(true)}>
+              <span><strong>打开工程</strong><small>选择本机草稿、共享工程或导出的源文件。</small></span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setLibrary({ purposes: ['interactable'] })}>
+              <span><strong>从资产库选用</strong><small>打开资产库中已保存的交互物项目。</small></span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {/* Three different destinations: browser draft, runtime asset library and a downloaded file. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<button type="button" aria-label="保存" disabled={!ready} />}>
+            <Save size={16} />
+            保存
+            <ChevronDown size={14} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="ie-menu">
+            <DropdownMenuItem disabled={!draftWritable} onClick={() => void persist(true).then(() => { setMessage(''); toast.success('草稿已保存', '保存在当前浏览器，可从制作记录继续。'); }, (e: Error) => setMessage(e.message))}>
+              <span><strong>保存草稿</strong><small>保存在当前浏览器，编辑时也会自动保存。从制作记录继续。</small></span>
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled={busy || !draftWritable} onClick={() => void run(async () => { await saveProjectToLibrary(latest.current.project); await persist(true); toast.success('已保存到资产库', '其他工具可以选用；尚未导出 Godot。'); })}>
+              <span><strong>保存到资产库</strong><small>交给本机服务登记，其他工具和其他浏览器都能选用；不导出 Godot。</small></span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { downloadJson(project); toast.success('源文件已开始下载', '工程 JSON 可在其他电脑上打开。'); void persist(true).catch(() => undefined); }}>
+              <span><strong>下载源文件</strong><small>下载工程 JSON 到本机，用于备份或在其他电脑上打开。</small></span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button
           className="ie-primary"
           disabled={busy || !ready}
-          onClick={() => doExport('generic')}
+          onClick={doExport}
         >
           <Download size={16} />
           {busy
             ? '处理中…'
             : `导出 Godot${exportIds.length ? ` · ${exportIds.length} 个` : ''}`}
         </button>
-        <button
-          disabled={busy || !ready}
-          onClick={() => doExport('copyworms')}
-          title="使用 copyWorms 的人物、Enter 输入与输入锁；可选连接原事件"
-        >
-          <Download size={16} />
-          导出 copyWorms 兼容版
-        </button>
       </header>
+      {ready && started && <DocumentSyncStatus state={shared} disabled={busy} />}
       {message && (
         <div
           role={error ? 'alert' : 'status'}
@@ -579,7 +754,7 @@ export function InteractableEditor() {
               </button>
             ))}
           </div>
-          <div className="ie-row" style={{ marginTop: 14 }}>
+          <div className="ie-row mt-3.5">
             <button onClick={clone}>
               <Copy size={14} />
               复制
@@ -591,16 +766,25 @@ export function InteractableEditor() {
           </div>
           <details open>
             <summary>素材 · {project.assets.length}</summary>
+            {!project.assets.length && <p className="ie-note">先导入图片 / 音效，或从资产库选用原图 / 动画，再配置物件外观与行为。</p>}
             <button disabled={busy} onClick={() => assetInput.current?.click()}>
               <Upload size={14} />
               导入图片 / 音效
             </button>
-            <button disabled={busy || !ready || !draftWritable} onClick={()=>setLibrary({purposes:['image','animation']})}>从资产库导入原图 / 动画</button>
+            {!!slotEntries.length && <label>导入位置<NativeSelect value={importDestination} onChange={e => setImportDestination(e.target.value)}>
+              <NativeSelectOption value="default">默认外观 / 动画</NativeSelectOption>
+              {slotEntries.map((entry, index) => <NativeSelectOptGroup key={index} label={`${index+1} · ${entry.name}`}>
+                <NativeSelectOption value={`state:${index}`}>{entry.name} · 状态图</NativeSelectOption>
+                <NativeSelectOption value={`transition:${index}`}>{entry.name} · 进入过渡</NativeSelectOption>
+              </NativeSelectOptGroup>)}
+            </NativeSelect></label>}
+            <button disabled={busy || !ready || !draftWritable} onClick={()=>void openLibrary()}>从资产库选用原图 / 动画</button>
+            {!!slotEntries.length && <button disabled={busy || !ready || !draftWritable} onClick={()=>void openStateMotion()}>制作状态动画</button>}
             <div className="ie-asset-list">
               {project.assets.map((a) => (
                 <div key={a.id}>
                   {a.mime.startsWith('image') ? (
-                    <img src={assetUrl(a)} alt="" />
+                    <img loading="lazy" decoding="async" src={assetUrl(a)} alt="" />
                   ) : (
                     <span>♫</span>
                   )}
@@ -625,25 +809,6 @@ export function InteractableEditor() {
         </aside>
         <Preview object={current} assets={project.assets} edit={edit} />
         <aside className="ie-inspector">
-          <PropArtPanel
-            projectId={project.projectId}
-            definitionId={current.definitionId}
-            objectName={current.displayName}
-            imageId={current.visual.assetId}
-            disabled={!ready || busy || !draftWritable}
-            onBusy={setBusy}
-            beforeGenerate={async () => {
-              await persist(true);
-              const url = new URL(location.href);
-              url.searchParams.delete('task');
-              url.searchParams.set('project', latest.current.project.projectId);
-              url.searchParams.set('object', current.definitionId);
-              history.replaceState(null, '', url.pathname + url.search);
-            }}
-            onAdopt={(target, asset) => {
-              setProject(applyPropArt(latest.current.project, target, asset));
-            }}
-          />
           <Field label="物件名称">
             <input
               value={current.displayName}
@@ -654,7 +819,7 @@ export function InteractableEditor() {
               }
             />
           </Field>
-          <div className="ie-tabs">
+          <fieldset className="ie-tabs ui-segmented" aria-label="物件设置">
             {[
               ['visual', '外观'],
               ['trigger', '触发'],
@@ -669,7 +834,53 @@ export function InteractableEditor() {
                 {label}
               </button>
             ))}
-          </div>
+          </fieldset>
+          {/* Kept mounted on other tabs so running generations keep polling. */}
+          <section className="ie-get-image" aria-label="获取图片" hidden={tab !== 'visual'}>
+            <h3>获取图片</h3>
+            <PropReferenceTools objectName={current.displayName} disabled={!ready || busy || !draftWritable}
+              onBusy={setBusy} beforeSave={async () => { await persist(true); }} />
+            <button disabled={!ready || busy || !draftWritable || !current.visual.assetId || imageOpening} onClick={() => void openImageEdit()}>
+              {imageOpening ? '正在保存源工程…' : '局部调整默认图片'}
+            </button>
+            {!current.visual.assetId && <p className="wb-disabled-reason">在下方“图片”中选定一张图后，可以局部调整。</p>}
+            <ImagePropPanel
+              projectId={project.projectId}
+              definitionId={current.definitionId}
+              objectName={current.displayName}
+              imageId={current.visual.assetId}
+              disabled={!ready || busy || !draftWritable}
+              onBusy={setBusy}
+              beforeGenerate={async () => {
+                await persist(true);
+                const url = new URL(location.href);
+                url.searchParams.delete('task');
+                url.searchParams.set('project', latest.current.project.projectId);
+                url.searchParams.set('object', current.definitionId);
+                history.replaceState(null, '', url.pathname + url.search);
+              }}
+              onAdopt={(target, asset) => setProject(applyPropArt(latest.current.project, target, asset))}
+            />
+            <PropArtPanel
+              projectId={project.projectId}
+              definitionId={current.definitionId}
+              objectName={current.displayName}
+              imageId={current.visual.assetId}
+              disabled={!ready || busy || !draftWritable}
+              onBusy={setBusy}
+              beforeGenerate={async () => {
+                await persist(true);
+                const url = new URL(location.href);
+                url.searchParams.delete('task');
+                url.searchParams.set('project', latest.current.project.projectId);
+                url.searchParams.set('object', current.definitionId);
+                history.replaceState(null, '', url.pathname + url.search);
+              }}
+              onAdopt={(target, asset) => {
+                setProject(applyPropArt(latest.current.project, target, asset));
+              }}
+            />
+          </section>
           {tab === 'visual' && (
             <VisualPanel
               object={current}
@@ -683,7 +894,7 @@ export function InteractableEditor() {
           {tab === 'trigger' && (
             <div className="ie-tab-content">
               <Field label="触发方式">
-                <select
+                <NativeSelect
                   value={current.activation.mode}
                   onChange={(e) =>
                     edit((o) => {
@@ -693,11 +904,11 @@ export function InteractableEditor() {
                   }
                 >
                   {TRIGGERS.map((t) => (
-                    <option key={t} value={t}>
+                    <NativeSelectOption key={t} value={t}>
                       {triggerLabels[t]}
-                    </option>
+                    </NativeSelectOption>
                   ))}
-                </select>
+                </NativeSelect>
               </Field>
               <Check
                 label="初始启用"
@@ -759,21 +970,6 @@ export function InteractableEditor() {
               />
               <details open>
                 <summary>高级接入</summary>
-                <Field label="copyWorms 原事件物件 ID（可选）">
-                  <input
-                    value={current.copyworms.objectId}
-                    placeholder="例如 notice；留空仅运行当前物件行为"
-                    onChange={(e) =>
-                      edit((o) => {
-                        o.copyworms.objectId = e.target.value;
-                      })
-                    }
-                  />
-                </Field>
-                <p className="ie-note">
-                  仅兼容版生效：完成交互后触发对应原事件。原剧情仍由关卡阶段控制。
-                  兼容版自动使用 player、碰撞层 4 和 ui_accept（默认 Enter）。
-                </p>
                 <Field label="InputMap action">
                   <input
                     value={current.activation.action}
@@ -827,13 +1023,15 @@ export function InteractableEditor() {
                 object={current}
                 assets={project.assets}
                 edit={edit}
+                imageBusy={busy || imageOpening || !draftWritable}
+                onEditImage={(slot, index) => void openImageEdit({ kind: 'interactable', documentId: project.projectId, definitionId: current.definitionId, slot, index })}
               />
             </div>
           )}
           {tab === 'memory' && (
             <div className="ie-tab-content">
               <Field label="记忆范围">
-                <select
+                <NativeSelect
                   value={current.memory.scope}
                   onChange={(e) =>
                     edit((o) => {
@@ -842,10 +1040,10 @@ export function InteractableEditor() {
                     })
                   }
                 >
-                  <option value="instance">当前实例（重载重置）</option>
-                  <option value="session">同一局跨场景</option>
-                  <option value="persistent">保存到存档</option>
-                </select>
+                  <NativeSelectOption value="instance">当前实例（重载重置）</NativeSelectOption>
+                  <NativeSelectOption value="session">同一局跨场景</NativeSelectOption>
+                  <NativeSelectOption value="persistent">保存到存档</NativeSelectOption>
+                </NativeSelect>
               </Field>
               {current.memory.scope !== 'instance' && (
                 <>
@@ -881,7 +1079,7 @@ export function InteractableEditor() {
               )}
               <details>
                 <summary>模板身份</summary>
-                <code style={{ overflowWrap: 'anywhere' }}>
+                <code className="[overflow-wrap:anywhere]">
                   {current.definitionId}
                 </code>
                 <p className="ie-note">
@@ -893,5 +1091,51 @@ export function InteractableEditor() {
         </aside>
       </div>
     </main>
+    <Dialog open={openProject} onOpenChange={setOpenProject}>
+      <DialogContent className="max-h-[85dvh] overflow-y-auto">
+        <DialogHeader><DialogTitle>打开交互物工程</DialogTitle><DialogDescription>选择本机草稿、服务端共享工程、源文件或资产库项目。当前草稿沿用保存与冲突保护。</DialogDescription></DialogHeader>
+        <Button disabled={busy || !ready} onClick={() => { setOpenProject(false); setSharedOpen(true); }}>浏览服务端共享工程</Button>
+        <Button variant="outline" disabled={busy || !ready} onClick={() => { setOpenProject(false); projectInput.current?.click(); }}>从源文件打开</Button>
+        <Button variant="outline" disabled={busy || !ready} onClick={() => { setOpenProject(false); setLibrary({ purposes: ['interactable'] }); }}>从资产库选用</Button>
+        <h3>当前浏览器的本机草稿</h3>
+        {localProjectsLoading && <output>正在读取本机草稿…</output>}
+        {localProjectsError && <p role="alert">{localProjectsError} 仍可通过上方其他入口打开工程。</p>}
+        {!localProjectsLoading && !localProjectsError && !localProjects.length && <p>当前浏览器没有已保存的交互物草稿。</p>}
+        {localProjects.map(item => <Button variant="outline" key={item.id} disabled={busy || !ready} onClick={() => { setOpenProject(false); void navigate(item.href); }} className="block h-auto whitespace-normal text-left"><strong>{item.title}</strong><br /><small>{item.detail}</small></Button>)}
+      </DialogContent>
+    </Dialog>
+    <SharedDocumentPicker open={sharedOpen} kind="interactable" currentId={project.projectId} disabled={busy || !ready || imageOpening || Boolean(imageEdit)} onClose={() => setSharedOpen(false)} onOpen={async document => {
+      if (latest.current.busy || imageEditing.current || !latest.current.ready) throw new Error('交互物正在处理内容，请完成后再打开工程。');
+      const href = sharedDocumentHref(location.pathname, document.id);
+      setSharedOpen(false);
+      await navigate(href);
+    }} />
+    {imageEdit && <ImageEditWorkspace
+      onNavigationChange={writeImageEditNavigation}
+      target={imageEdit.target}
+      initialEditId={imageEdit.navigation?.editId}
+      initialCandidateVersion={imageEdit.navigation?.candidateVersion}
+      readOnly={!imageEdit.guard}
+      beforeApply={async () => {
+        const current = imageEditRef.current;
+        if (!current?.guard || latest.current.project.projectId !== current.guard.document.id || await documentFingerprint(await portableProject(latest.current.project)) !== current.guard.fingerprint)
+          throw new Error('本机交互物在图片调整期间已变化，请保留候选并重新打开。');
+      }}
+      onAdopt={async receipt => {
+        const current = imageEditRef.current;
+        const ref = receipt.target.targetRef;
+        if (!current?.guard || ref.kind !== 'interactable' || current.target.kind !== 'interactable' || !imageTargetEquals(ref, current.target) || typeof receipt.revision !== 'number' || receipt.currentRevision !== receipt.revision)
+          throw new Error('已采用结果与当前物件或共享版本不匹配。');
+        const { document } = await readDocument<InteractableProject>(ref.documentId, receipt.revision);
+        const guard = await shared.acceptAdopted(document, current.guard);
+        const next = { ...current, guard };
+        imageEditRef.current = next;
+        setImageEdit(next);
+        setMessage(ref.slot === 'visual' ? '默认图片已采用，共享工程与本机草稿已同步。' : '指定状态图片已采用；默认图片、其他状态与行为保留。');
+        setError(false);
+      }}
+      onClose={() => { imageEditing.current = false; imageEditRef.current = null; setImageEdit(null); clearImageEditNavigation(); }}
+    />}
+    </>
   );
 }

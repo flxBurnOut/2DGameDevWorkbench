@@ -9,6 +9,7 @@ signal interaction_completed(context: Dictionary)
 signal picked_up(context: Dictionary)
 signal toggled(context: Dictionary)
 signal sequence_advanced(context: Dictionary)
+signal state_changed(context: Dictionary)
 
 @export var definition: Resource
 @export var instance_id: String = ""
@@ -34,11 +35,15 @@ var _appearance: Dictionary = {}
 var _result_appearance: Dictionary = {}
 var _elapsed: float = 0.0
 var _feedback_animation: String = ""
+var visible_override: Variant = null
 @onready var visual: Node2D = $VisualRoot
 @onready var sprite: Sprite2D = $VisualRoot/Sprite
 @onready var animated: AnimatedSprite2D = $VisualRoot/Animated
 @onready var prompt: Label = $PromptAnchor/PromptLabel
 @onready var audio: AudioStreamPlayer2D = $AudioStreamPlayer2D
+
+func _enter_tree() -> void:
+	call_deferred("_attach_runtime")
 
 func _ready() -> void:
 	if definition == null:
@@ -54,9 +59,10 @@ func _ready() -> void:
 	animated.frame_changed.connect(_sync_frame_size)
 	prompt.hide()
 	apply_state({})
-	call_deferred("_attach_runtime")
 
 func _attach_runtime() -> void:
+	if not is_inside_tree() or config.is_empty() or is_instance_valid(runtime):
+		return
 	var ancestor := get_parent()
 	while ancestor != null:
 		for child in ancestor.get_children():
@@ -108,7 +114,10 @@ func set_focused(value: bool) -> void:
 	if value:
 		var action: String = config.activation.action
 		var bindings := InputMap.action_get_events(action)
-		prompt.text = config.content.prompt if not config.content.prompt.is_empty() else ("[" + (bindings[0].as_text() if not bindings.is_empty() else config.activation.key) + "] " + definition.display_name)
+		var key_label: String = config.activation.key
+		if not runtime.uses_fallback_key(action) and not bindings.is_empty():
+			key_label = bindings[0].as_text()
+		prompt.text = config.content.prompt if not config.content.prompt.is_empty() else ("[" + key_label + "] " + definition.display_name)
 		if _feedback_animation.is_empty():
 			_play_clip(config.visual.focusAnimation)
 	else:
@@ -266,6 +275,9 @@ func _commit() -> void:
 	interaction_finished.emit(context.duplicate(true))
 	if not is_instance_valid(self) or not is_inside_tree():
 		return
+	state_changed.emit(_link_context("interaction"))
+	if not is_instance_valid(self) or not is_inside_tree():
+		return
 	if completed:
 		interaction_completed.emit(context.duplicate(true))
 	if not is_instance_valid(self) or not is_inside_tree():
@@ -299,6 +311,49 @@ func _context() -> Dictionary:
 func get_state() -> Dictionary:
 	return {"completed": completed, "toggleState": toggle_state, "sequenceIndex": sequence_index, "successCount": success_count}
 
+func get_link_state() -> Dictionary:
+	var result := get_state()
+	result.enabled = enabled
+	result.visible = bool(visible_override if visible_override != null else _appearance.get("visible", config.visual.visible)) and not (completed and config.completion != "remain")
+	result.solidEnabled = bool(_appearance.get("solidEnabled", config.solid.enabled)) and not (completed and config.completion != "remain")
+	return result
+
+func _link_context(reason: String = "link", link_id: String = "") -> Dictionary:
+	var context := _context()
+	context.result = get_link_state()
+	context.reason = reason
+	if not link_id.is_empty():
+		context.linkId = link_id
+	return context
+
+## Typed scene-link setters change state without replaying interaction success.
+func set_link_value(action: String, value: bool, emit_changed: bool = true) -> bool:
+	if config.is_empty() or not is_inside_tree() or is_queued_for_deletion():
+		return false
+	var before := get_link_state()
+	match action:
+		"set_toggle":
+			if config.behavior.kind != "toggle" or toggle_state == value:
+				return false
+			toggle_state = value
+			_appearance = config.behavior.states[1 if value else 0].appearance.duplicate(true)
+			_restore_appearance()
+			_save_memory()
+		"set_enabled":
+			set_enabled(value)
+		"set_visible":
+			visible_override = value
+			_restore_appearance(true)
+		_:
+			return false
+	var changed := before != get_link_state()
+	if changed and emit_changed:
+		publish_link_state()
+	return changed
+
+func publish_link_state(reason: String = "link", link_id: String = "") -> void:
+	state_changed.emit(_link_context(reason, link_id))
+
 func reset_state() -> void:
 	cancel_interaction("reset")
 	apply_state({})
@@ -308,6 +363,8 @@ func apply_state(snapshot: Dictionary) -> void:
 	if config.is_empty():
 		return
 	cancel_interaction("restore")
+	enabled = config.activation.enabled
+	visible_override = null
 	completed = bool(snapshot.get("completed", false))
 	toggle_state = bool(snapshot.get("toggleState", config.behavior.initialToggle))
 	sequence_index = clampi(int(snapshot.get("sequenceIndex", 0)), 0, config.behavior.entries.size() - 1)
@@ -340,9 +397,9 @@ func _restore_appearance(preserve_feedback: bool = false) -> void:
 		sprite.scale = Vector2(config.visual.width, config.visual.height) / sprite.texture.get_size()
 	sprite.visible = sprite.texture != null
 	$VisualRoot/Placeholder.visible = sprite.texture == null
-	visual.visible = _appearance.get("visible", config.visual.visible)
+	visual.visible = visible_override if visible_override != null else _appearance.get("visible", config.visual.visible)
 	visual.modulate = Color(_appearance.get("tint", config.visual.tint))
-	var solid_enabled: bool = _appearance.get("solidEnabled", config.solid.enabled)
+	var solid_enabled: bool = get_link_state().solidEnabled
 	$SolidBody/SolidShape.set_deferred("disabled", not solid_enabled)
 	if preserve_feedback and not _feedback_animation.is_empty():
 		sprite.hide()
@@ -352,7 +409,9 @@ func _restore_appearance(preserve_feedback: bool = false) -> void:
 	animated.hide()
 	animated.stop()
 	var animation: String = _appearance.get("animation", "")
-	_play_clip(animation if not animation.is_empty() else config.visual.idleAnimation)
+	if animation.is_empty() and not _appearance.get("staticImage", false):
+		animation = config.visual.idleAnimation
+	_play_clip(animation)
 
 func _play_clip(name: String) -> bool:
 	if name.is_empty() or not animated.sprite_frames or not animated.sprite_frames.has_animation(name):
@@ -403,3 +462,8 @@ func _exit_tree() -> void:
 		runtime.unregister_interactable(self)
 	runtime = null
 	_source = null
+	in_range = false
+	auto_pending = false
+	_focused = false
+	if is_instance_valid(prompt):
+		prompt.hide()

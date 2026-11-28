@@ -1,19 +1,14 @@
-const DEFAULT_RUNTIME_URL = 'http://127.0.0.1:8790';
+import { fetchBridge } from './service-endpoints.mjs';
 
-export function workbenchRuntimeUrl(pathname: string) {
-  const base = process.env.WORKBENCH_RUNTIME_URL?.trim() || DEFAULT_RUNTIME_URL;
-  return `${base.replace(/\/+$/, '')}${pathname.startsWith('/') ? pathname : `/${pathname}`}`;
-}
+declare const __FORGE_WORKSPACE_ID__: string;
 
-export async function fetchWorkbenchRuntime(pathname: string, init?: RequestInit) {
+export async function fetchWorkbenchRuntime(pathname: string, init?: RequestInit, pinnedWorkspace?: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 370_000);
   try {
-    return await fetch(workbenchRuntimeUrl(pathname), {
-      ...init,
-      cache: 'no-store',
-      signal: init?.signal ?? controller.signal,
-    });
+    return await fetchBridge(pathname, {
+      ...init, cache: 'no-store', signal: init?.signal ?? controller.signal,
+    }, typeof __FORGE_WORKSPACE_ID__ === 'string' ? __FORGE_WORKSPACE_ID__ : undefined, pinnedWorkspace);
   } finally {
     clearTimeout(timeout);
   }

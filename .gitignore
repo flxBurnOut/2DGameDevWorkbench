@@ -130,9 +130,7 @@ logs/
 !/docs/interactable-editor.md
 !/docs/internal-imports.md
 !/docs/image-editing.md
-!/docs/论文方向与方法.md
-!/docs/论文-序列帧长动作生成.md
-!/docs/论文分支执行计划.md
+!/docs/论文大纲-事件驱动交互动画生成.md
 !/docs/前端优化方案.md
 !/docs/前端界面与交互优化方案.md
 !/docs/交互物动画独立面板方案.md

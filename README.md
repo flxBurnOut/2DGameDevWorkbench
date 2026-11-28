@@ -1,6 +1,6 @@
-# Forge — 论文分支 `paper-vbyc`
+# Forge — 论文分支 `paper-v2`
 
-本分支面向 *Verify Before You Chain* 论文开发，保留序列帧、交互物编辑器、图片局部调整与共用底座。完整工作台及原参赛功能存档在 [new-arch](https://github.com/aaaarthur666-design/2DGameDevWorkbench/tree/new-arch)；当前研究进度见[论文方向与方法](docs/论文方向与方法.md)，工程追踪见[问题清单](docs/问题清单/README.md)。
+本分支用于探索全新的研究方向：**以一次交互事件为单位的角色与交互物协同序列帧生成**（用户输入一句话交互意图，系统围绕该事件同时设计角色与交互物各自的动作与时序，输出两套配合好的透明序列帧及引擎同步契约）。原单主体长动作门控论文 *Verify Before You Chain (VBYC)* 已封版存档于 `paper-vbyc` 分支，完整工作台及原参赛功能存档在 [new-arch](https://github.com/aaaarthur666-design/2DGameDevWorkbench/tree/new-arch)；本分支新方向设计见[暂定论文大纲](docs/论文大纲-事件驱动交互动画生成.md)，工程追踪见[问题清单](docs/问题清单/README.md)。
 
 Forge 是面向 2D 游戏美术制作与工程交接的本地工作台。创作者在网页中制作、预览、审查和导出资产；WorkBuddy、Codex 等外部 Agent 通过项目 MCP 与 Skills 协作完成批量制作或游戏接入。详细操作见[操作手册](docs/operations-manual.md)，全部公开文档见[文档中心](docs/README.md)。
 

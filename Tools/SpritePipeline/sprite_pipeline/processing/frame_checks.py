@@ -45,6 +45,7 @@ def run_frame_qa(
     loop: bool = False,
     grounded: bool = False,
     source_metadata: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
+    playback_hold: int = 0,
 ) -> dict[str, object]:
     """Run deterministic hard checks and warning heuristics on PNG frames.
 
@@ -205,7 +206,10 @@ def run_frame_qa(
             )
         frame_reports.append(report)
 
-    duplicate_runs = _find_duplicate_runs(frame_reports, int(effective["duplicate_min_run"] or 2))
+    # The assembler can append confirmed endpoint copies for playback. Still check
+    # every image, and count the original endpoint when looking for generation stalls.
+    duplicate_frames = frame_reports[:-playback_hold] if 0 < playback_hold < len(frame_reports) else frame_reports
+    duplicate_runs = _find_duplicate_runs(duplicate_frames, int(effective["duplicate_min_run"] or 2))
     for run in duplicate_runs:
         failure = {
             "code": "consecutive_duplicate_frames",
@@ -625,6 +629,7 @@ def run_qa(
     anchor_ground_y: int | None = None,
     loop: bool = False,
     thresholds: Mapping[str, int | float | None] | None = None,
+    playback_hold: int = 0,
 ) -> dict[str, object]:
     """Stable harness wrapper around :func:`run_frame_qa`.
 
@@ -644,6 +649,7 @@ def run_qa(
         expected_count=expected_count,
         expected_size=(cell_width, cell_height),
         thresholds=merged,
+        playback_hold=playback_hold,
         reference_frame=reference_path,
         palette=palette_path,
         loop=loop,

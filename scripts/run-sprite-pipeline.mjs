@@ -18,8 +18,7 @@ try {
     throw new Error(
       '当前配置使用外部服务；请用 npm run dev 连接，或先移除外部服务地址配置。',
     );
-  const launch = createSpritePipelineLaunch(root, target);
-  launch.args[1] = mode === 'api' ? 'serve-api' : 'serve-ui';
+  const launch = createSpritePipelineLaunch(root, target, process.env, { apiOnly: mode === 'api' });
   const child = spawn(launch.command, launch.args, {
     cwd: root,
     env: launch.env,

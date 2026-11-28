@@ -10,13 +10,14 @@ import {
   TerminalSquare,
   Wifi,
   WifiOff,
+  ArrowLeft,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import type { WorkbenchModule } from '@/lib/workbench/modules';
 import { useWorkbench } from '@/components/workbench/workbench-provider';
 import { publishEditorSession, removeEditorSession } from '@/lib/workbench/editor-session';
-import { EditorWorkbenchMenu, EditorTaskSummary } from '@/components/workbench/editor-chrome';
+import { EditorTaskSummary, EditorWorkbenchMenu } from '@/components/workbench/editor-chrome';
 import { useWorkbenchTheme } from '@/components/workbench/theme-toggle';
 import { getTheme } from '@/lib/workbench/theme';
 
@@ -41,8 +42,10 @@ function normalizedPipelineUrl() {
 
 export function SpritePipelineWorkspace({
   module,
+  returnToMotion,
 }: {
   module: WorkbenchModule;
+  returnToMotion?: string;
 }) {
   const [status, setStatus] = useState<PipelineStatus>('checking');
   const [connectionMessage, setConnectionMessage] = useState('');
@@ -234,6 +237,19 @@ export function SpritePipelineWorkspace({
           </a>
         </div>
       </header>
+
+      <nav aria-label="返回动作工作区" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-4 py-2 text-sm">
+        <a
+          href={returnToMotion || '/tools/sprite-generator'}
+          className="inline-flex items-center gap-1 font-medium text-[var(--theme-accent)]"
+        >
+          <ArrowLeft className="size-4" />
+          {returnToMotion ? '返回当前作品' : '返回五阶段工作区'}
+        </a>
+        <span className="text-xs text-muted-foreground">
+          逐帧修改请先保存；返回后会加载已保存的结果，修改过的动画需要重新检查。
+        </span>
+      </nav>
 
       {status === 'ready' ? (
         <iframe

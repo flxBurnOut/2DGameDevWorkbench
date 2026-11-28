@@ -2,6 +2,7 @@ import { sites } from '@openai/sites-vite-plugin';
 import tailwindcss from '@tailwindcss/postcss';
 import vinext from 'vinext';
 import { defineConfig } from 'vite';
+import path from 'node:path';
 import hostingConfig from './.openai/hosting.json';
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
@@ -43,8 +44,11 @@ export default defineConfig(async () => {
 
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import('@cloudflare/vite-plugin');
+  const previewDirectory = process.env.FORGE_MOTION_PREVIEW_DIR;
 
   return {
+    // vinext's CJS transform identifies already-optimized modules by this path segment.
+    ...(previewDirectory && { cacheDir: path.join(previewDirectory, 'node_modules/.vite') }),
     css: { postcss: { plugins: [tailwindcss()] } },
     server: {
       strictPort: true,
@@ -66,6 +70,7 @@ export default defineConfig(async () => {
       vinext(),
       sites(),
       cloudflare({
+        ...(previewDirectory && { persistState: { path: path.join(previewDirectory, 'worker-state') } }),
         viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] },
         config: localBindingConfig,
       }),

@@ -557,6 +557,10 @@
         "icon": "interactable",
         "productionLine": "scene",
         "entryTitle": "制作交互物",
+        "entryActions": [
+          { "label": "进入交互物编辑器", "href": "/tools/interactable-editor" },
+          { "label": "制作交互物状态动画", "href": "/tools/interactable-motion" }
+        ],
         "starterHint": "准备物件外观素材，在交互物工具中新建查看、切换、拾取或序列物件。",
         "stages": ["配置物件", "预览并导出"],
         "accent": "cyan",

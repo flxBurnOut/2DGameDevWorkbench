@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "status": "V0-validation",
+  "python": "3.12",
+  "torch": "2.7.1+cu128",
+  "torchvision": "0.22.1+cu128",
+  "samRepository": "https://github.com/facebookresearch/sam2",
+  "samCommit": "2b90b9f5ceec907a1c18123530e92e794ad901a4",
+  "samLicense": "Apache-2.0; review upstream third-party notices",
+  "weightsUrl": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt",
+  "weightsSha256": "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69",
+  "config": "configs/sam2.1/sam2.1_hiera_t.yaml",
+  "cudaExtension": false,
+  "networkAtInference": false,
+  "automaticDownload": false,
+  "runtimeDirectory": "work/visual-structure-runtime",
+  "notes": [
+    "Isolated from SpritePipeline. No import-time model loading or downloads.",
+    "Model weights, environments and user art are never committed.",
+    "SAM 3 requires separate checkpoint access and is not installed or tested by this profile.",
+    "Pixel-art part accuracy and control benefit require real sample evidence."
+  ]
+}

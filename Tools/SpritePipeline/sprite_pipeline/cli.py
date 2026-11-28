@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from importlib.util import find_spec
 import json
 import sys
 from pathlib import Path
@@ -180,6 +181,9 @@ def _parser() -> argparse.ArgumentParser:
     ui = sub.add_parser("serve-ui", help="Run the project-guided Gradio operator UI.")
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--port", type=int, default=7860)
+    auto = sub.add_parser("serve", help="Start the installed service with the operator UI when available.")
+    auto.add_argument("--host", default="127.0.0.1")
+    auto.add_argument("--port", type=int, default=7860)
     return parser
 
 
@@ -188,8 +192,20 @@ def _job_data(job: Any) -> dict[str, Any]:
 
 
 def _execute(args: argparse.Namespace) -> CommandResult | None:
-    service = SpritePipelineService(args.root)
     command = args.command
+    if command == "serve":
+        command = "serve-ui" if find_spec("gradio") is not None else "serve-api"
+    if command == "serve-api":
+        from .api_app import run_api
+
+        run_api(root=args.root, host=args.host, port=args.port)
+        return None
+    if command == "serve-ui":
+        from .ui import run_ui
+
+        run_ui(root=args.root, host=args.host, port=args.port)
+        return None
+    service = SpritePipelineService(args.root)
     if command == "list-presets":
         return CommandResult(operation=command, data=service.list_presets())
     if command == "list-jobs":
@@ -316,16 +332,6 @@ def _execute(args: argparse.Namespace) -> CommandResult | None:
             ExportOptions(columns=args.columns, filename=args.filename, overwrite=args.overwrite),
         )
         return CommandResult(operation=command, data={"job": _job_data(job)})
-    if command == "serve-api":
-        from .api_app import run_api
-
-        run_api(root=args.root, host=args.host, port=args.port)
-        return None
-    if command == "serve-ui":
-        from .ui import run_ui
-
-        run_ui(root=args.root, host=args.host, port=args.port)
-        return None
     raise ValidationHarnessError("unknown command", details={"command": command})
 
 

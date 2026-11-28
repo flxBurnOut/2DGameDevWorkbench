@@ -312,7 +312,7 @@ try {
     managedPid = started.pid;
     const again = value(await call('workbench_start_services'));
     assert(again.status === 'reused' || again.pid === managedPid);
-    await waitForService(managedUrl);
+    await waitForService(managedUrl, 60_000);
     const ready = value(await call('workbench_get_environment'));
     assert(ready.pipeline.compatible);
     assert.equal(ready.pipeline.keyConfigured, false);
@@ -366,8 +366,9 @@ async function freePort() {
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
-async function waitForService(url) {
-  for (let n = 0; n < 100; n++) {
+async function waitForService(url, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (startupError)
       throw new Error(
         'SpritePipeline Python 无法启动，请运行 npm run sprite-pipeline:setup。' +

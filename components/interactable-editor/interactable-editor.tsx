@@ -436,6 +436,11 @@ export function InteractableEditor() {
         <span className="ie-spacer" />
         <button disabled={busy || !ready} onClick={()=>setLibrary({purposes:['interactable']})}>从资产库打开项目</button>
         <button disabled={busy || !ready || !draftWritable} onClick={()=>void run(async()=>{await saveProjectToLibrary(latest.current.project);await persist(true);setMessage('交互物源项目已保存到资产库，可直接导入场景；尚未导出 Godot。');})}>保存到资产库</button>
+        <button disabled={busy || !ready || !draftWritable} onClick={()=>void run(async()=>{
+          await persist(true);
+          const query = new URLSearchParams({document: project.projectId, definition: current.definitionId});
+          setHandoffUrl('/tools/interactable-motion?' + query);
+        })}>制作状态动画</button>
         <button disabled={busy || !ready || !draftWritable} onClick={sendToScene}>用于制作场景</button>
         <button disabled={busy} onClick={() => projectInput.current?.click()}>
           <Upload size={16} />

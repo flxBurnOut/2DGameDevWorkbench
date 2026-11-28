@@ -13,14 +13,16 @@ from typing import Any, Iterator
 from pydantic import ValidationError
 
 from .errors import ConflictError, NotFoundError, ValidationHarnessError
+from .generation_commands import record_progress
 from .jsonio import atomic_write_json, inside, read_json, relative_posix
 from .models import JobRecord
 from .settings import HarnessSettings
 
 
 _JOB_ID = re.compile(r"^[0-9]{8}_[a-z0-9_]+_[0-9]{3}$")
-_JOB_SUMMARY_SCHEMA_VERSION = 2
+_JOB_SUMMARY_SCHEMA_VERSION = 3
 _JOB_SUMMARY_MAX_BYTES = 128 * 1024
+_JOB_HISTORY = re.compile(r"^job_([0-9]+)\.json$")
 
 
 class JobStore:
@@ -154,6 +156,7 @@ class JobStore:
 
     @staticmethod
     def _summary_from_job(job: JobRecord) -> dict[str, Any]:
+        from .collaboration.state_assets import catalog_rows
         terminal_candidates = {"approved", "rejected", "failed"}
         status_counts: dict[str, int] = {}
         for candidate in job.candidates:
@@ -178,7 +181,7 @@ class JobStore:
             and job.generation_requested_at is not None
             and any(
                 candidate.status.value in active_provider_states
-                or (candidate.error or {}).get("code") == "insufficient_quota"
+                or (candidate.error or {}).get("code") in {"insufficient_quota", "pixellab_account_queued"}
                 or (
                     candidate.provider_status == "completed"
                     and bool(candidate.provider_job_id)
@@ -189,14 +192,27 @@ class JobStore:
         )
         from .motion_correction import active as motion_active
         needs_recovery = needs_recovery or (motion_active(job) and job.generation_requested_at is not None)
+        if job.request.open_plan and job.plan_control and job.generation_requested_at is not None:
+            needs_recovery = any(
+                c.plan_execution and not c.frames and c.status.value not in terminal_candidates and (
+                    any(r.state in {"submitting", "pending", "reviewing", "repairing", "complete"} for r in c.plan_execution.stages)
+                    or (job.plan_control.enabled and all(r.state not in {"failed", "unknown", "awaiting_review", "rejected"} for r in c.plan_execution.stages))
+                ) for c in job.candidates
+            )
+            needs_recovery = needs_recovery or any(c.frames and c.plan_execution and
+                (c.plan_execution.quality_review or {}).get('state') in {'pending','running'} for c in job.candidates)
         return {
             "summary_schema_version": _JOB_SUMMARY_SCHEMA_VERSION,
             "job_revision": job.revision,
             "job_id": job.job_id,
+            "open_work_id": job.request.open_plan.work_id if job.request.open_plan else None,
             "status": job.status.value,
             "updated_at": job.updated_at.isoformat(),
             "created_at": job.created_at.isoformat(),
             "provider": job.request.provider,
+            "object_id": job.character.object_id,
+            "object_type": job.character.object_type,
+            "object_name": job.character.display_name,
             "character_id": job.character.character_id,
             "character_name": job.character.display_name,
             "action_id": job.action.action_id,
@@ -225,6 +241,7 @@ class JobStore:
             "motion_message": (job.motion_control or {}).get("message"),
             "execution_only": job.request.motion_repair is not None,
             # Materials only: execution-only candidates stay in task history.
+            **({"state_assets": catalog_rows(job)} if job.character.object_type == "interactable" and job.request.open_plan else {}),
             "artworks": [
                 {
                     "candidate_index": candidate.candidate_index,
@@ -252,36 +269,52 @@ class JobStore:
 
     def _read_summary(self, directory: Path) -> dict[str, Any]:
         path = directory / "summary.json"
-        if not path.is_file() or path.stat().st_size > _JOB_SUMMARY_MAX_BYTES:
+        info = path.stat()
+        if info.st_size > _JOB_SUMMARY_MAX_BYTES:
             raise ValueError("job summary is missing or too large")
         summary = read_json(path)
         if (
             not isinstance(summary, dict)
             or summary.get("summary_schema_version") != _JOB_SUMMARY_SCHEMA_VERSION
+            or (summary.get("object_type") == "interactable" and summary.get("open_work_id") and "state_assets" not in summary)
             or summary.get("job_id") != directory.name
+            or type(summary.get("job_revision")) is not int
+            or summary["job_revision"] < 0
             or not isinstance(summary.get("status"), str)
             or not isinstance(summary.get("updated_at"), str)
         ):
             raise ValueError("job summary is invalid")
+        # A writer publishes its journal before job.json and its catalog row
+        # last. Check the durable revision names without opening the records.
+        revisions = (_JOB_HISTORY.fullmatch(entry.name) for entry in (directory / "history").glob("job_*.json"))
+        if any(match and int(match[1]) > summary["job_revision"] for match in revisions):
+            raise ValueError("job summary predates the recovery journal")
+        try:
+            if (directory / "job.json").stat().st_mtime_ns > info.st_mtime_ns:
+                raise ValueError("job summary predates the current record")
+        except FileNotFoundError:
+            if not (directory / "history" / f"job_{summary['job_revision']:08d}.json").is_file():
+                raise
         return summary
 
     def save(self, job: JobRecord) -> Path:
-        with self._lock:
-            path = self.job_dir(job.job_id) / "job.json"
-            # Each revision is written to an append-only recovery journal before
-            # the current pointer. If job.json is ever damaged, the latest valid
-            # journal record still contains the complete durable task.
-            history = self.job_dir(job.job_id) / "history" / f"job_{job.revision:08d}.json"
-            atomic_write_json(history, job.model_dump(mode="json"))
-            atomic_write_json(path, job.model_dump(mode="json"))
-            # summary.json is a disposable, lightweight catalog row. Never let
-            # an index write failure turn a successfully persisted task into an
-            # apparent failure that might encourage a duplicate API submission.
-            try:
-                self._write_summary(job)
-            except OSError:
-                pass
-            return path
+        with self._lock, self._process_lock(job.job_id):
+            return self._save(job)
+
+    def _save(self, job: JobRecord) -> Path:
+        directory = self.job_dir(job.job_id)
+        path = directory / "job.json"
+        # Publish the complete recovery revision before the current pointer.
+        history = directory / "history" / f"job_{job.revision:08d}.json"
+        record = job.model_dump(mode="json")
+        atomic_write_json(history, record)
+        atomic_write_json(path, record)
+        # Catalog failures cannot make a durable provider result appear to fail.
+        try:
+            self._write_summary(job)
+        except OSError:
+            pass
+        return path
 
     def load(self, job_id: str) -> JobRecord:
         path = self.job_dir(job_id) / "job.json"
@@ -325,17 +358,37 @@ class JobStore:
                 details={"job_id": job_id, "error": str(primary_error) if primary_error else "no valid revision"},
             )
 
-        # Deep reads repair a missing/stale disposable summary. Normal catalog
-        # listing never reaches this path once summary.json exists.
-        try:
-            if self._read_summary(self.job_dir(job_id)) != self._summary_from_job(selected):
-                self._write_summary(selected)
-        except (OSError, ValueError):
-            try:
-                self._write_summary(selected)
-            except OSError:
-                pass
         return selected
+
+    def _repair_summary(self, directory: Path) -> dict[str, Any]:
+        # Re-read under the same process lock as writers. A deep read may
+        # legitimately return an older snapshot while a save is in flight.
+        try:
+            with self._process_lock(directory.name, timeout_seconds=0):
+                try:
+                    return self._read_summary(directory)
+                except (OSError, ValueError):
+                    job = self.load(directory.name)
+                    summary = self._summary_from_job(job)
+                    try:
+                        atomic_write_json(directory / "summary.json", summary)
+                    except OSError:
+                        pass
+                    return summary
+        except (ConflictError, OSError):
+            return self._summary_from_job(self.load(directory.name))
+
+    def load_revision(self, job_id: str, revision: int | None = None) -> JobRecord:
+        current = self.load(job_id)
+        if revision is None or current.revision == revision:
+            return current
+        history = self.resolve_job_path(job_id, f'history/job_{revision:08d}.json')
+        if not history.is_file():
+            raise NotFoundError('requested job revision not found', details={'job_id': job_id, 'revision': revision})
+        previous = JobRecord.model_validate(read_json(history))
+        if previous.job_id != job_id or previous.revision != revision:
+            raise ConflictError('job revision identity does not match its record')
+        return previous
 
     def find_by_request_key(self, request_key: str) -> JobRecord | None:
         if not request_key:
@@ -367,6 +420,15 @@ class JobStore:
     def resolve_job_path(self, job_id: str, relative: str) -> Path:
         return inside(self.job_dir(job_id), self.job_dir(job_id) / Path(relative))
 
+    def job_summary(self, job_id: str) -> dict[str, Any]:
+        directory = self.job_dir(job_id)
+        if not directory.is_dir():
+            raise NotFoundError("job not found", details={"job_id": job_id})
+        try:
+            return self._read_summary(directory)
+        except (OSError, ValueError, KeyError):
+            return self._repair_summary(directory)
+
     def list_jobs(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         if not self.settings.work_dir.exists():
@@ -378,14 +440,9 @@ class JobStore:
         ]
         for directory in sorted(directories, key=lambda item: item.name, reverse=True):
             try:
-                result.append(self._read_summary(directory))
+                result.append(self.job_summary(directory.name))
             except Exception:
-                try:
-                    # One-time compatibility path for tasks created before the
-                    # lightweight catalog existed. load() also backfills it.
-                    result.append(self._summary_from_job(self.load(directory.name)))
-                except Exception:
-                    result.append({"job_id": directory.name, "status": "invalid", "updated_at": ""})
+                result.append({"job_id": directory.name, "status": "invalid", "updated_at": ""})
         return sorted(
             result,
             key=lambda row: (str(row.get("updated_at", "")), str(row.get("job_id", ""))),
@@ -404,6 +461,8 @@ class JobStore:
                 # Read/verify paths also use this context manager. Do not create
                 # an append-only history revision when their observable state
                 # did not change (notably repeated recovery of one bad result).
-                if job.model_dump(mode="json") != before:
+                after = job.model_dump(mode="json")
+                if after != before:
                     job.revision += 1
-                    self.save(job)
+                    record_progress(job, before, after)
+                    self._save(job)

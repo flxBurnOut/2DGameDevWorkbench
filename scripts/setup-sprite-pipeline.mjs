@@ -37,6 +37,9 @@ function supported(command, args = []) {
   return !result.error && result.status === 0;
 }
 try {
+  const args = process.argv.slice(2);
+  if (args.some(arg => arg !== '--api-only')) throw new Error('Usage: sprite-pipeline:setup [--api-only]');
+  const apiOnly = args.includes('--api-only');
   if (fs.existsSync(python)) {
     if (!supported(python))
       throw new Error(
@@ -78,22 +81,18 @@ try {
     run(selected[0], [...selected[1], '-m', 'venv', venv]);
   }
   const lock = path.join(pipeline, 'requirements.lock');
-  run(python, [
-    '-m',
-    'pip',
-    'install',
-    '--disable-pip-version-check',
-    '-r',
-    fs.existsSync(lock) ? lock : path.join(pipeline, 'requirements.txt'),
-  ]);
+  if (apiOnly) {
+    run(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '-c', lock,
+      '-e', path.join(root, 'Tools', 'PixelProp'), '-e', pipeline + '[api]']);
+  } else {
+    run(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r',
+      fs.existsSync(lock) ? lock : path.join(pipeline, 'requirements.txt')]);
+    run(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '-e', path.join(root, 'Tools', 'PixelProp')]);
+  }
   run(python, ['-m', 'pip', 'check']);
-  run(python, [
-    '-c',
-    'import fastapi, uvicorn, gradio, PIL; print("SpritePipeline dependencies ready")',
-  ]);
-  console.log(
-    `SpritePipeline 已就绪：${python}\n运行 npm run dev 启动完整工作台。`,
-  );
+  const modules = apiOnly ? 'fastapi, uvicorn, PIL, numpy, pixel_prop' : 'fastapi, uvicorn, gradio, PIL, pixel_prop';
+  run(python, ['-c', `import ${modules}; print("SpritePipeline and PixelProp dependencies ready")`]);
+  console.log(`SpritePipeline 已就绪：${python}\n运行 npm run dev${apiOnly ? ' -- --api-only' : ''} 启动工作台。`);
 } catch (error) {
   console.error(`SpritePipeline 初始化失败：${error.message}`);
   process.exitCode = 1;

@@ -47,6 +47,9 @@ next-env.d.ts
 /Tools/SpritePipeline/**/__pycache__/
 /Tools/SpritePipeline/.pytest_cache/
 /Tools/SpritePipeline/*.egg-info/
+/Tools/PixelProp/*.egg-info/
+/Tools/PixelProp/build/
+/Tools/SpritePipeline/build/
 
 # Bytecode from local engineering Skill helpers
 .agents/skills/**/__pycache__/

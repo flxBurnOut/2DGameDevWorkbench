@@ -1,0 +1,103 @@
+.motion-structure .structure-image {
+  position: relative;
+  width: min(100%, 320px);
+  aspect-ratio: 1;
+  user-select: none;
+}
+.motion-structure .structure-image img {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: none;
+  object-fit: contain;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+.structure-image svg,
+.structure-mask {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.structure-image.structure-editing {
+  cursor: crosshair;
+  touch-action: none;
+}
+.structure-mask {
+  background: var(--theme-accent);
+  opacity: 0.55;
+  mask-size: 100% 100%;
+  mask-mode: luminance;
+  image-rendering: pixelated;
+}
+.structure-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+.structure-status small {
+  color: var(--theme-muted);
+}
+.motion-studio .motion-structure .motion-checkbox {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+.motion-structure .motion-checkbox input {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+}
+.structure-status button {
+  white-space: nowrap;
+}
+.structure-details {
+  margin: 0.5rem 0;
+}
+.structure-details summary {
+  cursor: pointer;
+  padding: 0.4rem 0;
+}
+.structure-details p,
+.structure-details small {
+  line-height: 1.5;
+  display: block;
+}
+.structure-controls {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.structure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.65rem 0;
+}
+.structure-relation {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.3rem;
+  margin: 0.5rem 0;
+}
+.structure-details ul {
+  padding-left: 1.2rem;
+}
+.structure-details li button {
+  text-align: left;
+}
+.structure-message {
+  color: var(--theme-muted);
+  overflow-wrap: anywhere;
+}
+.structure-message button {
+  margin-left: 0.5rem;
+}

@@ -28,6 +28,20 @@ The workbench's `sprite-pipeline` adapter communicates with this component throu
 
 ## Package dependencies
 
+### Optional visual structure runtime
+
+- `Tools/VisualStructure/` is Forge integration code for the public SAM 2 API.
+- Optional runtime: <https://github.com/facebookresearch/sam2>, pinned in
+  `Tools/VisualStructure/runtime-profile.json` to commit
+  `2b90b9f5ceec907a1c18123530e92e794ad901a4`.
+- SAM 2 source and checkpoints use Apache-2.0; its upstream third-party files
+  retain their own notices, including BSD-3-Clause components. Preserve those
+  notices in any separately distributed runtime.
+- Source, weights and the independent Torch environment are downloaded locally
+  into ignored `work/visual-structure-runtime/`; they are not included in the
+  tracked workbench or installed into SpritePipeline. No access credentials are
+  distributed. SAM 3 is not bundled or part of this runtime profile.
+
 JavaScript and Python dependencies retain their own licenses and notices. Exact installed JavaScript versions are recorded in `package-lock.json`; exact SpritePipeline Python versions are recorded in `Tools/SpritePipeline/requirements.lock`.
 
 ## External API services

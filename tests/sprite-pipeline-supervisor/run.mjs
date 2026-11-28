@@ -12,8 +12,13 @@ import {
 
 let healthMode = 'valid';
 let uiMode = 'missing';
+let motionPaths = {};
 const server = http.createServer((request, response) => {
   response.setHeader('content-type', 'application/json');
+  if (request.url === '/openapi.json') {
+    response.end(JSON.stringify({paths: motionPaths}));
+    return;
+  }
   if (request.url === '/' && uiMode !== 'missing') {
     response.setHeader('content-type', 'text/html');
     response.end(uiMode === 'valid' ? '<html><gradio-app></gradio-app></html>' : '<html>Other application</html>');
@@ -43,6 +48,13 @@ const target = {
 };
 
 const ready = await probeSpritePipeline(target);
+assert.equal((await probeSpritePipeline(target, {requireMotion:true})).state, 'conflict');
+motionPaths = {
+  '/v1/open-motion/{work_id}/local-frame-edits': {post:{}},
+  '/v1/open-motion/references/from-prop': {post:{}},
+  '/v1/open-motion/{work_id}/interaction': {get:{}},
+};
+assert.equal((await probeSpritePipeline(target, {requireMotion:true})).state, 'ready');
 assert.deepEqual(ready, { state: 'ready', version: 'test-version' });
 
 const apiOnly = await probeSpritePipeline(target, { requireUi: true });

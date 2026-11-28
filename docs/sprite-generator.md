@@ -8,6 +8,25 @@
 
 作品库按实际素材展示参考图和动画，支持预览、筛选及继续检查 / 修补 / 导出；空任务、失败尝试和测试执行记录单独放在执行历史中，不计为作品。
 
+## COIP 单主体动作
+
+角色入口为 `/tools/sprite-generator`。依次完成准备与描述、查看制作方案、自动制作、检查与调整、导出与使用。交互物入口为 `/tools/interactable-motion`，也可在场景页或交互物编辑器中点击“制作状态动画”。两页共用作业、检查点、版本和导出服务。角色使用开放动作描述，交互物可以指定初态、目标状态以及应当固定的部件。
+
+在模型设置里选择规划与视觉复核模型。确认方案后才提交绘图。阶段检查通过后使用实际确认帧接续制作。需要局部修改时可以比较备选、手工改像素或载入同尺寸修正版 PNG，采用后再导出。整段已完成动画的选帧修改产生新版本，已锁定的帧和旧版本仍可查看。导出可选择已有 Godot 项目或下载包含图片、`SpriteFrames` 和预览场景的 ZIP。
+
+参考图可选做部件分割与锚点确认。需使用本地分割时，先运行 `npm run visual-structure:setup` 并用 `npm run visual-structure:check` 检查独立运行环境。已有校对的跟踪点可以带着其帧号、可见性和来源进入几何与时序预览。预览测量的是已有素材。
+
+### 离线手动验收
+
+安装 Node 和 Python 依赖后，在本分支运行 `npm run preview:motion`。终端列出两个独立样例的页面地址，分别打开角色和信号灯。两者都已完成离线分段制作，停在人工检查。样例使用临时目录和单独端口。
+
+1. 播放角色动画，逐帧查看，打开局部调整或像素编辑器。选择可编辑的中间帧，改一个容易看见的像素，比较前后并核对相邻帧。
+2. 在交互物页点开状态节点与过渡，核对初态、中间态、终态。检查过渡并填写采用说明。在“导出与使用”下载 Godot 包，或“生成交互物编辑器副本”，核对打开的副本可以从初态依次播放两个过渡。
+3. 在角色页采用候选并导出。两种包均可放入 Godot 4.7 测试项目中，打开包内的 `animated_sprite.tscn`，检查动画名、帧图和播放。
+4. 完整离线回归运行 `npm run test:motion-workflow` 及 `npm run test:interaction-preview`。前者也覆盖重新打开服务、旧版本读取、拒绝过期编辑、计划内末帧停留。若要回放冻结 VBYC 的原始灯光样本，将 `FORGE_MOTION_REPLAY_ROOT` 指向该版本包含 `n2-pilot-20261110` 的 `examples` 目录。
+
+预览里的绘图来自离线夹具，选帧重绘的真实画质需要可用的绘图后端。一般使用运行 `npm run dev`。既有原生作业也可在 `/tools/sprite-generator?legacy=1` 打开。每个工作区默认使用自己的数据目录；要继续使用原工作区资料，可在启动前设置 `SPRITE_PIPELINE_DATA_DIR` 和 `SPRITE_PIPELINE_EXPORTS_DIR` 指向原目录，并使用同一个本地服务进程。
+
 ## 原图参考入口
 
 `/tools/reference-art` 可用 PixelLab 生成 128×128 透明角色图，并与本工具共用一次保存的 Key。点击“用于制作序列帧”后，创建可复用角色并在生成页预选参考图、名称和外观提示词；不会创建或提交动画任务。详见 [角色原图](reference-art.md)。
@@ -21,7 +40,7 @@ Key 保存于当前数据目录的 `config/credentials.json`，Windows 使用当
 ## 两种使用面
 
 - 外部 Agent 通过仓库 STDIO MCP 或 CLI 调用结构化任务，任务记录进入 `work/`，交付副本进入 `outputs/<task-id>/`。
-- 人通过 Web 中嵌入的 SpritePipeline 工作区选择预设、逐帧检查、修补和导出。Web 不包含主 Agent 对话。
+- 人通过五阶段工作区或物件状态图完成制作、检查和导出。原有预设作业仍使用嵌入式 SpritePipeline 工作区。
 
 二者连接同一个 SpritePipeline 服务，但浏览器内部草稿/原生 job 与仓库任务记录仍是不同数据来源，由工作台状态栏按已知身份合并展示。
 
@@ -35,7 +54,7 @@ Key 保存于当前数据目录的 `config/credentials.json`，Windows 使用当
 npm run sprite-pipeline:setup
 ```
 
-随后只需启动主站。启动器会自动启动本地序列帧管线；如果 7860 上已经有健康的 SpritePipeline，则直接复用：
+随后只需启动主站。启动器会自动启动本地序列帧管线；如果 7860 上已有支持 COIP 动画接口的 SpritePipeline，则直接复用：
 
 ```powershell
 npm run dev

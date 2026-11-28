@@ -1,4 +1,4 @@
-import { SpritePipelineWorkspace } from '@/components/sprite-generator/sprite-pipeline-workspace';
+import { SpriteStudioEntry } from '@/components/sprite-generator/open-motion-studio';
 import { workbenchModules } from '@/lib/workbench/modules';
 
 export default function SpriteGeneratorPage() {
@@ -10,7 +10,7 @@ export default function SpriteGeneratorPage() {
 
   return (
     <div className="h-full min-h-0 overflow-hidden">
-      <SpritePipelineWorkspace module={spriteModule} />
+      <SpriteStudioEntry module={spriteModule} />
     </div>
   );
 }

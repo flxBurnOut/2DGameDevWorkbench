@@ -7,6 +7,7 @@ export function operationLabel(operation: unknown): string {
 
 export type WorkItemState =
   | 'saved'
+  | 'not_submitted'
   | 'editing'
   | 'running'
   | 'attention'
@@ -53,6 +54,7 @@ export type SpriteJob = {
 export const workStateLabels: Record<WorkItemState, string> = {
   saved: '已保存，可继续',
   editing: '正在编辑',
+  not_submitted: '尚未提交制作',
   running: '正在生成',
   attention: '需要处理',
   completed: '已完成',

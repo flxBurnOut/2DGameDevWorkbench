@@ -67,15 +67,16 @@ async function ensureSpritePipeline() {
     return;
   }
 
+  const apiOnly = process.argv.includes('--api-only');
   const token = process.env.SPRITE_PIPELINE_API_TOKEN?.trim();
-  const current = await probeSpritePipeline(target, { token, requireUi: true });
+  const current = await probeSpritePipeline(target, { token, requireUi: !apiOnly, requireMotion: true });
   if (current.state === 'ready') {
     console.log(`SpritePipeline 已在 ${target.baseUrl} 运行 · v${current.version}`);
     return;
   }
   if (current.state === 'conflict') throw new Error(current.reason);
 
-  const launch = createSpritePipelineLaunch(repositoryRoot, target, process.env);
+  const launch = createSpritePipelineLaunch(repositoryRoot, target, process.env, { apiOnly });
   console.log(`正在启动 SpritePipeline：${target.baseUrl}`);
   const pipeline = start('SpritePipeline', launch.command, launch.args, {
     env: launch.env,
@@ -84,7 +85,7 @@ async function ensureSpritePipeline() {
     child: pipeline,
     token,
     shouldStop: () => stopping,
-    requireUi: true,
+    requireUi: !apiOnly,
   });
   console.log(`SpritePipeline 已就绪 · v${ready.version}`);
 }
